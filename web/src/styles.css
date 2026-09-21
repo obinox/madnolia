@@ -1,0 +1,67 @@
+:root {
+  color: #dfe8f1;
+  background: #080b0f;
+  font-family: Inter, Pretendard, "Noto Sans KR", system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: radial-gradient(circle at 15% -10%, #172b3e 0, transparent 35%), #080b0f; }
+button, select { font: inherit; }
+button { cursor: pointer; }
+
+main { width: min(1540px, calc(100% - 40px)); margin: 0 auto; padding: 28px 0 60px; }
+header { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 22px; }
+h1 { margin: 0; font-size: clamp(28px, 4vw, 48px); letter-spacing: -0.045em; font-weight: 680; }
+.eyebrow, .section-label { margin: 0 0 7px; color: #65a9ff; font: 700 11px/1.2 ui-monospace, monospace; letter-spacing: .15em; }
+.header-controls { display: flex; gap: 12px; }
+label { display: grid; gap: 6px; color: #8091a3; font-size: 12px; }
+select { min-width: 270px; padding: 10px 34px 10px 12px; border: 1px solid #293542; border-radius: 8px; color: #dfe8f1; background: #111820; }
+
+.panel { border: 1px solid #202b35; border-radius: 12px; background: rgba(15, 20, 26, .92); box-shadow: 0 18px 50px rgba(0, 0, 0, .24); }
+.workspace-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; }
+.video-card { overflow: hidden; }
+video { display: block; width: 100%; max-height: 62vh; background: #000; }
+.transport-readout { display: flex; justify-content: space-between; padding: 9px 13px; color: #8292a2; font: 12px ui-monospace, monospace; border-top: 1px solid #202b35; }
+
+.inspector { padding: 18px; }
+.stats { margin: 0; }
+.stats div { display: flex; justify-content: space-between; gap: 14px; padding: 9px 0; border-bottom: 1px solid #202b35; }
+.stats dt { color: #8091a3; }
+.stats dd { margin: 0; text-align: right; }
+.selection-card { display: grid; gap: 9px; margin-top: 23px; }
+.selection-label { font-size: 30px; color: #f8c267; }
+.selection-card code { color: #9ab2c9; word-break: break-all; }
+.badge { justify-self: start; padding: 4px 7px; border: 1px solid #6c5837; border-radius: 4px; color: #f8c267; font: 10px ui-monospace, monospace; }
+.selection-card button, .zoom-controls button { border: 1px solid #2e4050; border-radius: 7px; color: #dfe8f1; background: #17222c; padding: 8px 11px; }
+.selection-card button.active { border-color: #ff5470; color: #ff8ba0; }
+.muted { color: #68798a; }
+
+.timeline-panel { margin-top: 16px; padding: 13px; }
+.timeline-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 0 2px 11px; }
+.legend, .zoom-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.legend span { display: flex; align-items: center; gap: 5px; color: #9aa9b7; font-size: 11px; }
+.legend i { width: 8px; height: 8px; border-radius: 2px; }
+.legend .speech { background: #27c499; }
+.legend .non-speech { background: #303943; }
+.legend .word { background: #a78bfa; }
+.legend .phone { background: #f59e63; }
+.zoom-controls { gap: 6px; }
+.zoom-controls button { padding: 5px 9px; font-size: 12px; }
+.timeline-shell { overflow: hidden; border: 1px solid #202b35; border-radius: 8px; background: #0d1117; }
+.timeline-shell canvas { display: block; cursor: crosshair; }
+.timeline-hint { display: flex; justify-content: space-between; padding: 8px 2px 0; color: #667789; font: 11px ui-monospace, monospace; }
+
+.transcript { margin-top: 16px; padding: 18px; }
+.transcript p:last-child { max-height: 180px; margin: 0; overflow: auto; color: #b9c5cf; line-height: 1.8; white-space: pre-wrap; }
+.empty, .error { padding: 24px; }
+.error { margin-bottom: 16px; border: 1px solid #713346; border-radius: 9px; color: #ff91a5; background: #28131a; }
+
+@media (max-width: 900px) {
+  main { width: min(100% - 20px, 760px); padding-top: 18px; }
+  header, .timeline-toolbar { align-items: stretch; flex-direction: column; }
+  .workspace-grid { grid-template-columns: 1fr; }
+  .header-controls { flex-direction: column; }
+  select { width: 100%; min-width: 0; }
+}

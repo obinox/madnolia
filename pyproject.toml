@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "madnolia"
+version = "0.1.0"
+description = "Korean video corpus phoneme indexer"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "av>=16,<17",
+    "faster-whisper>=1.1,<2",
+    "g2pk>=0.9.4,<1",
+    "huggingface-hub>=1,<2",
+    "nltk>=3.9,<4",
+    "numpy>=2,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "ruff>=0.11,<1"]
+intel = ["openvino-genai>=2025.2,<2027"]
+web = ["fastapi>=0.116,<1", "uvicorn[standard]>=0.35,<1"]
+
+[project.scripts]
+madnolia = "madnolia.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "--basetemp=.pytest_tmp"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

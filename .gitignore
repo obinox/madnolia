@@ -167,6 +167,7 @@ ENV/
 .tox/
 .nox/
 .pytest_cache/
+.pytest_tmp/
 .hypothesis/
 .mypy_cache/
 .pyre/
@@ -259,7 +260,12 @@ captures/
 *.db-shm
 *.db-wal
 docker-data/
-data/
+data/*
+!data/input/
+data/input/*
+!data/input/videos/
+data/input/videos/*
+!data/input/videos/.gitkeep
 redis-data/
 postgres-data/
 mysql-data/
