@@ -1,6 +1,7 @@
 from madnolia.storage import initialize_database, save_analysis
 from madnolia.types.common import (
     AlignmentMethod,
+    AlignmentStatus,
     AnalysisResult,
     MediaSource,
     PhoneOccurrence,
@@ -21,6 +22,7 @@ def test_openvino_phone_without_confidence_is_stored(tmp_path) -> None:
     phone = PhoneOccurrence(
         occurrence_id="phone",
         source_id="source",
+        sentence_index=0,
         word_index=0,
         grapheme="안",
         pronunciation="안",
@@ -30,6 +32,7 @@ def test_openvino_phone_without_confidence_is_stored(tmp_path) -> None:
         end_ms=100,
         confidence=None,
         alignment_method=AlignmentMethod.ESTIMATED_WORD,
+        alignment_status=AlignmentStatus.ESTIMATED,
     )
     result = AnalysisResult(
         source=source,
@@ -37,8 +40,11 @@ def test_openvino_phone_without_confidence_is_stored(tmp_path) -> None:
         language="ko",
         language_probability=None,
         audio_regions=[],
+        sentences=[],
         words=[],
         phones=[phone],
+        acoustic_features=[],
+        transcript_candidates=[],
     )
     connection = initialize_database(tmp_path / "corpus.sqlite3")
     try:

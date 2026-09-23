@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import type { MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from "react"
+import type { MouseEvent as ReactMouseEvent } from "react"
 
 import { COLORS, MIN_VIEW_DURATION_MS, TIMELINE_HEIGHT, TIMELINE_PADDING } from "../constants"
 import type { PhoneOccurrence, TimelineProps, TimelineSelection, TranscriptWord } from "../types"
@@ -20,13 +20,42 @@ export function Timeline({
   const containerRef = useRef<HTMLDivElement>(null)
   const dragStartRef = useRef<number | null>(null)
   const dragViewRef = useRef<[number, number] | null>(null)
+  const wheelStateRef = useRef({ durationMs, viewStartMs, viewEndMs, onViewChange })
   const [width, setWidth] = useState(800)
+
+  wheelStateRef.current = { durationMs, viewStartMs, viewEndMs, onViewChange }
 
   useEffect(() => {
     if (!containerRef.current) return
     const observer = new ResizeObserver(([entry]) => setWidth(Math.max(320, entry.contentRect.width)))
     observer.observe(containerRef.current)
     return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      const rect = canvas.getBoundingClientRect()
+      const state = wheelStateRef.current
+      const currentSpan = state.viewEndMs - state.viewStartMs
+      const pointerRatio = Math.max(
+        0,
+        Math.min(1, (event.clientX - rect.left - TIMELINE_PADDING) / (rect.width - 2 * TIMELINE_PADDING)),
+      )
+      const anchor = state.viewStartMs + pointerRatio * currentSpan
+      const nextSpan = Math.max(
+        MIN_VIEW_DURATION_MS,
+        Math.min(state.durationMs, currentSpan * Math.exp(event.deltaY * 0.0015)),
+      )
+      let start = anchor - nextSpan * pointerRatio
+      start = Math.max(0, Math.min(state.durationMs - nextSpan, start))
+      state.onViewChange(start, start + nextSpan)
+    }
+    canvas.addEventListener("wheel", handleWheel, { passive: false })
+    return () => canvas.removeEventListener("wheel", handleWheel)
   }, [])
 
   useEffect(() => {
@@ -66,17 +95,6 @@ export function Timeline({
     onSelect(findSelection(timeMs, timeline))
   }
 
-  const handleWheel = (event: ReactWheelEvent<HTMLCanvasElement>) => {
-    event.preventDefault()
-    const anchor = positionToTime(event.clientX)
-    const currentSpan = viewEndMs - viewStartMs
-    const nextSpan = Math.max(MIN_VIEW_DURATION_MS, Math.min(durationMs, currentSpan * Math.exp(event.deltaY * 0.0015)))
-    const anchorRatio = (anchor - viewStartMs) / currentSpan
-    let start = anchor - nextSpan * anchorRatio
-    start = Math.max(0, Math.min(durationMs - nextSpan, start))
-    onViewChange(start, start + nextSpan)
-  }
-
   const handleMouseDown = (event: ReactMouseEvent<HTMLCanvasElement>) => {
     dragStartRef.current = event.clientX
     dragViewRef.current = [viewStartMs, viewEndMs]
@@ -102,7 +120,6 @@ export function Timeline({
     <div className="timeline-shell" ref={containerRef}>
       <canvas
         ref={canvasRef}
-        onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -159,7 +176,11 @@ function drawTimeline(
   timeline?.phones.forEach((phone, index) => {
     const left = x(Math.max(startMs, phone.start_ms))
     const right = x(Math.min(endMs, phone.end_ms))
-    context.fillStyle = index % 2 === 0 ? COLORS.phone : COLORS.phoneAlt
+    context.fillStyle = phone.alignment_status === "MISSING"
+      ? COLORS.phoneMissing
+      : phone.alignment_status === "LOW_CONFIDENCE"
+        ? COLORS.phoneLowConfidence
+        : index % 2 === 0 ? COLORS.phone : COLORS.phoneAlt
     context.fillRect(left, 142, Math.max(1, right - left), 27)
     if (right - left > 16) drawLabel(context, phone.ipa, left + 3, 160, right - left - 6)
   })
@@ -228,6 +249,7 @@ function findSelection(timeMs: number, timeline: TimelineProps["timeline"]): Tim
   const phone = timeline?.phones.find((item: PhoneOccurrence) => item.start_ms <= timeMs && item.end_ms >= timeMs)
   if (phone) {
     return {
+      occurrence_id: phone.occurrence_id,
       kind: "PHONE",
       label: phone.ipa,
       start_ms: phone.start_ms,
@@ -235,11 +257,13 @@ function findSelection(timeMs: number, timeline: TimelineProps["timeline"]): Tim
       pronunciation: phone.pronunciation,
       phone_id: phone.phone_id,
       alignment_method: phone.alignment_method,
+      alignment_status: phone.alignment_status,
     }
   }
   const word = timeline?.words.find((item: TranscriptWord) => item.start_ms <= timeMs && item.end_ms >= timeMs)
   return word
     ? {
+        occurrence_id: null,
         kind: "WORD",
         label: word.text,
         start_ms: word.start_ms,
@@ -247,6 +271,7 @@ function findSelection(timeMs: number, timeline: TimelineProps["timeline"]): Tim
         pronunciation: null,
         phone_id: null,
         alignment_method: null,
+        alignment_status: null,
       }
     : null
 }

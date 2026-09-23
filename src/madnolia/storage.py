@@ -4,12 +4,16 @@ from pathlib import Path
 
 from madnolia.types.common import (
     AlignmentMethod,
+    AlignmentStatus,
     AnalysisResult,
     AudioRegion,
     AudioRegionType,
     MediaSource,
+    PhoneAcousticFeatures,
     PhoneOccurrence,
     ProjectManifest,
+    TranscriptCandidate,
+    TranscriptSentence,
     TranscriptWord,
 )
 
@@ -36,6 +40,8 @@ def initialize_database(path: Path) -> sqlite3.Connection:
             end_ms INTEGER NOT NULL,
             confidence REAL,
             alignment_method TEXT NOT NULL,
+            sentence_index INTEGER NOT NULL DEFAULT -1,
+            alignment_status TEXT NOT NULL DEFAULT 'ESTIMATED',
             FOREIGN KEY(source_id) REFERENCES media_sources(source_id)
         );
         CREATE INDEX IF NOT EXISTS idx_phone_occurrences_phone_id
@@ -51,9 +57,19 @@ def initialize_database(path: Path) -> sqlite3.Connection:
             PRIMARY KEY(source_id, region_index),
             FOREIGN KEY(source_id) REFERENCES media_sources(source_id)
         );
+        CREATE TABLE IF NOT EXISTS phone_acoustic_features (
+            occurrence_id TEXT PRIMARY KEY,
+            rms_db REAL NOT NULL,
+            peak_db REAL NOT NULL,
+            f0_hz REAL,
+            voiced_probability REAL NOT NULL,
+            acoustic_unit_id INTEGER,
+            FOREIGN KEY(occurrence_id) REFERENCES phone_occurrences(occurrence_id)
+        );
         """
     )
     _migrate_nullable_confidence(connection)
+    _migrate_phone_columns(connection)
     return connection
 
 
@@ -90,15 +106,38 @@ def _migrate_nullable_confidence(connection: sqlite3.Connection) -> None:
     connection.commit()
 
 
+def _migrate_phone_columns(connection: sqlite3.Connection) -> None:
+    columns = {column[1] for column in connection.execute("PRAGMA table_info(phone_occurrences)")}
+    if "sentence_index" not in columns:
+        connection.execute(
+            "ALTER TABLE phone_occurrences ADD COLUMN sentence_index INTEGER NOT NULL DEFAULT -1"
+        )
+    if "alignment_status" not in columns:
+        connection.execute(
+            "ALTER TABLE phone_occurrences ADD COLUMN alignment_status TEXT NOT NULL DEFAULT 'ESTIMATED'"
+        )
+    connection.commit()
+
+
 def save_analysis(connection: sqlite3.Connection, result: AnalysisResult) -> None:
     source = result.source
     connection.execute(
         "INSERT OR REPLACE INTO media_sources VALUES (?, ?, ?, ?)",
         (source.source_id, source.path, source.duration_ms, json.dumps(result.to_dict()["source"], ensure_ascii=False)),
     )
+    previous_occurrences = connection.execute(
+        "SELECT occurrence_id FROM phone_occurrences WHERE source_id = ?",
+        (source.source_id,),
+    ).fetchall()
+    if previous_occurrences:
+        connection.executemany(
+            "DELETE FROM phone_acoustic_features WHERE occurrence_id = ?",
+            previous_occurrences,
+        )
+    connection.execute("DELETE FROM phone_occurrences WHERE source_id = ?", (source.source_id,))
     connection.executemany(
         """
-        INSERT OR REPLACE INTO phone_occurrences VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO phone_occurrences VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -113,6 +152,8 @@ def save_analysis(connection: sqlite3.Connection, result: AnalysisResult) -> Non
                 phone.end_ms,
                 phone.confidence,
                 phone.alignment_method.value,
+                phone.sentence_index,
+                phone.alignment_status.value,
             )
             for phone in result.phones
         ],
@@ -129,6 +170,26 @@ def save_analysis(connection: sqlite3.Connection, result: AnalysisResult) -> Non
                 region.end_ms,
             )
             for region_index, region in enumerate(result.audio_regions)
+        ],
+    )
+    occurrence_ids = [phone.occurrence_id for phone in result.phones]
+    if occurrence_ids:
+        connection.executemany(
+            "DELETE FROM phone_acoustic_features WHERE occurrence_id = ?",
+            [(occurrence_id,) for occurrence_id in occurrence_ids],
+        )
+    connection.executemany(
+        "INSERT OR REPLACE INTO phone_acoustic_features VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (
+                feature.occurrence_id,
+                feature.rms_db,
+                feature.peak_db,
+                feature.f0_hz,
+                feature.voiced_probability,
+                feature.acoustic_unit_id,
+            )
+            for feature in result.acoustic_features
         ],
     )
     connection.commit()
@@ -158,14 +219,37 @@ def load_analysis(path: Path) -> AnalysisResult:
             )
             for region in data.get("audio_regions", [])
         ],
+        sentences=[TranscriptSentence(**sentence) for sentence in data.get("sentences", [])],
         words=[TranscriptWord(**word) for word in data["words"]],
         phones=[
             PhoneOccurrence(
                 **{
                     **phone,
+                    "sentence_index": phone.get("sentence_index", -1),
                     "alignment_method": AlignmentMethod(phone["alignment_method"]),
+                    "alignment_status": AlignmentStatus(
+                        phone.get("alignment_status", AlignmentStatus.ESTIMATED)
+                    ),
                 }
             )
             for phone in data["phones"]
+        ],
+        acoustic_features=[
+            PhoneAcousticFeatures(**feature)
+            for feature in data.get("acoustic_features", [])
+        ],
+        transcript_candidates=[
+            TranscriptCandidate(
+                candidate_id=candidate["candidate_id"],
+                model_name=candidate["model_name"],
+                transcript=candidate["transcript"],
+                language_probability=candidate.get("language_probability"),
+                words=[TranscriptWord(**word) for word in candidate["words"]],
+                sentences=[
+                    TranscriptSentence(**sentence)
+                    for sentence in candidate.get("sentences", [])
+                ],
+            )
+            for candidate in data.get("transcript_candidates", [])
         ],
     )

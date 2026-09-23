@@ -7,18 +7,30 @@ from pathlib import Path
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from madnolia.compositions import (
+    create_composition,
+    get_composition,
+    list_compositions,
+    update_composition,
+    validate_preview_request,
+)
 from madnolia.constants import (
     DEFAULT_OUTPUT_DIR,
     VIEWER_MAX_WAVEFORM_BINS,
     VIEWER_MIN_WAVEFORM_BINS,
 )
+from madnolia.exporters import export_composition, render_wav
+from madnolia.search import search_candidates
 from madnolia.storage import load_analysis
 from madnolia.types.common import (
     AnalysisOverview,
+    ExportTarget,
     ProjectSummary,
+    SaveCompositionRequest,
+    SearchRequest,
     TimelineSlice,
     WaveformData,
 )
@@ -28,7 +40,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "PUT"],
     allow_headers=["*"],
 )
 
@@ -36,6 +48,95 @@ app.add_middleware(
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/api/projects/{project_id}/search")
+def search_project(project_id: str, request: SearchRequest) -> dict[str, object]:
+    project_dir = _project_dir(project_id)
+    try:
+        result = search_candidates(
+            request.text,
+            _project_analyses(project_dir),
+            request.max_candidates_per_start,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return asdict(result)
+
+
+@app.get("/api/projects/{project_id}/compositions")
+def get_compositions(project_id: str) -> list[dict[str, object]]:
+    return [asdict(item) for item in list_compositions(_project_dir(project_id))]
+
+
+@app.post("/api/projects/{project_id}/compositions/preview")
+def preview_composition(project_id: str, request: SaveCompositionRequest) -> Response:
+    project_dir = _project_dir(project_id)
+    try:
+        validate_preview_request(project_dir, request)
+        return Response(content=render_wav(project_dir, request), media_type="audio/wav")
+    except (OSError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.get("/api/projects/{project_id}/compositions/{composition_id}")
+def get_saved_composition(project_id: str, composition_id: str) -> dict[str, object]:
+    try:
+        return asdict(get_composition(_project_dir(project_id), composition_id))
+    except (FileNotFoundError, ValueError) as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.post("/api/projects/{project_id}/compositions")
+def post_composition(
+    project_id: str,
+    request: SaveCompositionRequest,
+) -> dict[str, object]:
+    try:
+        composition = create_composition(
+            _project_dir(project_id),
+            project_id,
+            request,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return asdict(composition)
+
+
+@app.put("/api/projects/{project_id}/compositions/{composition_id}")
+def put_composition(
+    project_id: str,
+    composition_id: str,
+    request: SaveCompositionRequest,
+) -> dict[str, object]:
+    try:
+        composition = update_composition(
+            _project_dir(project_id),
+            composition_id,
+            request,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return asdict(composition)
+
+
+@app.post("/api/projects/{project_id}/compositions/{composition_id}/export/{target}")
+def export_saved_composition(
+    project_id: str,
+    composition_id: str,
+    target: ExportTarget,
+) -> FileResponse:
+    project_dir = _project_dir(project_id)
+    try:
+        composition = get_composition(project_dir, composition_id)
+        path = export_composition(project_dir, composition, target)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (OSError, RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return FileResponse(path, filename=path.name)
 
 
 @app.get("/api/projects")
@@ -70,8 +171,11 @@ def get_project(project_id: str) -> dict[str, object]:
         overviews.append(
             AnalysisOverview(
                 source_id=analysis.source.source_id,
-                transcript=analysis.transcript,
+                transcript=" ".join(word.text for word in analysis.words),
                 audio_regions=analysis.audio_regions,
+                sentences=analysis.sentences,
+                words=analysis.words,
+                transcript_candidates=analysis.transcript_candidates,
                 word_count=len(analysis.words),
                 phone_count=len(analysis.phones),
             )
@@ -106,6 +210,10 @@ def get_timeline(
         if include_phones
         else []
     )
+    phone_ids = {phone.occurrence_id for phone in phones}
+    acoustic_features = [
+        feature for feature in analysis.acoustic_features if feature.occurrence_id in phone_ids
+    ]
     return asdict(
         TimelineSlice(
             start_ms=start_ms,
@@ -113,6 +221,7 @@ def get_timeline(
             audio_regions=regions,
             words=words,
             phones=phones,
+            acoustic_features=acoustic_features,
         )
     )
 
@@ -165,6 +274,15 @@ def _analysis_for_source(project_dir: Path, source_id: str):
         if analysis.source.source_id == source_id:
             return analysis
     raise HTTPException(status_code=404, detail="Analysis not found")
+
+
+def _project_analyses(project_dir: Path):
+    manifest = _read_json(project_dir / "project.json")
+    return [
+        _load_analysis_cached(str(path), path.stat().st_mtime_ns)
+        for analysis_file in manifest["analysis_files"]
+        if (path := project_dir / analysis_file).is_file()
+    ]
 
 
 def _read_json(path: Path) -> dict[str, object]:

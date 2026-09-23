@@ -1,35 +1,66 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { fetchProject, fetchProjects, fetchTimeline, fetchWaveform, mediaUrl } from "./api"
-import { PHONE_DETAIL_MAX_MS, WAVEFORM_BINS, WORD_DETAIL_MAX_MS } from "./constants"
+import {
+  PHONE_DETAIL_MAX_MS,
+  PLAYBACK_LOOP_EPSILON_MS,
+  WAVEFORM_BINS,
+  WORD_DETAIL_MAX_MS,
+} from "./constants"
 import { Timeline, formatTime } from "./components/Timeline"
+import { CollagePanel } from "./components/CollagePanel"
 import type {
   ProjectDetail,
   ProjectSummary,
+  PhoneCache,
   TimelineSelection,
   TimelineSlice,
+  UnitCandidate,
   WaveformData,
 } from "./types"
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const playbackFrameRef = useRef<number | null>(null)
+  const loopSelectionRef = useRef(false)
+  const selectionRef = useRef<TimelineSelection | null>(null)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [projectId, setProjectId] = useState("")
   const [project, setProject] = useState<ProjectDetail | null>(null)
   const [sourceId, setSourceId] = useState("")
+  const [transcriptCandidateId, setTranscriptCandidateId] = useState("")
   const [viewStartMs, setViewStartMs] = useState(0)
   const [viewEndMs, setViewEndMs] = useState(1)
   const [currentMs, setCurrentMs] = useState(0)
   const [waveform, setWaveform] = useState<WaveformData | null>(null)
-  const [timeline, setTimeline] = useState<TimelineSlice | null>(null)
+  const [phoneCache, setPhoneCache] = useState<PhoneCache | null>(null)
   const [selection, setSelection] = useState<TimelineSelection | null>(null)
   const [loopSelection, setLoopSelection] = useState(false)
+  const [pendingCandidate, setPendingCandidate] = useState<UnitCandidate | null>(null)
   const [error, setError] = useState("")
 
   const source = project?.manifest.sources.find((item) => item.source_id === sourceId) ?? null
   const analysis = project?.analyses.find((item) => item.source_id === sourceId) ?? null
+  const transcriptCandidate = analysis?.transcript_candidates.find(
+    (candidate) => candidate.candidate_id === transcriptCandidateId,
+  ) ?? null
+  const displayedWords = transcriptCandidate?.words ?? analysis?.words ?? []
   const durationMs = source?.duration_ms ?? 1
   const viewSpan = viewEndMs - viewStartMs
+
+  useEffect(() => {
+    selectionRef.current = selection
+  }, [selection])
+
+  useEffect(() => {
+    loopSelectionRef.current = loopSelection
+  }, [loopSelection])
+
+  useEffect(() => () => {
+    if (playbackFrameRef.current !== null) {
+      window.cancelAnimationFrame(playbackFrameRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     fetchProjects()
@@ -49,29 +80,56 @@ export default function App() {
         const firstSource = detail.manifest.sources[0]
         if (firstSource) {
           setSourceId(firstSource.source_id)
+          setTranscriptCandidateId(detail.analyses[0]?.transcript_candidates[0]?.candidate_id ?? "")
           setViewStartMs(0)
           setViewEndMs(firstSource.duration_ms)
           setCurrentMs(0)
           setSelection(null)
+          setLoopSelection(false)
+          selectionRef.current = null
+          loopSelectionRef.current = false
+          setPhoneCache(null)
         }
       })
       .catch((caught: Error) => setError(caught.message))
   }, [projectId])
 
   useEffect(() => {
+    if (!analysis?.transcript_candidates.length) {
+      setTranscriptCandidateId("")
+      return
+    }
+    if (!analysis.transcript_candidates.some(
+      (candidate) => candidate.candidate_id === transcriptCandidateId,
+    )) {
+      setTranscriptCandidateId(analysis.transcript_candidates[0].candidate_id)
+    }
+  }, [analysis, transcriptCandidateId])
+
+  useEffect(() => {
+    if (!pendingCandidate || pendingCandidate.source_id !== sourceId) return
+    const video = videoRef.current
+    if (!video) return
+    const playCandidate = () => {
+      video.currentTime = pendingCandidate.source_start_ms / 1000
+      setCurrentMs(pendingCandidate.source_start_ms)
+      void video.play()
+      setPendingCandidate(null)
+    }
+    if (video.readyState >= 1) {
+      playCandidate()
+      return
+    }
+    video.addEventListener("loadedmetadata", playCandidate, { once: true })
+    return () => video.removeEventListener("loadedmetadata", playCandidate)
+  }, [pendingCandidate, sourceId])
+
+  useEffect(() => {
     if (!projectId || !sourceId || viewEndMs <= viewStartMs) return
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
-      const includeWords = viewSpan <= WORD_DETAIL_MAX_MS
-      const includePhones = viewSpan <= PHONE_DETAIL_MAX_MS
-      Promise.all([
-        fetchTimeline(projectId, sourceId, viewStartMs, viewEndMs, includeWords, includePhones, controller.signal),
-        fetchWaveform(projectId, sourceId, viewStartMs, viewEndMs, WAVEFORM_BINS, controller.signal),
-      ])
-        .then(([nextTimeline, nextWaveform]) => {
-          setTimeline(nextTimeline)
-          setWaveform(nextWaveform)
-        })
+      fetchWaveform(projectId, sourceId, viewStartMs, viewEndMs, WAVEFORM_BINS, controller.signal)
+        .then(setWaveform)
         .catch((caught: Error) => {
           if (caught.name !== "AbortError") setError(caught.message)
         })
@@ -81,6 +139,59 @@ export default function App() {
       controller.abort()
     }
   }, [projectId, sourceId, viewEndMs, viewSpan, viewStartMs])
+
+  useEffect(() => {
+    if (!projectId || !sourceId || viewEndMs <= viewStartMs || viewSpan > PHONE_DETAIL_MAX_MS) return
+    if (
+      phoneCache?.sourceId === sourceId &&
+      viewStartMs >= phoneCache.startMs &&
+      viewEndMs <= phoneCache.endMs
+    ) return
+    const controller = new AbortController()
+    const padding = Math.max(viewSpan, 30_000)
+    const fetchStart = Math.max(0, viewStartMs - padding)
+    const fetchEnd = Math.min(durationMs, viewEndMs + padding)
+    fetchTimeline(projectId, sourceId, fetchStart, fetchEnd, false, true, controller.signal)
+      .then((slice) => {
+        setPhoneCache({
+          sourceId,
+          startMs: fetchStart,
+          endMs: fetchEnd,
+          phones: slice.phones,
+          acousticFeatures: slice.acoustic_features,
+        })
+      })
+      .catch((caught: Error) => {
+        if (caught.name !== "AbortError") setError(caught.message)
+      })
+    return () => controller.abort()
+  }, [durationMs, phoneCache, projectId, sourceId, viewEndMs, viewSpan, viewStartMs])
+
+  const timeline = useMemo<TimelineSlice | null>(() => {
+    if (!analysis) return null
+    return {
+      start_ms: viewStartMs,
+      end_ms: viewEndMs,
+      audio_regions: analysis.audio_regions.filter(
+        (region) => region.start_ms < viewEndMs && region.end_ms > viewStartMs,
+      ),
+      words: viewSpan <= WORD_DETAIL_MAX_MS
+        ? displayedWords.filter((word) => word.start_ms < viewEndMs && word.end_ms > viewStartMs)
+        : [],
+      phones: viewSpan <= PHONE_DETAIL_MAX_MS && phoneCache?.sourceId === sourceId
+        ? phoneCache.phones.filter((phone) => phone.start_ms < viewEndMs && phone.end_ms > viewStartMs)
+        : [],
+      acoustic_features: viewSpan <= PHONE_DETAIL_MAX_MS && phoneCache?.sourceId === sourceId
+        ? phoneCache.acousticFeatures
+        : [],
+    }
+  }, [analysis, displayedWords, phoneCache, sourceId, viewEndMs, viewSpan, viewStartMs])
+
+  const selectedFeatures = selection?.occurrence_id
+    ? timeline?.acoustic_features.find(
+      (feature) => feature.occurrence_id === selection.occurrence_id,
+    ) ?? null
+    : null
 
   const regionStats = useMemo(() => {
     if (!analysis) return { speech: 0, nonSpeech: 0 }
@@ -97,8 +208,9 @@ export default function App() {
 
   const seek = (timeMs: number) => {
     if (!videoRef.current) return
-    videoRef.current.currentTime = timeMs / 1000
-    setCurrentMs(timeMs)
+    const exactTimeMs = Math.max(0, Math.min(durationMs, timeMs))
+    videoRef.current.currentTime = exactTimeMs / 1000
+    setCurrentMs(exactTimeMs)
   }
 
   const zoom = (factor: number) => {
@@ -109,21 +221,75 @@ export default function App() {
     setViewEndMs(start + nextSpan)
   }
 
-  const handleTimeUpdate = () => {
+  const stopPlaybackClock = () => {
+    if (playbackFrameRef.current === null) return
+    window.cancelAnimationFrame(playbackFrameRef.current)
+    playbackFrameRef.current = null
+  }
+
+  const startPlaybackClock = () => {
+    stopPlaybackClock()
+    const tick = () => {
+      const video = videoRef.current
+      if (!video || video.paused || video.ended) {
+        playbackFrameRef.current = null
+        return
+      }
+      const timeMs = video.currentTime * 1000
+      const activeSelection = selectionRef.current
+      if (
+        loopSelectionRef.current &&
+        activeSelection &&
+        timeMs >= activeSelection.end_ms - PLAYBACK_LOOP_EPSILON_MS
+      ) {
+        video.currentTime = activeSelection.start_ms / 1000
+        setCurrentMs(activeSelection.start_ms)
+      } else {
+        setCurrentMs(timeMs)
+      }
+      playbackFrameRef.current = window.requestAnimationFrame(tick)
+    }
+    playbackFrameRef.current = window.requestAnimationFrame(tick)
+  }
+
+  const syncPlaybackPosition = () => {
     const video = videoRef.current
     if (!video) return
-    const timeMs = video.currentTime * 1000
-    if (loopSelection && selection && timeMs >= selection.end_ms) {
-      video.currentTime = selection.start_ms / 1000
-      void video.play()
-      return
-    }
-    setCurrentMs(timeMs)
+    setCurrentMs(video.currentTime * 1000)
   }
 
   const handleSelection = (nextSelection: TimelineSelection | null) => {
     setSelection(nextSelection)
     setLoopSelection(false)
+    selectionRef.current = nextSelection
+    loopSelectionRef.current = false
+  }
+
+  const previewCandidate = (candidate: UnitCandidate) => {
+    const candidateSource = project?.manifest.sources.find(
+      (item) => item.source_id === candidate.source_id,
+    )
+    const candidateDuration = candidateSource?.duration_ms ?? durationMs
+    const padding = Math.max(500, candidate.source_end_ms - candidate.source_start_ms)
+    setSourceId(candidate.source_id)
+    setViewStartMs(Math.max(0, candidate.source_start_ms - padding))
+    setViewEndMs(Math.min(candidateDuration, candidate.source_end_ms + padding))
+    const nextSelection: TimelineSelection = {
+      occurrence_id: null,
+      kind: "PHONE",
+      label: candidate.matched_ipa.join(" · "),
+      start_ms: candidate.source_start_ms,
+      end_ms: candidate.source_end_ms,
+      pronunciation: candidate.target_ipa.join(" · "),
+      phone_id: null,
+      alignment_method: null,
+      alignment_status: null,
+    }
+    setSelection(nextSelection)
+    setLoopSelection(true)
+    selectionRef.current = nextSelection
+    loopSelectionRef.current = true
+    setPendingCandidate(candidate)
   }
 
   return (
@@ -152,6 +318,21 @@ export default function App() {
               </select>
             </label>
           )}
+          {analysis && analysis.transcript_candidates.length > 1 && (
+            <label>
+              Transcript
+              <select
+                value={transcriptCandidateId}
+                onChange={(event) => setTranscriptCandidateId(event.target.value)}
+              >
+                {analysis.transcript_candidates.map((candidate) => (
+                  <option key={candidate.candidate_id} value={candidate.candidate_id}>
+                    {candidate.model_name} · {candidate.words.length.toLocaleString()} words
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
       </header>
 
@@ -166,7 +347,16 @@ export default function App() {
                 src={mediaUrl(projectId, sourceId)}
                 controls
                 preload="metadata"
-                onTimeUpdate={handleTimeUpdate}
+                onPlay={startPlaybackClock}
+                onPause={() => {
+                  stopPlaybackClock()
+                  syncPlaybackPosition()
+                }}
+                onEnded={() => {
+                  stopPlaybackClock()
+                  syncPlaybackPosition()
+                }}
+                onSeeked={syncPlaybackPosition}
               />
               <div className="transport-readout">
                 <span>{formatTime(currentMs)}</span>
@@ -179,7 +369,7 @@ export default function App() {
               <dl className="stats">
                 <div><dt>Model</dt><dd>{project.manifest.model_name}</dd></div>
                 <div><dt>Backend</dt><dd>{project.manifest.inference_backend} · {project.manifest.inference_device}</dd></div>
-                <div><dt>Words</dt><dd>{analysis.word_count.toLocaleString()}</dd></div>
+                <div><dt>Words</dt><dd>{displayedWords.length.toLocaleString()}</dd></div>
                 <div><dt>Phones</dt><dd>{analysis.phone_count.toLocaleString()}</dd></div>
                 <div><dt>Speech</dt><dd>{formatTime(regionStats.speech)}</dd></div>
                 <div><dt>Non-speech</dt><dd>{formatTime(regionStats.nonSpeech)}</dd></div>
@@ -194,12 +384,32 @@ export default function App() {
                     {selection.pronunciation && <span>발음형 {selection.pronunciation}</span>}
                     {selection.phone_id && <code>{selection.phone_id}</code>}
                     {selection.alignment_method && <span className="badge">{selection.alignment_method}</span>}
+                    {selection.alignment_status && <span className="badge">{selection.alignment_status}</span>}
+                    {selectedFeatures && (
+                      <>
+                        <span>RMS {selectedFeatures.rms_db.toFixed(1)} dB</span>
+                        <span>Peak {selectedFeatures.peak_db.toFixed(1)} dB</span>
+                        <span>
+                          F0 {selectedFeatures.f0_hz === null
+                            ? "UNVOICED"
+                            : `${selectedFeatures.f0_hz.toFixed(1)} Hz`}
+                        </span>
+                        <span>Voiced {(selectedFeatures.voiced_probability * 100).toFixed(0)}%</span>
+                        {selectedFeatures.acoustic_unit_id !== null && (
+                          <span>Unit {selectedFeatures.acoustic_unit_id}</span>
+                        )}
+                      </>
+                    )}
                     <button
                       className={loopSelection ? "active" : ""}
                       onClick={() => {
-                        seek(selection.start_ms)
-                        setLoopSelection((value) => !value)
-                        void videoRef.current?.play()
+                        const nextLoopState = !loopSelectionRef.current
+                        setLoopSelection(nextLoopState)
+                        loopSelectionRef.current = nextLoopState
+                        if (nextLoopState) {
+                          seek(selection.start_ms)
+                          void videoRef.current?.play()
+                        }
                       }}
                     >
                       {loopSelection ? "반복 중지" : "구간 반복"}
@@ -251,9 +461,11 @@ export default function App() {
             </div>
           </section>
 
+          <CollagePanel projectId={projectId} onPreview={previewCandidate} />
+
           <section className="transcript panel">
             <p className="section-label">TRANSCRIPT</p>
-            <p>{analysis.transcript}</p>
+            <p>{transcriptCandidate?.transcript ?? analysis.transcript}</p>
           </section>
         </>
       ) : (

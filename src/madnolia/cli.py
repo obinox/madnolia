@@ -10,8 +10,8 @@ from madnolia.constants import (
     DEFAULT_VIEWER_HOST,
     DEFAULT_VIEWER_PORT,
 )
-from madnolia.pipeline import IngestionPipeline, finalize_project
-from madnolia.types.common import InferenceBackend
+from madnolia.pipeline import IngestionPipeline, finalize_project, realign_project
+from madnolia.types.common import AlignmentMode, InferenceBackend
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,6 +21,9 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--input", type=Path, default=DEFAULT_INPUT_DIR)
     ingest.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_DIR)
     ingest.add_argument("--model", default=DEFAULT_MODEL_NAME)
+    ingest.add_argument("--candidate-model", action="append", default=[])
+    ingest.add_argument("--alignment", choices=list(AlignmentMode), default=AlignmentMode.ESTIMATED)
+    ingest.add_argument("--acoustic-units", action="store_true")
     ingest.add_argument("--backend", choices=list(InferenceBackend), default=InferenceBackend.FASTER_WHISPER)
     ingest.add_argument("--device", default=DEFAULT_INFERENCE_DEVICE)
     ingest.add_argument("--file", type=Path)
@@ -29,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--model", default=DEFAULT_MODEL_NAME)
     finalize.add_argument("--backend", choices=list(InferenceBackend), required=True)
     finalize.add_argument("--device", default=DEFAULT_INFERENCE_DEVICE)
+    finalize.add_argument("--alignment", choices=list(AlignmentMode), default=AlignmentMode.ESTIMATED)
+    realign = subparsers.add_parser("realign", help="기존 프로젝트의 CTC와 음향 특징을 다시 계산합니다.")
+    realign.add_argument("--project", type=Path, required=True)
+    realign.add_argument("--device", default=DEFAULT_INFERENCE_DEVICE)
+    realign.add_argument("--acoustic-units", action="store_true")
     viewer = subparsers.add_parser("viewer", help="분석 결과 검수용 웹 API를 실행합니다.")
     viewer.add_argument("--host", default=DEFAULT_VIEWER_HOST)
     viewer.add_argument("--port", type=int, default=DEFAULT_VIEWER_PORT)
@@ -49,7 +57,16 @@ def main() -> None:
                 args.model,
                 InferenceBackend(args.backend),
                 args.device,
+                AlignmentMode(args.alignment),
             )
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"오류: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
+        print(f"완료: {project_dir}")
+        return
+    if args.command == "realign":
+        try:
+            project_dir = realign_project(args.project, args.device, args.acoustic_units)
         except (OSError, RuntimeError, ValueError) as error:
             print(f"오류: {error}", file=sys.stderr)
             raise SystemExit(1) from error
@@ -60,6 +77,9 @@ def main() -> None:
             args.model,
             InferenceBackend(args.backend),
             args.device,
+            args.candidate_model,
+            AlignmentMode(args.alignment),
+            args.acoustic_units,
         ).run(args.input, args.output, args.file)
     except (OSError, RuntimeError, ValueError) as error:
         print(f"오류: {error}", file=sys.stderr)

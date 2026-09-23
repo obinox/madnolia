@@ -4,6 +4,9 @@ export const PHONE_DETAIL_MAX_MS = 2 * 60 * 1_000
 export const WAVEFORM_BINS = 1_400
 export const TIMELINE_HEIGHT = 190
 export const TIMELINE_PADDING = 12
+export const PLAYBACK_LOOP_EPSILON_MS = 10
+export const MIN_STRETCH_PERCENT = 100
+export const MAX_STRETCH_PERCENT = 150
 
 export const COLORS = {
   background: "#0d1117",
@@ -14,6 +17,8 @@ export const COLORS = {
   word: "#a78bfa",
   phone: "#f59e63",
   phoneAlt: "#f8c267",
+  phoneLowConfidence: "#ff7b72",
+  phoneMissing: "#8b2635",
   playhead: "#ff5470",
   text: "#dfe8f1",
   mutedText: "#8091a3",
