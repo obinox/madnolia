@@ -15,6 +15,7 @@ from madnolia.phonetics import KoreanPhonetics
 from madnolia.types.common import (
     AlignmentMethod,
     AlignmentStatus,
+    AnalysisCheckpoint,
     PhoneOccurrence,
     PhoneTarget,
     TranscriptSentence,
@@ -34,7 +35,9 @@ def estimate_phone_occurrences(
         phones = phonetics.to_phones(pronunciation)
         if not phones:
             continue
-        weights = [1.0 if phone_id.startswith(VOWEL_PHONE_PREFIX) else 0.65 for phone_id, _, _ in phones]
+        weights = [
+            1.0 if phone_id.startswith(VOWEL_PHONE_PREFIX) else 0.65 for phone_id, _, _ in phones
+        ]
         boundaries = _weighted_boundaries(word.start_ms, word.end_ms, weights)
         for phone_index, (phone_id, ipa, grapheme) in enumerate(phones):
             occurrences.append(
@@ -71,11 +74,7 @@ def _weighted_boundaries(start_ms: int, end_ms: int, weights: list[float]) -> li
 
 def _sentence_index(word_index: int, sentences: list[TranscriptSentence]) -> int:
     sentence = next(
-        (
-            item
-            for item in sentences
-            if item.word_start_index <= word_index < item.word_end_index
-        ),
+        (item for item in sentences if item.word_start_index <= word_index < item.word_end_index),
         None,
     )
     return sentence.sentence_index if sentence is not None else -1
@@ -88,6 +87,7 @@ def align_phone_occurrences(
     sentences: list[TranscriptSentence],
     phonetics: KoreanPhonetics,
     aligner: PhonemeCtcAligner,
+    checkpoint: AnalysisCheckpoint | None = None,
 ) -> list[PhoneOccurrence]:
     targets = build_phone_targets(words, sentences, phonetics)
     targets_by_word: dict[int, list[tuple[int, PhoneTarget]]] = {}
@@ -97,6 +97,8 @@ def align_phone_occurrences(
     occurrences: list[PhoneOccurrence | None] = [None] * len(targets)
     duration_ms = _wave_duration_ms(audio_path)
     for word_start, word_end in _alignment_word_chunks(words, sentences):
+        if checkpoint:
+            checkpoint()
         indexed_targets = [
             item
             for word_index in range(word_start, word_end)
@@ -161,7 +163,9 @@ def _target_estimates(
             1.0 if target.phone_id.startswith(VOWEL_PHONE_PREFIX) else 0.65
             for _, target in indexed_targets
         ]
-        boundaries = _weighted_boundaries(words[word_index].start_ms, words[word_index].end_ms, weights)
+        boundaries = _weighted_boundaries(
+            words[word_index].start_ms, words[word_index].end_ms, weights
+        )
         for offset, (target_index, _) in enumerate(indexed_targets):
             estimates[target_index] = (boundaries[offset], boundaries[offset + 1])
     return estimates

@@ -3,13 +3,19 @@ import sys
 from pathlib import Path
 
 from madnolia.constants import (
+    DEFAULT_ANALYSIS_ACOUSTIC_UNITS,
+    DEFAULT_ANALYSIS_ALIGNMENT,
+    DEFAULT_ANALYSIS_BACKEND,
+    DEFAULT_ANALYSIS_DEVICE,
     DEFAULT_INFERENCE_DEVICE,
     DEFAULT_INPUT_DIR,
     DEFAULT_MODEL_NAME,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_VIEWER_HOST,
     DEFAULT_VIEWER_PORT,
+    SUPPORTED_VIDEO_EXTENSIONS,
 )
+from madnolia.models import ensure_analysis_models
 from madnolia.pipeline import IngestionPipeline, finalize_project, realign_project
 from madnolia.types.common import AlignmentMode, InferenceBackend
 
@@ -22,18 +28,34 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_DIR)
     ingest.add_argument("--model", default=DEFAULT_MODEL_NAME)
     ingest.add_argument("--candidate-model", action="append", default=[])
-    ingest.add_argument("--alignment", choices=list(AlignmentMode), default=AlignmentMode.ESTIMATED)
-    ingest.add_argument("--acoustic-units", action="store_true")
-    ingest.add_argument("--backend", choices=list(InferenceBackend), default=InferenceBackend.FASTER_WHISPER)
-    ingest.add_argument("--device", default=DEFAULT_INFERENCE_DEVICE)
+    ingest.add_argument(
+        "--alignment",
+        choices=list(AlignmentMode),
+        default=AlignmentMode(DEFAULT_ANALYSIS_ALIGNMENT),
+    )
+    ingest.add_argument(
+        "--acoustic-units",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_ANALYSIS_ACOUSTIC_UNITS,
+    )
+    ingest.add_argument(
+        "--backend",
+        choices=list(InferenceBackend),
+        default=InferenceBackend(DEFAULT_ANALYSIS_BACKEND),
+    )
+    ingest.add_argument("--device", default=DEFAULT_ANALYSIS_DEVICE)
     ingest.add_argument("--file", type=Path)
     finalize = subparsers.add_parser("finalize", help="기존 분석 JSON에서 프로젝트를 복구합니다.")
     finalize.add_argument("--project", type=Path, required=True)
     finalize.add_argument("--model", default=DEFAULT_MODEL_NAME)
     finalize.add_argument("--backend", choices=list(InferenceBackend), required=True)
     finalize.add_argument("--device", default=DEFAULT_INFERENCE_DEVICE)
-    finalize.add_argument("--alignment", choices=list(AlignmentMode), default=AlignmentMode.ESTIMATED)
-    realign = subparsers.add_parser("realign", help="기존 프로젝트의 CTC와 음향 특징을 다시 계산합니다.")
+    finalize.add_argument(
+        "--alignment", choices=list(AlignmentMode), default=AlignmentMode.ESTIMATED
+    )
+    realign = subparsers.add_parser(
+        "realign", help="기존 프로젝트의 CTC와 음향 특징을 다시 계산합니다."
+    )
     realign.add_argument("--project", type=Path, required=True)
     realign.add_argument("--device", default=DEFAULT_INFERENCE_DEVICE)
     realign.add_argument("--acoustic-units", action="store_true")
@@ -73,18 +95,40 @@ def main() -> None:
         print(f"완료: {project_dir}")
         return
     try:
-        project_dir = IngestionPipeline(
+        selected_files = (
+            [args.file]
+            if args.file
+            else sorted(
+                path
+                for path in args.input.iterdir()
+                if path.is_file() and path.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+            )
+        )
+        if not selected_files:
+            raise ValueError(f"분석할 영상이 없습니다: {args.input}")
+        ensure_analysis_models(
             args.model,
             InferenceBackend(args.backend),
-            args.device,
             args.candidate_model,
             AlignmentMode(args.alignment),
             args.acoustic_units,
-        ).run(args.input, args.output, args.file)
+            on_download=lambda name, percent: print(
+                f"모델 준비: {name} {percent:.1f}%", end="\r", flush=True
+            ),
+        )
+        for selected_file in selected_files:
+            project_dir = IngestionPipeline(
+                args.model,
+                InferenceBackend(args.backend),
+                args.device,
+                args.candidate_model,
+                AlignmentMode(args.alignment),
+                args.acoustic_units,
+            ).run(args.input, args.output, selected_file)
+            print(f"완료: {project_dir}")
     except (OSError, RuntimeError, ValueError) as error:
         print(f"오류: {error}", file=sys.stderr)
         raise SystemExit(1) from error
-    print(f"완료: {project_dir}")
 
 
 if __name__ == "__main__":

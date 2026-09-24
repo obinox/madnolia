@@ -11,7 +11,7 @@ from madnolia.constants import (
     HUBERT_CLUSTER_COUNT,
     HUBERT_OPENVINO_MODEL_PATH,
 )
-from madnolia.types.common import PhoneAcousticFeatures, PhoneOccurrence
+from madnolia.types.common import AnalysisCheckpoint, PhoneAcousticFeatures, PhoneOccurrence
 
 
 class HubertUnitEncoder:
@@ -37,12 +37,15 @@ def extract_phone_embeddings(
     audio_path: Path,
     phones: list[PhoneOccurrence],
     encoder: HubertUnitEncoder,
+    checkpoint: AnalysisCheckpoint | None = None,
 ) -> np.ndarray:
     samples, sample_rate = _read_wave(audio_path)
     embeddings = np.zeros((len(phones), 768), dtype=np.float32)
     ordered = sorted(enumerate(phones), key=lambda item: item[1].start_ms)
     cursor = 0
     while cursor < len(ordered):
+        if checkpoint:
+            checkpoint()
         group = [ordered[cursor]]
         cursor += 1
         while cursor < len(ordered):
@@ -76,6 +79,7 @@ def cluster_acoustic_units(
     embedding_sets: list[np.ndarray],
     cluster_count: int = HUBERT_CLUSTER_COUNT,
     passes: int = 3,
+    checkpoint: AnalysisCheckpoint | None = None,
 ) -> tuple[list[np.ndarray], np.ndarray]:
     if not embedding_sets or sum(len(items) for items in embedding_sets) == 0:
         return [np.empty(0, dtype=np.int32) for _ in embedding_sets], np.empty((0, 768))
@@ -88,7 +92,9 @@ def cluster_acoustic_units(
     totals = np.ones(count, dtype=np.int64)
     for _ in range(passes):
         for start in range(0, len(valid_embeddings), 1024):
-            batch = valid_embeddings[start:start + 1024]
+            if checkpoint:
+                checkpoint()
+            batch = valid_embeddings[start : start + 1024]
             assignments = _nearest_centroids(batch, centroids)
             for unit_id in np.unique(assignments):
                 members = batch[assignments == unit_id]
@@ -102,7 +108,7 @@ def cluster_acoustic_units(
     results: list[np.ndarray] = []
     cursor = 0
     for embeddings in embedding_sets:
-        results.append(all_assignments[cursor:cursor + len(embeddings)])
+        results.append(all_assignments[cursor : cursor + len(embeddings)])
         cursor += len(embeddings)
     return results, centroids
 

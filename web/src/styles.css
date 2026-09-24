@@ -7,19 +7,56 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; min-height: 100vh; background: radial-gradient(circle at 15% -10%, #172b3e 0, transparent 35%), #080b0f; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: #080b0f; }
 button, select, input, textarea { font: inherit; }
 button { cursor: pointer; }
 
 main { width: min(1540px, calc(100% - 40px)); margin: 0 auto; padding: 28px 0 60px; }
-header { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 22px; }
+header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 18px; margin-bottom: 30px; }
 h1 { margin: 0; font-size: clamp(28px, 4vw, 48px); letter-spacing: -0.045em; font-weight: 680; }
 .eyebrow, .section-label { margin: 0 0 7px; color: #65a9ff; font: 700 11px/1.2 ui-monospace, monospace; letter-spacing: .15em; }
 .header-controls { display: flex; gap: 12px; }
+.workflow-nav { display: flex; gap: 8px; flex-wrap: wrap; }
+.workflow-nav a { padding: 10px 14px; border: 1px solid #293542; border-radius: 9px; color: #9aa9b7; background: #10171e; text-decoration: none; font-size: 13px; }
+.workflow-nav a[aria-current="page"] { color: #e5f3ff; border-color: #65a9ff; background: #183149; }
 label { display: grid; gap: 6px; color: #8091a3; font-size: 12px; }
 select { min-width: 270px; padding: 10px 34px 10px 12px; border: 1px solid #293542; border-radius: 8px; color: #dfe8f1; background: #111820; }
 
 .panel { border: 1px solid #202b35; border-radius: 12px; background: rgba(15, 20, 26, .92); box-shadow: 0 18px 50px rgba(0, 0, 0, .24); }
+.analysis-list { display: grid; gap: 9px; margin: 15px 0; max-height: 260px; overflow: auto; }
+.analysis-list label { display: flex; align-items: center; gap: 9px; }
+.workflow-page { display: grid; gap: 18px; max-width: 870px; }
+.page-intro h2 { margin: 0 0 8px; font-size: clamp(27px, 4vw, 38px); }
+.page-intro p:last-child { margin: 0; color: #9aa9b7; }
+.workflow-card, .progress-card { display: grid; gap: 16px; padding: 24px; }
+.workflow-card h3 { margin: 0; font-size: 18px; }
+.workflow-card label { font-size: 13px; }
+.analysis-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.analysis-settings .analysis-checkbox { display: flex; align-items: center; gap: 10px; }
+.analysis-controls { display: flex; flex-wrap: wrap; gap: 10px; }
+.workflow-card select, .workflow-card input:not([type="checkbox"]) { width: 100%; padding: 11px 13px; border: 1px solid #35485b; border-radius: 8px; color: #dfe8f1; background: #111820; }
+.workflow-card button, .progress-card button { justify-self: start; padding: 10px 16px; border: 1px solid #537ea4; border-radius: 8px; color: #e5f3ff; background: #174068; }
+.workflow-card button:disabled { opacity: .5; cursor: default; }
+.workflow-card p, .progress-card p { margin: 0; color: #8fa0af; font-size: 13px; }
+.progress-heading { display: flex; justify-content: space-between; gap: 20px; align-items: center; }
+.progress-heading div { display: grid; gap: 6px; min-width: 0; }
+.progress-heading span { overflow: hidden; color: #9aa9b7; text-overflow: ellipsis; white-space: nowrap; }
+.progress-value { color: #65a9ff; font: 700 28px ui-monospace, monospace; }
+.progress-track { width: 100%; height: 17px; overflow: hidden; border-radius: 99px; background: #233240; }
+.progress-fill { position: relative; display: block; height: 100%; overflow: hidden; border-radius: inherit; background: #65a9ff; }
+.progress-fill.active::after { position: absolute; inset: 0; content: ""; width: 20%; background: #d4e8fa; opacity: .25; animation: progress-shine 1.8s linear infinite; }
+.download-progress { display: grid; gap: 10px; padding-bottom: 16px; border-bottom: 1px solid #293542; }
+@keyframes progress-shine { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .progress-fill.active::after { animation: none; } }
+.selected-count { color: #65a9ff; font-size: 13px; font-weight: 400; }
+.analysis-item { padding: 14px; border: 1px solid #293542; border-radius: 9px; background: #0c1218; cursor: pointer; }
+.analysis-item input { flex: 0 0 auto; accent-color: #65a9ff; }
+.analysis-item span { display: grid; gap: 6px; min-width: 0; }
+.analysis-item strong { overflow-wrap: anywhere; color: #dfe8f1; font-weight: 550; }
+.analysis-item small { color: #8fa0af; }
+.project-list { display: grid; gap: 9px; }
+.project-list button { display: flex; justify-content: space-between; align-items: center; gap: 15px; width: 100%; text-align: left; background: #10202c; }
+.project-list span { flex: 0 0 auto; color: #9cbed9; }
 .workspace-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; }
 .video-card { overflow: hidden; }
 video { display: block; width: 100%; max-height: 62vh; background: #000; }
@@ -99,10 +136,14 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .export-row span { margin-left: auto; color: #8fa0af; font-size: 12px; }
 
 @media (max-width: 900px) {
+  .analysis-settings { grid-template-columns: 1fr; }
   main { width: min(100% - 20px, 760px); padding-top: 18px; }
   header, .timeline-toolbar { align-items: stretch; flex-direction: column; }
   .workspace-grid { grid-template-columns: 1fr; }
   .header-controls { flex-direction: column; }
+  .workflow-nav { width: 100%; }
+  .workflow-nav a { flex: 1 1 auto; text-align: center; }
+  .project-list button { flex-wrap: wrap; }
   select { width: 100%; min-width: 0; }
   .collage-heading, .assembly-toolbar { align-items: stretch; flex-direction: column; }
   .search-row { grid-template-columns: 1fr; }

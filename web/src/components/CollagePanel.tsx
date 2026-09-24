@@ -22,7 +22,7 @@ import { formatTime } from "./Timeline"
 
 const EXPORT_TARGETS: ExportTarget[] = ["WAV", "MP4", "JSON", "EDL", "FCPXML"]
 
-export function CollagePanel({ projectId, onPreview }: CollagePanelProps) {
+export function CollagePanel({ projectId, initialCompositionId, onPreview }: CollagePanelProps) {
   const [targetText, setTargetText] = useState("")
   const [result, setResult] = useState<CandidateSearchResult | null>(null)
   const [selectedPhone, setSelectedPhone] = useState(0)
@@ -56,6 +56,16 @@ export function CollagePanel({ projectId, onPreview }: CollagePanelProps) {
     setMessage("")
     void reloadCompositions(projectId, setCompositions)
   }, [projectId])
+
+  useEffect(() => {
+    const selected = compositions.find((item) => item.composition_id === initialCompositionId)
+    if (!selected) return
+    setCompositionId(selected.composition_id)
+    setName(selected.name)
+    setTargetText(selected.target_text)
+    setCrossfadeMs(selected.crossfade_ms)
+    setSegments(selected.segments)
+  }, [initialCompositionId, compositions])
 
   const visibleCandidates = useMemo(
     () => result?.candidates.filter(
@@ -155,7 +165,7 @@ export function CollagePanel({ projectId, onPreview }: CollagePanelProps) {
     try {
       const body = buildRequest()
       const saved = compositionId
-        ? await updateComposition(projectId, compositionId, body)
+        ? await updateComposition(compositionId, body)
         : await createComposition(projectId, body)
       setCompositionId(saved.composition_id)
       await reloadCompositions(projectId, setCompositions)
@@ -186,7 +196,7 @@ export function CollagePanel({ projectId, onPreview }: CollagePanelProps) {
     }
     setBusy(true)
     try {
-      await exportComposition(projectId, compositionId, target)
+      await exportComposition(compositionId, target)
       setMessage(`${target} 익스포트 완료`)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
@@ -203,9 +213,9 @@ export function CollagePanel({ projectId, onPreview }: CollagePanelProps) {
           <h2>음소 후보 탐색과 배치</h2>
         </div>
         <label>
-          Saved project
+          저장된 콜라주
           <select value={compositionId} onChange={(event) => load(event.target.value)}>
-            <option value="">새 프로젝트</option>
+            <option value="">새 콜라주</option>
             {compositions.map((item) => (
               <option key={item.composition_id} value={item.composition_id}>{item.name}</option>
             ))}
@@ -289,7 +299,7 @@ export function CollagePanel({ projectId, onPreview }: CollagePanelProps) {
               }}
             />
           </label>
-          <button disabled={busy} onClick={() => void save()}>프로젝트 저장</button>
+          <button disabled={busy} onClick={() => void save()}>콜라주 저장</button>
           <button disabled={busy || !segments.length} onClick={() => void playPreview()}>전체 미리 듣기</button>
         </div>
         {previewUrl && <audio className="assembly-preview" src={previewUrl} controls autoPlay aria-label="조립한 음성 미리 듣기" />}

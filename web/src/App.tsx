@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import { fetchProject, fetchProjects, fetchTimeline, fetchWaveform, mediaUrl } from "./api"
+import { fetchCollage, fetchProject, fetchProjects, fetchTimeline, fetchWaveform, mediaUrl } from "./api"
 import {
   PHONE_DETAIL_MAX_MS,
   PLAYBACK_LOOP_EPSILON_MS,
@@ -9,6 +9,8 @@ import {
 } from "./constants"
 import { Timeline, formatTime } from "./components/Timeline"
 import { CollagePanel } from "./components/CollagePanel"
+import { AnalysisPage } from "./components/AnalysisPage"
+import { ProjectsPage } from "./components/ProjectsPage"
 import type {
   ProjectDetail,
   ProjectSummary,
@@ -17,6 +19,7 @@ import type {
   TimelineSlice,
   UnitCandidate,
   WaveformData,
+  WorkflowPage,
 } from "./types"
 
 export default function App() {
@@ -25,7 +28,9 @@ export default function App() {
   const loopSelectionRef = useRef(false)
   const selectionRef = useRef<TimelineSelection | null>(null)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [page, setPage] = useState<WorkflowPage>("analysis")
   const [projectId, setProjectId] = useState("")
+  const [requestedCollageId, setRequestedCollageId] = useState("")
   const [project, setProject] = useState<ProjectDetail | null>(null)
   const [sourceId, setSourceId] = useState("")
   const [transcriptCandidateId, setTranscriptCandidateId] = useState("")
@@ -48,6 +53,38 @@ export default function App() {
   const durationMs = source?.duration_ms ?? 1
   const viewSpan = viewEndMs - viewStartMs
 
+  const openProject = (id: string) => {
+    setRequestedCollageId("")
+    setProjectId(id)
+    window.location.hash = `#/collage/${encodeURIComponent(id)}`
+  }
+
+  useEffect(() => {
+    const syncPage = () => {
+      const hash = window.location.hash
+      if (hash.startsWith("#/collages/")) {
+        const id = decodeURIComponent(hash.slice("#/collages/".length))
+        setRequestedCollageId(id)
+        setProjectId("")
+        setPage("collage")
+        fetchCollage(id).then((collage) => setProjectId(collage.corpus_project_id))
+          .catch((caught: Error) => setError(caught.message))
+      } else if (hash.startsWith("#/collage/")) {
+        setRequestedCollageId("")
+        setProjectId(decodeURIComponent(hash.slice("#/collage/".length)))
+        setPage("collage")
+      } else if (hash === "#/projects") {
+        setPage("projects")
+      } else {
+        setPage("analysis")
+        if (hash !== "#/analysis") window.location.hash = "#/analysis"
+      }
+    }
+    syncPage()
+    window.addEventListener("hashchange", syncPage)
+    return () => window.removeEventListener("hashchange", syncPage)
+  }, [])
+
   useEffect(() => {
     selectionRef.current = selection
   }, [selection])
@@ -64,18 +101,19 @@ export default function App() {
 
   useEffect(() => {
     fetchProjects()
-      .then((items) => {
-        setProjects(items)
-        if (items[0]) setProjectId(items[0].project_id)
-      })
+      .then(setProjects)
       .catch((caught: Error) => setError(caught.message))
   }, [])
 
   useEffect(() => {
     if (!projectId) return
+    let active = true
     setError("")
+    setProject(null)
+    setSourceId("")
     fetchProject(projectId)
       .then((detail) => {
+        if (!active) return
         setProject(detail)
         const firstSource = detail.manifest.sources[0]
         if (firstSource) {
@@ -91,7 +129,8 @@ export default function App() {
           setPhoneCache(null)
         }
       })
-      .catch((caught: Error) => setError(caught.message))
+      .catch((caught: Error) => { if (active) setError(caught.message) })
+    return () => { active = false }
   }, [projectId])
 
   useEffect(() => {
@@ -299,12 +338,19 @@ export default function App() {
           <p className="eyebrow">CONCATENATIVE CORPUS LAB</p>
           <h1>Madnolia Viewer</h1>
         </div>
+        <nav className="workflow-nav" aria-label="작업 단계">
+          <a href="#/analysis" aria-current={page === "analysis" ? "page" : undefined}>1. 영상 분석</a>
+          <a href="#/projects" aria-current={page === "projects" ? "page" : undefined}>2. 프로젝트</a>
+          {projectId && <a href={`#/collage/${encodeURIComponent(projectId)}`}
+            aria-current={page === "collage" ? "page" : undefined}>3. 콜라주</a>}
+        </nav>
+        {page === "collage" && (
         <div className="header-controls">
           <label>
             Project
-            <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+            <select value={projectId} onChange={(event) => openProject(event.target.value)}>
               {projects.map((item) => (
-                <option key={item.project_id} value={item.project_id}>{item.project_id}</option>
+                <option key={item.project_id} value={item.project_id}>{item.name}</option>
               ))}
             </select>
           </label>
@@ -334,11 +380,19 @@ export default function App() {
             </label>
           )}
         </div>
+        )}
       </header>
 
       {error && <div className="error">{error}</div>}
 
-      {project && source && analysis ? (
+      {page === "analysis" ? (
+        <AnalysisPage onGoToProjects={() => { window.location.hash = "#/projects" }} />
+      ) : page === "projects" ? (
+        <ProjectsPage projects={projects}
+          onOpenProject={openProject}
+          onOpenCollage={(id) => { window.location.hash = `#/collages/${encodeURIComponent(id)}` }}
+          onProjectCreated={async () => { setProjects(await fetchProjects()) }} />
+      ) : project && source && analysis ? (
         <>
           <section className="workspace-grid">
             <div className="video-card panel">
@@ -461,7 +515,7 @@ export default function App() {
             </div>
           </section>
 
-          <CollagePanel projectId={projectId} onPreview={previewCandidate} />
+          <CollagePanel projectId={projectId} initialCompositionId={requestedCollageId} onPreview={previewCandidate} />
 
           <section className="transcript panel">
             <p className="section-label">TRANSCRIPT</p>

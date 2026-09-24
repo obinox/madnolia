@@ -1,7 +1,38 @@
-from dataclasses import asdict, dataclass
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
+
+from tqdm.auto import tqdm
+
+from madnolia.constants import (
+    DEFAULT_ANALYSIS_ACOUSTIC_UNITS,
+    DEFAULT_ANALYSIS_ALIGNMENT,
+    DEFAULT_ANALYSIS_BACKEND,
+    DEFAULT_ANALYSIS_DEVICE,
+    DEFAULT_MODEL_NAME,
+)
+
+AnalysisProgressCallback = Callable[[str, float], None]
+AnalysisCheckpoint = Callable[[], None]
+ModelDownloadCallback = Callable[[str, float], None]
+DownloadBytesCallback = Callable[[int, int], None]
+
+
+class ModelDownloadProgressBar(tqdm):
+    def __init__(self, *args: Any, on_progress: DownloadBytesCallback, **kwargs: Any) -> None:
+        self._on_progress = on_progress
+        super().__init__(*args, **kwargs)
+
+    def update(self, n: int = 1) -> bool | None:
+        updated = super().update(n)
+        self._on_progress(self.n, int(self.total or 0))
+        return updated
+
+
+MediaProgressCallback = Callable[[float], None]
+TranscriptionProgressCallback = Callable[[float], None]
 
 
 class AlignmentMethod(StrEnum):
@@ -24,6 +55,20 @@ class InferenceBackend(StrEnum):
 class AlignmentMode(StrEnum):
     ESTIMATED = "estimated"
     CTC = "ctc"
+
+
+class AnalysisJobStatus(StrEnum):
+    RUNNING = "running"
+    PAUSING = "pausing"
+    PAUSED = "paused"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+    COMPLETE = "complete"
+    FAILED = "failed"
+
+
+class AnalysisCancelled(Exception):
+    pass
 
 
 class AudioRegionType(StrEnum):
@@ -62,6 +107,14 @@ class MediaSource:
     video_width: int | None
     video_height: int | None
     video_fps: float | None
+
+
+@dataclass(frozen=True)
+class CachedAudioManifest:
+    source_video_path: str
+    wav_path: str
+    source_size: int
+    source_mtime_ns: int
 
 
 @dataclass(frozen=True)
@@ -178,6 +231,7 @@ class ProjectManifest:
     database_file: str
     candidate_models: list[str]
     acoustic_unit_centroids_file: str | None
+    audio_files: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -188,8 +242,8 @@ class Transcriber(Protocol):
         self,
         audio_path: Path,
         audio_regions: list[AudioRegion] | None = None,
-    ) -> "TranscriptionResult":
-        ...
+        progress_callback: TranscriptionProgressCallback | None = None,
+    ) -> "TranscriptionResult": ...
 
 
 @dataclass(frozen=True)
@@ -203,6 +257,7 @@ class TranscriptionResult:
 @dataclass(frozen=True)
 class ProjectSummary:
     project_id: str
+    name: str
     created_at: str
     model_name: str
     inference_backend: str
@@ -321,3 +376,43 @@ class SaveCompositionRequest:
     target_pronunciation: str
     crossfade_ms: int
     segments: list[TimelineSegment]
+
+
+@dataclass(frozen=True)
+class CreateCollageRequest:
+    project_id: str
+    composition: SaveCompositionRequest
+
+
+@dataclass(frozen=True)
+class CreateProjectRequest:
+    name: str
+    analysis_ids: list[str]
+
+
+@dataclass(frozen=True)
+class CreateAnalysisRequest:
+    filename: str
+    model_name: str = DEFAULT_MODEL_NAME
+    backend: InferenceBackend = field(
+        default_factory=lambda: InferenceBackend(DEFAULT_ANALYSIS_BACKEND)
+    )
+    device: str = DEFAULT_ANALYSIS_DEVICE
+    alignment_mode: AlignmentMode = field(
+        default_factory=lambda: AlignmentMode(DEFAULT_ANALYSIS_ALIGNMENT)
+    )
+    candidate_models: list[str] = field(default_factory=list)
+    acoustic_units: bool = DEFAULT_ANALYSIS_ACOUSTIC_UNITS
+
+
+@dataclass
+class AnalysisJob:
+    job_id: str
+    filename: str
+    status: str
+    percent: float
+    stage: str
+    analysis_id: str | None = None
+    error: str | None = None
+    download_model: str | None = None
+    download_percent: float | None = None

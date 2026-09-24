@@ -3,9 +3,10 @@ import wave
 from dataclasses import asdict, replace
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
-from madnolia import viewer
+from madnolia import compositions, viewer
 from madnolia.compositions import create_composition, get_composition, update_composition
 from madnolia.exporters import export_composition, render_wav
 from madnolia.types.common import (
@@ -16,7 +17,8 @@ from madnolia.types.common import (
 )
 
 
-def test_composition_round_trip_and_wav_export(tmp_path) -> None:
+def test_composition_round_trip_and_wav_export(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(compositions, "DEFAULT_COLLAGES_DIR", tmp_path / "collages")
     project_dir = tmp_path / "proj"
     audio_dir = project_dir / "audio"
     audio_dir.mkdir(parents=True)
@@ -54,6 +56,8 @@ def test_composition_round_trip_and_wav_export(tmp_path) -> None:
     )
     composition = create_composition(project_dir, "proj", request)
     assert get_composition(project_dir, composition.composition_id) == composition
+    with pytest.raises(FileNotFoundError):
+        get_composition(tmp_path / "another-project", composition.composition_id)
     updated = update_composition(
         project_dir,
         composition.composition_id,
@@ -65,13 +69,23 @@ def test_composition_round_trip_and_wav_export(tmp_path) -> None:
         assert audio.getnframes() == 1600
         assert audio.getframerate() == 16000
     stretched = update_composition(
-        project_dir, composition.composition_id,
-        replace(request, segments=[replace(
-            _segment(), stretch_percent=150, timeline_end_ms=150,
-        )]),
+        project_dir,
+        composition.composition_id,
+        replace(
+            request,
+            segments=[
+                replace(
+                    _segment(),
+                    stretch_percent=150,
+                    timeline_end_ms=150,
+                )
+            ],
+        ),
     )
     assert get_composition(project_dir, composition.composition_id) == stretched
-    with wave.open(str(export_composition(project_dir, stretched, ExportTarget.WAV)), "rb") as audio:
+    with wave.open(
+        str(export_composition(project_dir, stretched, ExportTarget.WAV)), "rb"
+    ) as audio:
         stretched_samples = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
         assert audio.getnframes() == 2400
     frequency = np.argmax(np.abs(np.fft.rfft(stretched_samples))) * 16000 / len(stretched_samples)
@@ -96,15 +110,27 @@ def _segment() -> TimelineSegment:
 
 
 def test_preview_matches_export_with_individual_gaps(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(compositions, "DEFAULT_COLLAGES_DIR", tmp_path / "collages")
     project_dir = tmp_path / "proj"
     audio_dir = project_dir / "audio"
     audio_dir.mkdir(parents=True)
     (project_dir / "project.json").write_text(
-        json.dumps({"sources": [{
-            "source_id": "source", "path": "video.mp4", "duration_ms": 1000,
-            "audio_sample_rate": 16000, "audio_channels": 1,
-            "video_width": 1920, "video_height": 1080, "video_fps": 30,
-        }]}),
+        json.dumps(
+            {
+                "sources": [
+                    {
+                        "source_id": "source",
+                        "path": "video.mp4",
+                        "duration_ms": 1000,
+                        "audio_sample_rate": 16000,
+                        "audio_channels": 1,
+                        "video_width": 1920,
+                        "video_height": 1080,
+                        "video_fps": 30,
+                    }
+                ]
+            }
+        ),
         encoding="utf-8",
     )
     with wave.open(str(audio_dir / "source.wav"), "wb") as audio:
@@ -115,24 +141,44 @@ def test_preview_matches_export_with_individual_gaps(tmp_path, monkeypatch) -> N
     segments = [
         replace(_segment(), timeline_end_ms=125, stretch_percent=125),
         replace(
-            _segment(), segment_id="segment_1", timeline_start_ms=200,
-            timeline_end_ms=300, gap_before_ms=75,
+            _segment(),
+            segment_id="segment_1",
+            timeline_start_ms=200,
+            timeline_end_ms=300,
+            gap_before_ms=75,
         ),
         replace(
-            _segment(), segment_id="segment_2", timeline_start_ms=325,
-            timeline_end_ms=425, gap_before_ms=25,
+            _segment(),
+            segment_id="segment_2",
+            timeline_start_ms=325,
+            timeline_end_ms=425,
+            gap_before_ms=25,
         ),
     ]
     request = SaveCompositionRequest(
-        name="test", target_text="abc", target_pronunciation="abc",
-        crossfade_ms=8, segments=segments,
+        name="test",
+        target_text="abc",
+        target_pronunciation="abc",
+        crossfade_ms=8,
+        segments=segments,
     )
     monkeypatch.setattr(viewer, "DEFAULT_OUTPUT_DIR", tmp_path)
     response = TestClient(viewer.app).post(
-        "/api/projects/proj/compositions/preview", json=asdict(request),
+        "/api/projects/proj/compositions/preview",
+        json=asdict(request),
     )
     assert response.status_code == 200
     assert response.headers["content-type"] == "audio/wav"
+    client = TestClient(viewer.app)
+    created = client.post(
+        "/api/collages",
+        json={"project_id": "proj", "composition": asdict(request)},
+    )
+    assert created.status_code == 200
+    collage_id = created.json()["composition_id"]
+    assert client.get(f"/api/collages/{collage_id}").json()["corpus_project_id"] == "proj"
+    assert client.put(f"/api/collages/{collage_id}", json=asdict(request)).status_code == 200
+    assert client.post(f"/api/collages/{collage_id}/export/WAV").status_code == 200
     composition = create_composition(project_dir, "proj", request)
     preview = response.content
     assert preview == render_wav(project_dir, request)
@@ -141,10 +187,10 @@ def test_preview_matches_export_with_individual_gaps(tmp_path, monkeypatch) -> N
     with wave.open(str(wav_path), "rb") as audio:
         samples = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
         assert audio.getnframes() == 425 * 16
-        assert not np.any(samples[125 * 16:200 * 16])
-        assert not np.any(samples[300 * 16:325 * 16])
+        assert not np.any(samples[125 * 16 : 200 * 16])
+        assert not np.any(samples[300 * 16 : 325 * 16])
     assert get_composition(project_dir, composition.composition_id).segments == segments
-    saved_path = project_dir / "compositions" / f"{composition.composition_id}.json"
+    saved_path = tmp_path / "collages" / composition.composition_id / "collage.json"
     saved = json.loads(saved_path.read_text(encoding="utf-8"))
     for segment in saved["segments"]:
         segment.pop("gap_before_ms")

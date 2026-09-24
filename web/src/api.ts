@@ -7,6 +7,10 @@ import type {
   SaveCompositionRequest,
   TimelineSlice,
   WaveformData,
+  AnalysisSummary,
+  AnalysisJob,
+  AnalysisAction,
+  AnalysisSettings,
 } from "./types"
 
 const request = async <T>(
@@ -26,6 +30,28 @@ const request = async <T>(
 }
 
 export const fetchProjects = (): Promise<ProjectSummary[]> => request("/api/projects")
+export const fetchCollages = (): Promise<CompositionProject[]> => request("/api/collages")
+export const fetchCollage = (id: string): Promise<CompositionProject> =>
+  request(`/api/collages/${encodeURIComponent(id)}`)
+
+export const fetchVideos = (): Promise<string[]> => request("/api/videos")
+
+export const fetchAnalyses = (): Promise<AnalysisSummary[]> => request("/api/analyses")
+
+export const startAnalysis = (settings: AnalysisSettings): Promise<{ job_id: string }> =>
+  request("/api/analyses", undefined, { method: "POST", body: JSON.stringify(settings) })
+
+export const fetchAnalysisJob = (jobId: string): Promise<AnalysisJob> =>
+  request(`/api/analysis-jobs/${encodeURIComponent(jobId)}`)
+
+export const controlAnalysisJob = (jobId: string, action: AnalysisAction): Promise<AnalysisJob> =>
+  request(`/api/analysis-jobs/${encodeURIComponent(jobId)}/${action}`, undefined, { method: "POST" })
+
+export const createProject = (name: string, analysisIds: string[]): Promise<{ project_id: string }> =>
+  request("/api/projects", undefined, {
+    method: "POST",
+    body: JSON.stringify({ name, analysis_ids: analysisIds }),
+  })
 
 export const fetchProject = (projectId: string): Promise<ProjectDetail> =>
   request(`/api/projects/${encodeURIComponent(projectId)}`)
@@ -85,17 +111,16 @@ export const createComposition = (
   projectId: string,
   body: SaveCompositionRequest,
 ): Promise<CompositionProject> => request(
-  `/api/projects/${encodeURIComponent(projectId)}/compositions`,
+  "/api/collages",
   undefined,
-  { method: "POST", body: JSON.stringify(body) },
+  { method: "POST", body: JSON.stringify({ project_id: projectId, composition: body }) },
 )
 
 export const updateComposition = (
-  projectId: string,
   compositionId: string,
   body: SaveCompositionRequest,
 ): Promise<CompositionProject> => request(
-  `/api/projects/${encodeURIComponent(projectId)}/compositions/${encodeURIComponent(compositionId)}`,
+  `/api/collages/${encodeURIComponent(compositionId)}`,
   undefined,
   { method: "PUT", body: JSON.stringify(body) },
 )
@@ -119,12 +144,11 @@ export const previewComposition = async (
 }
 
 export const exportComposition = async (
-  projectId: string,
   compositionId: string,
   target: ExportTarget,
 ): Promise<void> => {
   const response = await fetch(
-    `/api/projects/${encodeURIComponent(projectId)}/compositions/${encodeURIComponent(compositionId)}/export/${target}`,
+    `/api/collages/${encodeURIComponent(compositionId)}/export/${target}`,
     { method: "POST" },
   )
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)

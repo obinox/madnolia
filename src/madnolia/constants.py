@@ -2,10 +2,23 @@ from pathlib import Path
 
 DEFAULT_INPUT_DIR = Path("data/input/videos")
 DEFAULT_OUTPUT_DIR = Path("data/output")
+DEFAULT_PROJECTS_DIR = Path("data/projects")
+DEFAULT_COLLAGES_DIR = Path("data/collages")
 DEFAULT_VIEWER_HOST = "127.0.0.1"
 DEFAULT_VIEWER_PORT = 8000
 NLTK_DATA_DIR = Path("data/cache/nltk")
-DEFAULT_MODEL_NAME = "small"
+DEFAULT_MODEL_NAME = "large-v3"
+DEFAULT_ANALYSIS_BACKEND = "openvino"
+DEFAULT_ANALYSIS_DEVICE = "GPU"
+DEFAULT_ANALYSIS_ALIGNMENT = "ctc"
+DEFAULT_ANALYSIS_ACOUSTIC_UNITS = True
+ANALYSIS_MODEL_OPTIONS = ("large-v3", "large-v3-turbo", "small")
+ANALYSIS_PROGRESS_MEDIA = 5
+ANALYSIS_PROGRESS_AUDIO = 15
+ANALYSIS_PROGRESS_TRANSCRIPTION_END = 85
+ANALYSIS_PROGRESS_ALIGNMENT = 90
+ANALYSIS_PROGRESS_FEATURES = 95
+ANALYSIS_PROGRESS_STORAGE = 99
 DEFAULT_INFERENCE_DEVICE = "CPU"
 OPENVINO_AUDIO_CHUNK_SECONDS = 30
 OPENVINO_AUDIO_OVERLAP_SECONDS = 5
@@ -30,10 +43,19 @@ OPENVINO_MODEL_REPOSITORIES = {
     "large-v3-turbo": "OpenVINO/whisper-large-v3-turbo-int8-ov",
     "small": "OpenVINO/whisper-small-int8-ov",
 }
+FASTER_WHISPER_MODEL_REPOSITORIES = {
+    "tiny": "Systran/faster-whisper-tiny",
+    "base": "Systran/faster-whisper-base",
+    "large-v3": "Systran/faster-whisper-large-v3",
+    "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+    "small": "Systran/faster-whisper-small",
+    "medium": "Systran/faster-whisper-medium",
+}
 MODEL_CACHE_DIR = Path("data/cache/models")
 AUDIO_CACHE_DIR = Path("data/cache/audio")
 AUDIO_CACHE_VERSION = "pcm_s16le_mono_16000_v1"
 CTC_MODEL_REPOSITORY = "facebook/wav2vec2-xlsr-53-espeak-cv-ft"
+HUBERT_MODEL_REPOSITORY = "facebook/hubert-base-ls960"
 CTC_MODEL_DIR = MODEL_CACHE_DIR / "huggingface" / "wav2vec2-xlsr-53-espeak-cv-ft"
 CTC_OPENVINO_MODEL_PATH = (
     MODEL_CACHE_DIR / "openvino" / "wav2vec2-xlsr-53-espeak-cv-ft" / "openvino_model.xml"
@@ -51,7 +73,7 @@ ACOUSTIC_MODEL_INPUT_SAMPLES = 248_000
 SUPPORTED_VIDEO_EXTENSIONS = frozenset(
     {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".mts", ".m2ts"}
 )
-SCHEMA_VERSION = "0.2.0"
+SCHEMA_VERSION = "0.3.0"
 
 HANGUL_BASE = 0xAC00
 HANGUL_END = 0xD7A3

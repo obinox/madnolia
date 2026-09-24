@@ -22,6 +22,7 @@ from madnolia.constants import (
 from madnolia.types.common import (
     AudioRegion,
     AudioRegionType,
+    TranscriptionProgressCallback,
     TranscriptionResult,
     TranscriptWord,
 )
@@ -29,12 +30,17 @@ from madnolia.types.common import (
 
 class LocalWhisperTranscriber:
     def __init__(self, model_name: str) -> None:
-        self._model = WhisperModel(model_name, device="cpu", compute_type="int8")
+        local = MODEL_CACHE_DIR / "faster-whisper" / model_name
+        self._model = WhisperModel(
+            str(local) if (local / "model.bin").is_file() else model_name,
+            device="cpu", compute_type="int8",
+        )
 
     def transcribe(
         self,
         audio_path: Path,
         audio_regions: list[AudioRegion] | None = None,
+        progress_callback: TranscriptionProgressCallback | None = None,
     ) -> TranscriptionResult:
         segments, info = self._model.transcribe(
             str(audio_path),
@@ -46,7 +52,10 @@ class LocalWhisperTranscriber:
         words: list[TranscriptWord] = []
         speech_regions: list[AudioRegion] = []
         transcript_parts: list[str] = []
+        duration_ms = _audio_duration_ms(audio_path)
         for segment in segments:
+            if progress_callback:
+                progress_callback(min(1.0, segment.end * 1000 / max(duration_ms, 1)))
             transcript_parts.append(segment.text.strip())
             speech_regions.append(
                 AudioRegion(
@@ -67,7 +76,8 @@ class LocalWhisperTranscriber:
                         confidence=max(0.0, min(1.0, word.probability)),
                     )
                 )
-        duration_ms = _audio_duration_ms(audio_path)
+        if progress_callback:
+            progress_callback(1.0)
         return TranscriptionResult(
             transcript=" ".join(part for part in transcript_parts if part),
             language_probability=info.language_probability,
@@ -97,12 +107,15 @@ class OpenVINOWhisperTranscriber:
         self,
         audio_path: Path,
         audio_regions: list[AudioRegion] | None = None,
+        progress_callback: TranscriptionProgressCallback | None = None,
     ) -> TranscriptionResult:
         words: list[TranscriptWord] = []
         duration_ms = _audio_duration_ms(audio_path)
         if audio_regions is None:
-            audio_regions = _detect_audio_regions(audio_path, duration_ms)
-        speech_regions = [region for region in audio_regions if region.region_type == AudioRegionType.SPEECH]
+            audio_regions = _detect_audio_regions(audio_path, duration_ms, progress_callback)
+        speech_regions = [
+            region for region in audio_regions if region.region_type == AudioRegionType.SPEECH
+        ]
         windows = list(_speech_windows(speech_regions))
         for chunk_index, (offset_ms, window_end_ms, keep_start_ms, keep_end_ms) in enumerate(
             windows, start=1
@@ -149,6 +162,10 @@ class OpenVINOWhisperTranscriber:
                         confidence=None,
                     )
                 )
+            if progress_callback:
+                progress_callback(chunk_index / len(windows))
+        if progress_callback:
+            progress_callback(1.0)
         return TranscriptionResult(
             transcript=" ".join(word.text for word in words),
             language_probability=None,
@@ -186,7 +203,11 @@ def _audio_duration_ms(audio_path: Path) -> int:
         return round(audio.getnframes() * 1000 / audio.getframerate())
 
 
-def _detect_audio_regions(audio_path: Path, duration_ms: int) -> list[AudioRegion]:
+def _detect_audio_regions(
+    audio_path: Path,
+    duration_ms: int,
+    progress_callback: TranscriptionProgressCallback | None = None,
+) -> list[AudioRegion]:
     speech_regions: list[AudioRegion] = []
     options = VadOptions(
         threshold=VAD_THRESHOLD,
@@ -195,6 +216,8 @@ def _detect_audio_regions(audio_path: Path, duration_ms: int) -> list[AudioRegio
         speech_pad_ms=VAD_SPEECH_PAD_MS,
     )
     for offset_ms, samples in _read_audio_chunks(audio_path):
+        if progress_callback:
+            progress_callback(0.0)
         for timestamp in get_speech_timestamps(samples, options):
             speech_regions.append(
                 AudioRegion(

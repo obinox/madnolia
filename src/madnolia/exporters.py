@@ -8,7 +8,8 @@ from xml.etree import ElementTree
 
 import numpy as np
 
-from madnolia.compositions import save_composition
+from madnolia.compositions import collage_dir, save_composition
+from madnolia.projects import audio_path
 from madnolia.time_stretch import stretch_audio
 from madnolia.types.common import (
     CompositionProject,
@@ -24,7 +25,9 @@ def export_composition(
     composition: CompositionProject,
     target: ExportTarget,
 ) -> Path:
-    export_dir = project_dir / "exports" / composition.composition_id
+    if composition.corpus_project_id != project_dir.name:
+        raise ValueError("콜라주가 연결된 프로젝트와 다릅니다.")
+    export_dir = collage_dir(composition.composition_id) / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
     if target == ExportTarget.JSON:
         source = save_composition(project_dir, composition)
@@ -58,7 +61,9 @@ def _export_wav(project_dir: Path, composition: CompositionProject, destination:
     destination.write_bytes(render_wav(project_dir, composition))
 
 
-def render_wav(project_dir: Path, composition: CompositionProject | SaveCompositionRequest) -> bytes:
+def render_wav(
+    project_dir: Path, composition: CompositionProject | SaveCompositionRequest
+) -> bytes:
     samples = _compose_audio(project_dir, composition)
     buffer = BytesIO()
     with wave.open(buffer, "wb") as output:
@@ -70,7 +75,8 @@ def render_wav(project_dir: Path, composition: CompositionProject | SaveComposit
 
 
 def _compose_audio(
-    project_dir: Path, composition: CompositionProject | SaveCompositionRequest,
+    project_dir: Path,
+    composition: CompositionProject | SaveCompositionRequest,
 ) -> np.ndarray:
     if not composition.segments:
         return np.zeros(0, dtype=np.float32)
@@ -80,7 +86,7 @@ def _compose_audio(
     fade_samples = round(composition.crossfade_ms * 16)
     for segment in composition.segments:
         clip = _read_audio_clip(
-            project_dir / "audio" / f"{segment.source_id}.wav",
+            audio_path(project_dir, segment.source_id),
             segment.source_start_ms,
             segment.source_end_ms,
         )
@@ -98,8 +104,8 @@ def _compose_audio(
             envelope[-fade:] = np.linspace(1, 0, fade, endpoint=False)
         start = round(segment.timeline_start_ms * 16)
         end = min(len(output), start + len(clip))
-        active = envelope[:end - start]
-        output[start:end] += clip[:end - start] * active
+        active = envelope[: end - start]
+        output[start:end] += clip[: end - start] * active
         weights[start:end] += active
     active = weights > 1
     output[active] /= weights[active]
@@ -161,9 +167,7 @@ def _fcpxml(
             hasVideo="1",
             hasAudio="1",
         )
-    source_refs = {
-        source_id: f"r{index + 1}" for index, source_id in enumerate(sources, start=1)
-    }
+    source_refs = {source_id: f"r{index + 1}" for index, source_id in enumerate(sources, start=1)}
     library = ElementTree.SubElement(root, "library")
     event = ElementTree.SubElement(library, "event", name="Madnolia")
     project = ElementTree.SubElement(event, "project", name=composition.name)
@@ -218,8 +222,7 @@ def _export_mp4(
                 frame_index = round(
                     (
                         segment.timeline_start_ms
-                        + (timestamp_ms - segment.source_start_ms)
-                        * segment.stretch_percent / 100
+                        + (timestamp_ms - segment.source_start_ms) * segment.stretch_percent / 100
                     )
                     * fps
                     / 1000
@@ -234,10 +237,12 @@ def _export_mp4(
                     output.mux(packet)
     for packet in video_stream.encode():
         output.mux(packet)
-    audio = np.clip(_compose_audio(project_dir, composition) * 32767, -32768, 32767).astype(np.int16)
+    audio = np.clip(_compose_audio(project_dir, composition) * 32767, -32768, 32767).astype(
+        np.int16
+    )
     audio_pts = 0
     for start in range(0, len(audio), 1024):
-        chunk = audio[start:start + 1024]
+        chunk = audio[start : start + 1024]
         frame = av.AudioFrame.from_ndarray(chunk[np.newaxis, :], format="s16", layout="mono")
         frame.sample_rate = 16000
         frame.pts = audio_pts

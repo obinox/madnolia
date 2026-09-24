@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from madnolia import media
@@ -15,14 +16,19 @@ def test_extract_audio_reuses_cache(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(media, "AUDIO_CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(media, "_extract_audio_uncached", fake_extract)
 
-    first = tmp_path / "first" / "audio.wav"
-    second = tmp_path / "second" / "audio.wav"
-    media.extract_audio(source, first)
-    media.extract_audio(source, second)
+    progress = []
+    first = media.get_cached_audio(source)
+    second = media.get_cached_audio(source, progress.append)
 
     assert calls == [source]
+    assert first == second
     assert first.read_bytes() == b"wav"
-    assert second.read_bytes() == b"wav"
+    assert len(list((tmp_path / "cache").glob("*.wav"))) == 1
+    assert not list(tmp_path.glob("**/audio.wav"))
+    assert progress == [1.0]
+    recorded = json.loads(first.with_suffix(".json").read_text(encoding="utf-8"))
+    assert recorded["source_video_path"] == str(source.resolve())
+    assert recorded["wav_path"] == str(first.resolve())
 
 
 def test_extract_audio_invalidates_cache_when_source_changes(tmp_path, monkeypatch) -> None:
@@ -37,8 +43,10 @@ def test_extract_audio_invalidates_cache_when_source_changes(tmp_path, monkeypat
     monkeypatch.setattr(media, "AUDIO_CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(media, "_extract_audio_uncached", fake_extract)
 
-    media.extract_audio(source, tmp_path / "first" / "audio.wav")
+    first = media.get_cached_audio(source)
     source.write_bytes(b"changed video")
-    media.extract_audio(source, tmp_path / "second" / "audio.wav")
+    second = media.get_cached_audio(source)
 
     assert calls == [source, source]
+    assert first != second
+    assert first.is_file() and second.is_file()

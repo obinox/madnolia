@@ -8,6 +8,7 @@ export type ExportTarget = "JSON" | "WAV" | "MP4" | "EDL" | "FCPXML"
 
 export interface ProjectSummary {
   project_id: string
+  name: string
   created_at: string
   model_name: string
   inference_backend: string
@@ -30,17 +31,14 @@ export interface MediaSource {
 
 export interface ProjectManifest {
   project_id: string
-  schema_version: string
+  name: string
+  analysis_ids: string[]
+  source_analyses: Record<string, string>
   created_at: string
   model_name: string
   inference_backend: string
   inference_device: string
-  language: string
   sources: MediaSource[]
-  analysis_files: string[]
-  database_file: string
-  candidate_models?: string[]
-  acoustic_unit_centroids_file?: string | null
 }
 
 export interface AudioRegion {
@@ -233,5 +231,50 @@ export interface SaveCompositionRequest {
 
 export interface CollagePanelProps {
   projectId: string
+  initialCompositionId?: string
   onPreview: (candidate: UnitCandidate) => void
+}
+
+export interface AnalysisSummary {
+  analysis_id: string
+  created_at: string
+  model_name: string
+  source: MediaSource
+}
+
+export interface AnalysisJob {
+  job_id: string
+  status: "running" | "pausing" | "paused" | "stopping" | "stopped" | "complete" | "failed"
+  filename: string
+  percent: number
+  stage: string
+  analysis_id: string | null
+  error: string | null
+  download_model: string | null
+  download_percent: number | null
+}
+
+export interface AnalysisSettings {
+  filename: string
+  model_name: string
+  backend: "openvino" | "faster-whisper"
+  device: "GPU" | "CPU"
+  alignment_mode: "ctc" | "estimated"
+  candidate_models: string[]
+  acoustic_units: boolean
+}
+
+export type AnalysisAction = "pause" | "resume" | "stop"
+
+export type WorkflowPage = "analysis" | "projects" | "collage"
+
+export interface AnalysisPageProps {
+  onGoToProjects: () => void
+}
+
+export interface ProjectsPageProps {
+  projects: ProjectSummary[]
+  onOpenProject: (projectId: string) => void
+  onOpenCollage: (collageId: string) => void
+  onProjectCreated: () => Promise<void>
 }
