@@ -30,6 +30,25 @@ cd ..
 madnolia viewer
 ```
 
+브라우저에서 `http://127.0.0.1:8000`을 엽니다. 영상과 waveform, 발화·비발화 구간, 단어, IPA phone을 동기화해서 확인할 수 있습니다.
+
+`AUDIO COLLAGE`에서 문장을 검색하면 입력 음소 범위를 덮는 긴 연속 후보와 짧은 후보가 함께 표시됩니다. 정확한 음소가 코퍼스에 없으면 빨간색 `유사` 후보로 구분됩니다. 후보를 직접 배치한 뒤 조립 프로젝트로 저장하고 WAV, MP4, JSON, CMX 3600 EDL, FCPXML로 내보낼 수 있습니다.
+
+원본 영상은 `data/input/videos/`에 두고, 분석이 기록하는 원본 경로로 참조합니다. 영상에서 추출한 WAV는 `data/cache/audio/<캐시키>.wav`에 공유 저장되며 같은 이름의 JSON에 원본 영상 경로와 WAV 경로가 기록됩니다. 분석은 `data/output/<analysis-id>`, 분석을 모은 프로젝트는 `data/projects/<project-id>`, 프로젝트 하나를 참조하는 콜라주는 `data/collages/<collage-id>`에 생성됩니다.
+
+- `project.json`: 분석 정보와 공유 오디오 경로
+- `corpus.sqlite3`: phone 검색용 코퍼스
+- `project.json`의 `audio_files`: 공유 캐시 오디오의 경로
+- `data/cache/audio/*.wav`: 영상에서 추출한 16kHz mono PCM 오디오
+- `analysis/*.json`: 영상별 전사와 IPA phone 구간
+- `data/collages/<collage-id>/collage.json`: 연결된 프로젝트 ID와 배치한 오디오 조각
+- `data/collages/<collage-id>/exports/*`: 렌더링 및 NLE 익스포트 결과
+
+Silero VAD가 원본 시간축을 `SPEECH`와 `NON_SPEECH` 구간으로 나눕니다. 비발화 구간은 프로젝트에 보존되지만 Whisper 전사와 IPA 인덱싱에서는 제외됩니다.
+
+`--alignment ctc`를 사용하면 Wav2Vec2 CTC가 IPA phone 경계를 정렬하며 결과는 `ALIGNED`, `LOW_CONFIDENCE`, `MISSING`으로 구분됩니다. HuBERT 음향 단위와 F0, RMS, peak, voiced probability도 phone별로 함께 저장됩니다.
+
+
 ## CLI로 실행
 
 영상을 `data/input/videos`에 넣고 실행합니다.
@@ -81,31 +100,4 @@ madnolia ingest --backend openvino --device GPU --model large-v3-turbo --candida
 madnolia finalize --project "data/output/<project-id>" --backend openvino --device GPU
 ```
 
-## 검수 뷰어
 
-```powershell
-python -m pip install -e ".[web]"
-cd web
-npm install
-npm run build
-cd ..
-madnolia viewer
-```
-
-브라우저에서 `http://127.0.0.1:8000`을 엽니다. 영상과 waveform, 발화·비발화 구간, 단어, IPA phone을 동기화해서 확인할 수 있습니다.
-
-`AUDIO COLLAGE`에서 문장을 검색하면 입력 음소 범위를 덮는 긴 연속 후보와 짧은 후보가 함께 표시됩니다. 정확한 음소가 코퍼스에 없으면 빨간색 `유사` 후보로 구분됩니다. 후보를 직접 배치한 뒤 조립 프로젝트로 저장하고 WAV, MP4, JSON, CMX 3600 EDL, FCPXML로 내보낼 수 있습니다.
-
-원본 영상은 `data/input/videos/`에 두고, 분석이 기록하는 원본 경로로 참조합니다. 영상에서 추출한 WAV는 `data/cache/audio/<캐시키>.wav`에 공유 저장되며 같은 이름의 JSON에 원본 영상 경로와 WAV 경로가 기록됩니다. 분석은 `data/output/<analysis-id>`, 분석을 모은 프로젝트는 `data/projects/<project-id>`, 프로젝트 하나를 참조하는 콜라주는 `data/collages/<collage-id>`에 생성됩니다.
-
-- `project.json`: 분석 정보와 공유 오디오 경로
-- `corpus.sqlite3`: phone 검색용 코퍼스
-- `project.json`의 `audio_files`: 공유 캐시 오디오의 경로
-- `data/cache/audio/*.wav`: 영상에서 추출한 16kHz mono PCM 오디오
-- `analysis/*.json`: 영상별 전사와 IPA phone 구간
-- `data/collages/<collage-id>/collage.json`: 연결된 프로젝트 ID와 배치한 오디오 조각
-- `data/collages/<collage-id>/exports/*`: 렌더링 및 NLE 익스포트 결과
-
-Silero VAD가 원본 시간축을 `SPEECH`와 `NON_SPEECH` 구간으로 나눕니다. 비발화 구간은 프로젝트에 보존되지만 Whisper 전사와 IPA 인덱싱에서는 제외됩니다.
-
-`--alignment ctc`를 사용하면 Wav2Vec2 CTC가 IPA phone 경계를 정렬하며 결과는 `ALIGNED`, `LOW_CONFIDENCE`, `MISSING`으로 구분됩니다. HuBERT 음향 단위와 F0, RMS, peak, voiced probability도 phone별로 함께 저장됩니다.
