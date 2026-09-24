@@ -19,7 +19,18 @@ python -m pip install -e ".[dev,web,intel,alignment]"
 
 FFmpeg 실행 파일은 필요하지 않습니다. PyAV가 영상의 오디오를 직접 디코딩합니다. Whisper 모델과 G2P 데이터는 첫 실행 시 다운로드되며 API 요금은 발생하지 않습니다.
 
-## 실행
+## 웹 실행
+
+```powershell
+python -m pip install -e ".[web]"
+cd web
+npm install
+npm run build
+cd ..
+madnolia viewer
+```
+
+## CLI로 실행
 
 영상을 `data/input/videos`에 넣고 실행합니다.
 
