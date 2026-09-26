@@ -16,7 +16,7 @@ for package in ("openvino", "openvino_genai", "openvino_tokenizers", "ctranslate
     hiddenimports += package_hiddenimports
 
 cuda_packages = Path(get_paths()["purelib"]) / "nvidia"
-for component in ("cublas", "cudnn"):
+for component in ("cublas", "cudnn", "cuda_runtime"):
     for library in (cuda_packages / component / "bin").glob("*.dll"):
         if library.name != "nvblas64_12.dll":
             binaries.append((str(library), "cuda"))

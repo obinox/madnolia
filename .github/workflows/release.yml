@@ -48,6 +48,7 @@ jobs:
           & dist/Madnolia/Madnolia.exe --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'Portable executable did not start' }
           if (-not (Test-Path dist/Madnolia/_internal/cuda/cublas64_12.dll)) { throw 'CUDA libraries are missing' }
+          if (-not (Test-Path dist/Madnolia/_internal/cuda/cudart64_12.dll)) { throw 'CUDA runtime is missing' }
           $workerResult = & dist/Madnolia/Madnolia.exe --openvino-worker data/nonexistent CPU
           if ($workerResult -match 'Cannot load library.*openvino_tokenizers') { throw 'OpenVINO Tokenizers DLL is missing' }
       - name: Prepare portable ZIP
