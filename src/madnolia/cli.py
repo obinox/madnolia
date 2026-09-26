@@ -3,18 +3,19 @@ import sys
 from pathlib import Path
 
 from madnolia.constants import (
+    BACKEND_DEFAULT_DEVICES,
     DEFAULT_ANALYSIS_ACOUSTIC_UNITS,
     DEFAULT_ANALYSIS_ALIGNMENT,
-    DEFAULT_ANALYSIS_BACKEND,
-    DEFAULT_ANALYSIS_DEVICE,
     DEFAULT_INFERENCE_DEVICE,
     DEFAULT_INPUT_DIR,
     DEFAULT_MODEL_NAME,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_VIEWER_HOST,
     DEFAULT_VIEWER_PORT,
+    DEVICE_DEFAULT_BACKENDS,
     SUPPORTED_VIDEO_EXTENSIONS,
 )
+from madnolia.hardware import detect_analysis_hardware
 from madnolia.models import ensure_analysis_models
 from madnolia.pipeline import IngestionPipeline, finalize_project, realign_project
 from madnolia.types.common import AlignmentMode, InferenceBackend
@@ -41,9 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument(
         "--backend",
         choices=list(InferenceBackend),
-        default=InferenceBackend(DEFAULT_ANALYSIS_BACKEND),
+        default=None,
     )
-    ingest.add_argument("--device", default=DEFAULT_ANALYSIS_DEVICE)
+    ingest.add_argument("--device", default=None)
     ingest.add_argument("--file", type=Path)
     finalize = subparsers.add_parser("finalize", help="기존 분석 JSON에서 프로젝트를 복구합니다.")
     finalize.add_argument("--project", type=Path, required=True)
@@ -94,6 +95,18 @@ def main() -> None:
             raise SystemExit(1) from error
         print(f"완료: {project_dir}")
         return
+    detected = detect_analysis_hardware() if args.backend is None or args.device is None else None
+    if args.backend is None:
+        selected_device = args.device.upper() if args.device else detected.device
+        if selected_device not in DEVICE_DEFAULT_BACKENDS:
+            raise SystemExit(f"지원하지 않는 장치: {selected_device}")
+        args.backend = InferenceBackend(DEVICE_DEFAULT_BACKENDS[selected_device])
+    if args.device is None:
+        args.device = (
+            detected.device
+            if detected.backend == args.backend
+            else BACKEND_DEFAULT_DEVICES[args.backend]
+        )
     try:
         selected_files = (
             [args.file]

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 
-import { controlAnalysisJob, fetchAnalysisJob, fetchVideos, startAnalysis } from "../api"
+import { controlAnalysisJob, fetchAnalysisHardware, fetchAnalysisJob, fetchVideos, startAnalysis } from "../api"
 import {
   ANALYSIS_MODEL_OPTIONS,
   ANALYSIS_DEVICE_OPTIONS,
@@ -15,8 +15,10 @@ import {
   DEFAULT_ANALYSIS_BACKEND,
   DEFAULT_ANALYSIS_DEVICE,
   DEFAULT_ANALYSIS_MODEL,
+  FALLBACK_ANALYSIS_BACKEND,
+  FALLBACK_ANALYSIS_DEVICE,
 } from "../constants"
-import type { AnalysisAction, AnalysisJob, AnalysisPageProps, AnalysisSettings } from "../types"
+import type { AnalysisAction, AnalysisJob, AnalysisPageProps, AnalysisSettings, DetectedAnalysisHardware } from "../types"
 
 export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
   const [videos, setVideos] = useState<string[]>([])
@@ -32,6 +34,24 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
   const displayedPercentRef = useRef(0)
   const [message, setMessage] = useState("")
   const [busy, setBusy] = useState(false)
+  const [hardware, setHardware] = useState<DetectedAnalysisHardware | null>(null)
+  const deviceChangedRef = useRef(false)
+
+  useEffect(() => {
+    fetchAnalysisHardware()
+      .then((detected) => {
+        setHardware(detected)
+        if (!deviceChangedRef.current && !window.localStorage.getItem(ANALYSIS_JOB_STORAGE_KEY)) {
+          setSettings((current) => ({ ...current, backend: detected.backend, device: detected.device }))
+        }
+      })
+      .catch(() => {
+        setHardware({ backend: FALLBACK_ANALYSIS_BACKEND, device: FALLBACK_ANALYSIS_DEVICE, gpu_vendor: null })
+        if (!deviceChangedRef.current) {
+          setSettings((current) => ({ ...current, backend: FALLBACK_ANALYSIS_BACKEND, device: FALLBACK_ANALYSIS_DEVICE }))
+        }
+      })
+  }, [])
 
   useEffect(() => {
     fetchVideos()
@@ -153,10 +173,13 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
             </select>
           </label>
           <label>실행 방식
-            <select value={settings.backend} disabled={!!jobId} onChange={(event) => setSettings({
-              ...settings, backend: event.target.value as AnalysisSettings["backend"],
-              device: ANALYSIS_DEVICE_OPTIONS[event.target.value as AnalysisSettings["backend"]][0],
-            })}>
+            <select value={settings.backend} disabled={!!jobId} onChange={(event) => {
+              deviceChangedRef.current = true
+              setSettings({
+                ...settings, backend: event.target.value as AnalysisSettings["backend"],
+                device: ANALYSIS_DEVICE_OPTIONS[event.target.value as AnalysisSettings["backend"]][0],
+              })
+            }}>
               <option value="openvino">Intel GPU (OpenVINO)</option>
               <option value="faster-whisper">NVIDIA CUDA / CPU (faster-whisper)</option>
               <option value="vulkan">AMD GPU (Vulkan)</option>
@@ -164,7 +187,10 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
           </label>
           <label>실행 장치
             <select value={settings.device} disabled={!!jobId || settings.backend === "vulkan"}
-              onChange={(event) => setSettings({ ...settings, device: event.target.value as AnalysisSettings["device"] })}>
+              onChange={(event) => {
+                deviceChangedRef.current = true
+                setSettings({ ...settings, device: event.target.value as AnalysisSettings["device"] })
+              }}>
               {ANALYSIS_DEVICE_OPTIONS[settings.backend].map((device) => (
                 <option key={device} value={device}>{device}</option>
               ))}
@@ -193,8 +219,9 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
             음향 단위 분석 (HuBERT)
           </label>
         </div>
-        <p>기본값은 전사·발음 경계·음향 특징의 정확도를 우선합니다. GPU와 CTC·HuBERT 모델이 필요합니다.</p>
-        <button disabled={!filename || !!jobId || busy} onClick={() => void analyze()}>
+        {hardware && <p>자동 감지: {hardware.gpu_vendor ?? "GPU 없음"} · {hardware.device}. 필요하면 실행 방식을 변경하세요.</p>}
+        <p>전사는 선택한 장치에서 실행하며, NVIDIA/AMD에서는 CTC·HuBERT를 CPU에서 실행합니다.</p>
+        <button disabled={!filename || !hardware || !!jobId || busy} onClick={() => void analyze()}>
           {jobId ? "분석 진행 중" : "분석 시작"}
         </button>
       </div>

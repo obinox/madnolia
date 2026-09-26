@@ -54,6 +54,13 @@ class InferenceBackend(StrEnum):
     VULKAN = "vulkan"
 
 
+@dataclass(frozen=True)
+class DetectedAnalysisHardware:
+    backend: InferenceBackend
+    device: str
+    gpu_vendor: str | None
+
+
 class AlignmentMode(StrEnum):
     ESTIMATED = "estimated"
     CTC = "ctc"

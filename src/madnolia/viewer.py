@@ -37,6 +37,7 @@ from madnolia.constants import (
     VULKAN_DEVICE,
 )
 from madnolia.exporters import export_composition, render_wav
+from madnolia.hardware import detect_analysis_hardware
 from madnolia.models import ensure_analysis_models
 from madnolia.pipeline import IngestionPipeline
 from madnolia.projects import (
@@ -59,6 +60,7 @@ from madnolia.types.common import (
     CreateAnalysisRequest,
     CreateCollageRequest,
     CreateProjectRequest,
+    DetectedAnalysisHardware,
     ExportTarget,
     InferenceBackend,
     ProjectSummary,
@@ -87,6 +89,11 @@ app.add_middleware(
 
 _analysis_jobs: dict[str, AnalysisJob] = {}
 _analysis_lock = Condition()
+
+
+@app.get("/api/analysis-hardware")
+def get_analysis_hardware() -> DetectedAnalysisHardware:
+    return detect_analysis_hardware()
 
 
 @app.get("/api/videos")

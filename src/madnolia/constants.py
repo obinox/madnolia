@@ -16,6 +16,27 @@ DEFAULT_ANALYSIS_BACKEND = "openvino"
 DEFAULT_ANALYSIS_DEVICE = "GPU"
 CUDA_DEVICE = "CUDA"
 VULKAN_DEVICE = "VULKAN"
+CPU_DEVICE = "CPU"
+GPU_VENDOR_PRIORITY = (
+    ("VEN_10DE", "NVIDIA", "faster-whisper", CUDA_DEVICE),
+    ("VEN_1002", "AMD", "vulkan", VULKAN_DEVICE),
+    ("VEN_8086", "Intel", "openvino", "GPU"),
+)
+BACKEND_DEFAULT_DEVICES = {
+    "openvino": "GPU",
+    "faster-whisper": CPU_DEVICE,
+    "vulkan": VULKAN_DEVICE,
+}
+DEVICE_DEFAULT_BACKENDS = {
+    "GPU": "openvino",
+    CPU_DEVICE: "faster-whisper",
+    CUDA_DEVICE: "faster-whisper",
+    VULKAN_DEVICE: "vulkan",
+}
+WINDOWS_VIDEO_ADAPTER_COMMAND = (
+    "Get-CimInstance Win32_VideoController | "
+    "ForEach-Object { $_.PNPDeviceID }"
+)
 DEFAULT_ANALYSIS_ALIGNMENT = "ctc"
 DEFAULT_ANALYSIS_ACOUSTIC_UNITS = True
 ANALYSIS_NICKNAME_MAX_LENGTH = 80

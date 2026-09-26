@@ -267,6 +267,12 @@ export interface AnalysisSettings {
   acoustic_units: boolean
 }
 
+export interface DetectedAnalysisHardware {
+  backend: AnalysisSettings["backend"]
+  device: AnalysisSettings["device"]
+  gpu_vendor: string | null
+}
+
 export type AnalysisAction = "pause" | "resume" | "stop"
 
 export type WorkflowPage = "analysis" | "projects" | "collage"

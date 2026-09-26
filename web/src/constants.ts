@@ -5,6 +5,8 @@ export const ANALYSIS_NICKNAME_MAX_LENGTH = 80
 export const DEFAULT_ANALYSIS_MODEL = "large-v3"
 export const DEFAULT_ANALYSIS_BACKEND = "openvino"
 export const DEFAULT_ANALYSIS_DEVICE = "GPU"
+export const FALLBACK_ANALYSIS_BACKEND = "faster-whisper"
+export const FALLBACK_ANALYSIS_DEVICE = "CPU"
 export const ANALYSIS_DEVICE_OPTIONS = {
   openvino: ["GPU", "CPU"],
   "faster-whisper": ["CUDA", "CPU"],

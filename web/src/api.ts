@@ -11,6 +11,7 @@ import type {
   AnalysisJob,
   AnalysisAction,
   AnalysisSettings,
+  DetectedAnalysisHardware,
 } from "./types"
 
 const request = async <T>(
@@ -35,6 +36,8 @@ export const fetchCollage = (id: string): Promise<CompositionProject> =>
   request(`/api/collages/${encodeURIComponent(id)}`)
 
 export const fetchVideos = (): Promise<string[]> => request("/api/videos")
+export const fetchAnalysisHardware = (): Promise<DetectedAnalysisHardware> =>
+  request("/api/analysis-hardware")
 
 export const fetchAnalyses = (): Promise<AnalysisSummary[]> => request("/api/analyses")
 

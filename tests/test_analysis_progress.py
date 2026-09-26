@@ -203,8 +203,8 @@ def test_quality_defaults_and_unsupported_model(tmp_path, monkeypatch):
         options.acoustic_units,
     ) == (
         "large-v3",
-        InferenceBackend.OPENVINO,
-        "GPU",
+        None,
+        None,
         "ctc",
         True,
     )
