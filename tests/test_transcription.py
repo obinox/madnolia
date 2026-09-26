@@ -4,14 +4,35 @@ import wave
 import pytest
 
 from madnolia import transcription
+from madnolia.pipeline import IngestionPipeline
 from madnolia.transcription import _complete_audio_regions, _context_prompt, _speech_windows
 from madnolia.types.common import (
     AnalysisCancelled,
     AudioRegion,
     AudioRegionType,
+    InferenceBackend,
     TranscriptionChunkFailure,
     TranscriptWord,
 )
+
+
+def test_cuda_transcription_and_gpu_auxiliary_fallback(tmp_path, monkeypatch):
+    created = []
+    monkeypatch.setattr(transcription, "MODEL_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(
+        transcription,
+        "WhisperModel",
+        lambda *args, **kwargs: created.append((args, kwargs)),
+    )
+    for backend, device in (
+        (InferenceBackend.FASTER_WHISPER, "CUDA"),
+        (InferenceBackend.VULKAN, "VULKAN"),
+    ):
+        pipeline = IngestionPipeline("small", backend, device)
+        assert pipeline._auxiliary_device == "CPU"
+    assert IngestionPipeline("small", InferenceBackend.OPENVINO, "GPU")._auxiliary_device == "GPU"
+    transcription.LocalWhisperTranscriber("small", "CUDA")
+    assert created[0][1] == {"device": "cuda", "compute_type": "auto"}
 
 
 def test_audio_regions_cover_full_timeline() -> None:

@@ -260,8 +260,8 @@ export interface AnalysisSettings {
   filename: string
   nickname: string
   model_name: string
-  backend: "openvino" | "faster-whisper"
-  device: "GPU" | "CPU"
+  backend: "openvino" | "faster-whisper" | "vulkan"
+  device: "GPU" | "CPU" | "CUDA" | "VULKAN"
   alignment_mode: "ctc" | "estimated"
   candidate_models: string[]
   acoustic_units: boolean

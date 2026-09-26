@@ -23,8 +23,10 @@ from madnolia.constants import (
     ANALYSIS_PROGRESS_MEDIA,
     ANALYSIS_PROGRESS_STORAGE,
     ANALYSIS_PROGRESS_TRANSCRIPTION_END,
+    CUDA_DEVICE,
     SCHEMA_VERSION,
     SUPPORTED_VIDEO_EXTENSIONS,
+    VULKAN_DEVICE,
 )
 from madnolia.ctc_alignment import PhonemeCtcAligner
 from madnolia.hierarchy import segment_sentences
@@ -50,6 +52,7 @@ from madnolia.types.common import (
     TranscriptCandidate,
     TranscriptionResult,
 )
+from madnolia.vulkan_transcription import VulkanWhisperTranscriber
 
 
 class IngestionPipeline:
@@ -160,7 +163,7 @@ class IngestionPipeline:
                         transcription.words,
                         sentences,
                         phonetics,
-                        PhonemeCtcAligner(device=self._device),
+                        PhonemeCtcAligner(device=self._auxiliary_device),
                         checkpoint=lambda: report("발음 정렬", ANALYSIS_PROGRESS_ALIGNMENT),
                     )
                 else:
@@ -181,7 +184,7 @@ class IngestionPipeline:
                         extract_phone_embeddings(
                             audio_path,
                             phones,
-                            HubertUnitEncoder(device=self._device),
+                            HubertUnitEncoder(device=self._auxiliary_device),
                             checkpoint=lambda: report("음향 단위 분석", ANALYSIS_PROGRESS_FEATURES),
                         )
                     )
@@ -252,7 +255,13 @@ class IngestionPipeline:
     def _create_transcriber(self, model_name: str) -> Transcriber:
         if self._backend == InferenceBackend.OPENVINO:
             return OpenVINOWhisperTranscriber(model_name, self._device)
-        return LocalWhisperTranscriber(model_name)
+        if self._backend == InferenceBackend.VULKAN:
+            return VulkanWhisperTranscriber(model_name)
+        return LocalWhisperTranscriber(model_name, self._device)
+
+    @property
+    def _auxiliary_device(self) -> str:
+        return "CPU" if self._device.upper() in (CUDA_DEVICE, VULKAN_DEVICE) else self._device
 
 
 def finalize_project(

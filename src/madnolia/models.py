@@ -22,6 +22,7 @@ from madnolia.types.common import (
     ModelDownloadCallback,
     ModelDownloadProgressBar,
 )
+from madnolia.vulkan_transcription import ensure_vulkan_model
 
 
 def ensure_analysis_models(
@@ -63,6 +64,8 @@ def ensure_analysis_models(
                     on_download,
                     checkpoint,
                 )
+        elif backend == InferenceBackend.VULKAN:
+            ensure_vulkan_model(name, on_download, checkpoint)
         else:
             repository = FASTER_WHISPER_MODEL_REPOSITORIES.get(name)
             if repository is None:

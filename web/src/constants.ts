@@ -5,6 +5,11 @@ export const ANALYSIS_NICKNAME_MAX_LENGTH = 80
 export const DEFAULT_ANALYSIS_MODEL = "large-v3"
 export const DEFAULT_ANALYSIS_BACKEND = "openvino"
 export const DEFAULT_ANALYSIS_DEVICE = "GPU"
+export const ANALYSIS_DEVICE_OPTIONS = {
+  openvino: ["GPU", "CPU"],
+  "faster-whisper": ["CUDA", "CPU"],
+  vulkan: ["VULKAN"],
+} as const
 export const DEFAULT_ANALYSIS_ALIGNMENT = "ctc"
 export const DEFAULT_ANALYSIS_ACOUSTIC_UNITS = true
 export const ANALYSIS_PROGRESS_POLL_MS = 900

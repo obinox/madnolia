@@ -16,6 +16,7 @@ from faster_whisper.vad import VadOptions, get_speech_timestamps
 from huggingface_hub import snapshot_download
 
 from madnolia.constants import (
+    CUDA_DEVICE,
     MODEL_CACHE_DIR,
     OPENVINO_AUDIO_CHUNK_SECONDS,
     OPENVINO_AUDIO_OVERLAP_SECONDS,
@@ -30,6 +31,7 @@ from madnolia.constants import (
     OPENVINO_NEW_TOKENS_PER_SECOND,
     OPENVINO_REPEATED_WORD_MIN_COUNT,
     OPENVINO_REPEATED_WORD_RATIO,
+    OPENVINO_WORKER_ARGUMENT,
     OPENVINO_WORKER_STARTUP_TIMEOUT_SECONDS,
     TRANSCRIPTION_CHECKPOINT_DIR,
     TRANSCRIPTION_CHECKPOINT_VERSION,
@@ -52,12 +54,12 @@ from madnolia.types.common import (
 
 
 class LocalWhisperTranscriber:
-    def __init__(self, model_name: str) -> None:
+    def __init__(self, model_name: str, device: str = "CPU") -> None:
         local = MODEL_CACHE_DIR / "faster-whisper" / model_name
         self._model = WhisperModel(
             str(local) if (local / "model.bin").is_file() else model_name,
-            device="cpu",
-            compute_type="int8",
+            device="cuda" if device.upper() == CUDA_DEVICE else "cpu",
+            compute_type="auto" if device.upper() == CUDA_DEVICE else "int8",
         )
 
     def transcribe(
@@ -282,15 +284,13 @@ class _OpenVINOWorker:
     ) -> None:
         self.device = device
         self._responses: queue.Queue[str] = queue.Queue()
+        worker_command = (
+            [sys.executable, OPENVINO_WORKER_ARGUMENT]
+            if getattr(sys, "frozen", False)
+            else [sys.executable, "-u", "-m", "madnolia.transcription_worker"]
+        )
         self._process = subprocess.Popen(
-            [
-                sys.executable,
-                "-u",
-                "-m",
-                "madnolia.transcription_worker",
-                str(model_dir.resolve()),
-                device,
-            ],
+            [*worker_command, str(model_dir.resolve()), device],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,

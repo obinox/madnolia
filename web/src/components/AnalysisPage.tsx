@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react"
 import { controlAnalysisJob, fetchAnalysisJob, fetchVideos, startAnalysis } from "../api"
 import {
   ANALYSIS_MODEL_OPTIONS,
+  ANALYSIS_DEVICE_OPTIONS,
   ANALYSIS_NICKNAME_MAX_LENGTH,
   ANALYSIS_JOB_STORAGE_KEY,
   ANALYSIS_PROGRESS_ANIMATION_MAX_MS,
@@ -154,16 +155,19 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
           <label>실행 방식
             <select value={settings.backend} disabled={!!jobId} onChange={(event) => setSettings({
               ...settings, backend: event.target.value as AnalysisSettings["backend"],
-              device: event.target.value === "faster-whisper" ? "CPU" : settings.device,
+              device: ANALYSIS_DEVICE_OPTIONS[event.target.value as AnalysisSettings["backend"]][0],
             })}>
-              <option value="openvino">OpenVINO</option>
-              <option value="faster-whisper">faster-whisper</option>
+              <option value="openvino">Intel GPU (OpenVINO)</option>
+              <option value="faster-whisper">NVIDIA CUDA / CPU (faster-whisper)</option>
+              <option value="vulkan">AMD GPU (Vulkan)</option>
             </select>
           </label>
           <label>실행 장치
-            <select value={settings.device} disabled={!!jobId || settings.backend === "faster-whisper"}
+            <select value={settings.device} disabled={!!jobId || settings.backend === "vulkan"}
               onChange={(event) => setSettings({ ...settings, device: event.target.value as AnalysisSettings["device"] })}>
-              <option value="GPU">GPU</option><option value="CPU">CPU</option>
+              {ANALYSIS_DEVICE_OPTIONS[settings.backend].map((device) => (
+                <option key={device} value={device}>{device}</option>
+              ))}
             </select>
           </label>
           <label>발음 정렬

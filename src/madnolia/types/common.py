@@ -51,6 +51,7 @@ class AlignmentStatus(StrEnum):
 class InferenceBackend(StrEnum):
     FASTER_WHISPER = "faster-whisper"
     OPENVINO = "openvino"
+    VULKAN = "vulkan"
 
 
 class AlignmentMode(StrEnum):

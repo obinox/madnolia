@@ -38,6 +38,22 @@ def test_transcription_reports_completed_video_duration(tmp_path):
     assert progress == [0.25, 0.75, 1.0]
 
 
+@pytest.mark.parametrize(
+    ("backend", "device"),
+    [
+        (InferenceBackend.FASTER_WHISPER, "CUDA"),
+        (InferenceBackend.VULKAN, "VULKAN"),
+    ],
+)
+def test_analysis_accepts_non_intel_gpu(tmp_path, monkeypatch, backend, device):
+    monkeypatch.setattr(viewer, "DEFAULT_INPUT_DIR", tmp_path)
+    monkeypatch.setattr(viewer, "_analysis_jobs", {})
+    monkeypatch.setattr(viewer, "Thread", lambda **kwargs: SimpleNamespace(start=lambda: None))
+    (tmp_path / "sample.mp4").touch()
+    request = CreateAnalysisRequest("sample.mp4", backend=backend, device=device)
+    assert viewer.start_analysis(request)["job_id"].startswith("job_")
+
+
 def test_analysis_job_keeps_last_percent_on_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(viewer, "ensure_analysis_models", lambda *args, **kwargs: None)
     monkeypatch.setattr(

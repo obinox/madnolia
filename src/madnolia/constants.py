@@ -6,10 +6,16 @@ DEFAULT_PROJECTS_DIR = Path("data/projects")
 DEFAULT_COLLAGES_DIR = Path("data/collages")
 DEFAULT_VIEWER_HOST = "127.0.0.1"
 DEFAULT_VIEWER_PORT = 8000
+OPENVINO_WORKER_ARGUMENT = "--openvino-worker"
+HUGGINGFACE_CACHE_DIR = Path("data/cache/huggingface-hub")
+TORCH_CACHE_DIR = Path("data/cache/torch")
+GENERAL_CACHE_DIR = Path("data/cache")
 NLTK_DATA_DIR = Path("data/cache/nltk")
 DEFAULT_MODEL_NAME = "large-v3"
 DEFAULT_ANALYSIS_BACKEND = "openvino"
 DEFAULT_ANALYSIS_DEVICE = "GPU"
+CUDA_DEVICE = "CUDA"
+VULKAN_DEVICE = "VULKAN"
 DEFAULT_ANALYSIS_ALIGNMENT = "ctc"
 DEFAULT_ANALYSIS_ACOUSTIC_UNITS = True
 ANALYSIS_NICKNAME_MAX_LENGTH = 80
@@ -62,6 +68,12 @@ FASTER_WHISPER_MODEL_REPOSITORIES = {
     "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
     "small": "Systran/faster-whisper-small",
     "medium": "Systran/faster-whisper-medium",
+}
+VULKAN_MODEL_REPOSITORY = "ggerganov/whisper.cpp"
+VULKAN_MODEL_FILES = {
+    "large-v3": "ggml-large-v3.bin",
+    "large-v3-turbo": "ggml-large-v3-turbo.bin",
+    "small": "ggml-small.bin",
 }
 MODEL_CACHE_DIR = Path("data/cache/models")
 AUDIO_CACHE_DIR = Path("data/cache/audio")

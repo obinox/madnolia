@@ -1,0 +1,75 @@
+name: Windows portable release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: jakoch/install-vulkan-sdk-action@v1.6.0
+        with:
+          cache: true
+      - name: Build AMD Vulkan transcription engine
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch v1.9.4 https://github.com/ggml-org/whisper.cpp.git whisper.cpp
+          cmake -S whisper.cpp -B whisper.cpp/build -A x64 -DGGML_VULKAN=ON -DWHISPER_BUILD_TESTS=OFF -DGGML_NATIVE=OFF
+          cmake --build whisper.cpp/build --config Release --target whisper-cli --parallel 4
+          if (-not (Get-ChildItem whisper.cpp/build -Recurse -Filter whisper-cli.exe | Select-Object -First 1)) { throw 'Vulkan whisper-cli build failed' }
+      - name: Build frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build -- --configLoader native
+      - name: Install application and packager
+        run: |
+          python -m pip install ".[web,intel,alignment,cuda]" "pyinstaller>=6,<7" "pyinstaller-hooks-contrib>=2025.1"
+      - name: Bundle Windows application
+        run: python -m PyInstaller --noconfirm --clean Madnolia.spec
+      - name: Check bundled startup
+        shell: pwsh
+        run: |
+          & dist/Madnolia/Madnolia.exe --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Portable executable did not start' }
+          if (-not (Test-Path dist/Madnolia/_internal/cuda/cublas64_12.dll)) { throw 'CUDA libraries are missing' }
+          $workerResult = & dist/Madnolia/Madnolia.exe --openvino-worker data/nonexistent CPU
+          if ($workerResult -match 'Cannot load library.*openvino_tokenizers') { throw 'OpenVINO Tokenizers DLL is missing' }
+      - name: Prepare portable ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/Madnolia/data/input/videos | Out-Null
+          New-Item -ItemType Directory -Force -Path dist/Madnolia/web | Out-Null
+          New-Item -ItemType Directory -Force -Path dist/Madnolia/bin | Out-Null
+          Get-ChildItem whisper.cpp/build -Recurse -Filter whisper-cli.exe | Select-Object -First 1 | Copy-Item -Destination dist/Madnolia/bin/whisper-cli.exe
+          Get-ChildItem whisper.cpp/build -Recurse -Filter *.dll | Copy-Item -Destination dist/Madnolia/bin -Force
+          Copy-Item -Recurse web/dist dist/Madnolia/web/dist
+          Copy-Item README-portable.md dist/Madnolia/README.md
+          Compress-Archive -Path dist/Madnolia -DestinationPath Madnolia-windows-portable.zip
+          Get-FileHash Madnolia-windows-portable.zip -Algorithm SHA256 | Format-List
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Madnolia-windows-portable
+          path: Madnolia-windows-portable.zip
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release create "${{ github.ref_name }}" Madnolia-windows-portable.zip --title "Madnolia ${{ github.ref_name }}" --notes-file README-portable.md --verify-tag

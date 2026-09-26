@@ -26,6 +26,7 @@ from madnolia.compositions import (
 from madnolia.constants import (
     ANALYSIS_MODEL_OPTIONS,
     ANALYSIS_NICKNAME_MAX_LENGTH,
+    CUDA_DEVICE,
     DEFAULT_INPUT_DIR,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PROJECTS_DIR,
@@ -33,6 +34,7 @@ from madnolia.constants import (
     SUPPORTED_VIDEO_EXTENSIONS,
     VIEWER_MAX_WAVEFORM_BINS,
     VIEWER_MIN_WAVEFORM_BINS,
+    VULKAN_DEVICE,
 )
 from madnolia.exporters import export_composition, render_wav
 from madnolia.models import ensure_analysis_models
@@ -135,9 +137,12 @@ def start_analysis(request: CreateAnalysisRequest) -> dict[str, str]:
     ):
         raise HTTPException(status_code=400, detail="Unsupported model")
     if (
-        request.device.upper() not in ("CPU", "GPU")
+        request.backend == InferenceBackend.OPENVINO
+        and request.device.upper() not in ("CPU", "GPU")
         or request.backend == InferenceBackend.FASTER_WHISPER
-        and request.device.upper() != "CPU"
+        and request.device.upper() not in ("CPU", CUDA_DEVICE)
+        or request.backend == InferenceBackend.VULKAN
+        and request.device.upper() != VULKAN_DEVICE
         or request.alignment_mode not in AlignmentMode
         or request.model_name in request.candidate_models
         or len(set(request.candidate_models)) != len(request.candidate_models)
