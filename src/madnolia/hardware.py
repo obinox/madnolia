@@ -45,8 +45,11 @@ def _backend_available(backend: str) -> bool:
         import ctranslate2
 
         try:
-            return ctranslate2.get_cuda_device_count() > 0
-        except (OSError, RuntimeError):
+            return (
+                ctranslate2.get_cuda_device_count() > 0
+                and bool(ctranslate2.get_supported_compute_types("cuda"))
+            )
+        except (OSError, RuntimeError, ValueError):
             return False
     import openvino as ov
 
