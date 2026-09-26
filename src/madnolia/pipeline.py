@@ -299,6 +299,7 @@ def finalize_project(
             )
         ),
         acoustic_unit_centroids_file=None,
+        nickname=previous.get("nickname"),
         audio_files=audio_files,
     )
     save_project(project_dir / "project.json", project)

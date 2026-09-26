@@ -25,6 +25,7 @@ from madnolia.compositions import (
 )
 from madnolia.constants import (
     ANALYSIS_MODEL_OPTIONS,
+    ANALYSIS_NICKNAME_MAX_LENGTH,
     DEFAULT_INPUT_DIR,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PROJECTS_DIR,
@@ -43,6 +44,8 @@ from madnolia.projects import (
     migrate_legacy_projects,
     project_analyses,
     project_dir,
+    project_source_labels,
+    rename_analysis,
 )
 from madnolia.search import search_candidates
 from madnolia.types.common import (
@@ -57,6 +60,7 @@ from madnolia.types.common import (
     ExportTarget,
     InferenceBackend,
     ProjectSummary,
+    RenameAnalysisRequest,
     SaveCompositionRequest,
     SearchRequest,
     TimelineSlice,
@@ -99,8 +103,22 @@ def get_analyses() -> list[dict[str, object]]:
     return list_analyses()
 
 
+@app.put("/api/analyses/{analysis_id}/nickname")
+def put_analysis_nickname(
+    analysis_id: str, request: RenameAnalysisRequest
+) -> dict[str, object]:
+    try:
+        return rename_analysis(analysis_id, request.nickname)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Analysis not found") from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
 @app.post("/api/analyses")
 def start_analysis(request: CreateAnalysisRequest) -> dict[str, str]:
+    if len(request.nickname.strip()) > ANALYSIS_NICKNAME_MAX_LENGTH:
+        raise HTTPException(status_code=400, detail="Analysis nickname is too long")
     path = DEFAULT_INPUT_DIR / request.filename
     if (
         path.name != request.filename
@@ -214,6 +232,8 @@ def _run_analysis(job_id: str, path: Path, request: CreateAnalysisRequest | None
             path,
             update,
         )
+        if request.nickname.strip():
+            rename_analysis(output.name, request.nickname)
         with _analysis_lock:
             job = _analysis_jobs[job_id]
             job.status = "complete"
@@ -275,7 +295,7 @@ def search_project(project_id: str, request: SearchRequest) -> dict[str, object]
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    return asdict(result)
+    return {**asdict(result), "source_labels": project_source_labels(project_dir)}
 
 
 @app.get("/api/projects/{project_id}/compositions")

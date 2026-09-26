@@ -38,6 +38,11 @@ export const fetchVideos = (): Promise<string[]> => request("/api/videos")
 
 export const fetchAnalyses = (): Promise<AnalysisSummary[]> => request("/api/analyses")
 
+export const renameAnalysis = (analysisId: string, nickname: string): Promise<AnalysisSummary> =>
+  request(`/api/analyses/${encodeURIComponent(analysisId)}/nickname`, undefined, {
+    method: "PUT", body: JSON.stringify({ nickname }),
+  })
+
 export const startAnalysis = (settings: AnalysisSettings): Promise<{ job_id: string }> =>
   request("/api/analyses", undefined, { method: "POST", body: JSON.stringify(settings) })
 

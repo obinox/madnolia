@@ -118,6 +118,8 @@ def test_analysis_can_pause_resume_and_stop(tmp_path, monkeypatch):
 def test_analysis_settings_reach_pipeline(tmp_path, monkeypatch):
     monkeypatch.setattr(viewer, "ensure_analysis_models", lambda *args, **kwargs: None)
     received = []
+    renamed = []
+    monkeypatch.setattr(viewer, "rename_analysis", lambda analysis_id, nickname: renamed.append((analysis_id, nickname)))
     monkeypatch.setattr(
         viewer,
         "_analysis_jobs",
@@ -139,6 +141,7 @@ def test_analysis_settings_reach_pipeline(tmp_path, monkeypatch):
         "large-v3",
         candidate_models=["large-v3-turbo"],
         acoustic_units=True,
+        nickname="  summer show  ",
     )
     viewer._run_analysis("job_options", tmp_path / "sample.mp4", options)
     assert received == [
@@ -150,6 +153,7 @@ def test_analysis_settings_reach_pipeline(tmp_path, monkeypatch):
         True,
     ]
     assert viewer.get_analysis_job("job_options")["status"] == "complete"
+    assert renamed == [("complete", "  summer show  ")]
 
 
 def test_cancellation_removes_partial_analysis_but_keeps_cache(tmp_path, monkeypatch):

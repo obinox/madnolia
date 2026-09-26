@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react"
 import { controlAnalysisJob, fetchAnalysisJob, fetchVideos, startAnalysis } from "../api"
 import {
   ANALYSIS_MODEL_OPTIONS,
+  ANALYSIS_NICKNAME_MAX_LENGTH,
   ANALYSIS_JOB_STORAGE_KEY,
   ANALYSIS_PROGRESS_ANIMATION_MAX_MS,
   ANALYSIS_PROGRESS_ANIMATION_MIN_MS,
@@ -20,7 +21,7 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
   const [videos, setVideos] = useState<string[]>([])
   const [filename, setFilename] = useState("")
   const [settings, setSettings] = useState<AnalysisSettings>({
-    filename: "", model_name: DEFAULT_ANALYSIS_MODEL, backend: DEFAULT_ANALYSIS_BACKEND,
+    filename: "", nickname: "", model_name: DEFAULT_ANALYSIS_MODEL, backend: DEFAULT_ANALYSIS_BACKEND,
     device: DEFAULT_ANALYSIS_DEVICE, alignment_mode: DEFAULT_ANALYSIS_ALIGNMENT,
     candidate_models: [], acoustic_units: DEFAULT_ANALYSIS_ACOUSTIC_UNITS,
   })
@@ -136,6 +137,10 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
         <select id="analysis-video" value={filename} onChange={(event) => setFilename(event.target.value)}>
           {videos.map((video) => <option key={video} value={video}>{video}</option>)}
         </select>
+        <label htmlFor="analysis-nickname">분석 별명 (선택)</label>
+        <input id="analysis-nickname" value={settings.nickname} maxLength={ANALYSIS_NICKNAME_MAX_LENGTH}
+          disabled={!!jobId} placeholder="예: 2026 여름 쇼케이스"
+          onChange={(event) => setSettings({ ...settings, nickname: event.target.value })} />
         {!videos.length && <p>영상이 없습니다. data/input/videos 폴더에 영상을 넣고 새로고침하세요.</p>}
         <div className="analysis-settings">
           <label>전사 모델

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 
-import { createProject, fetchAnalyses, fetchCollages } from "../api"
+import { createProject, fetchAnalyses, fetchCollages, renameAnalysis } from "../api"
+import { ANALYSIS_NICKNAME_MAX_LENGTH } from "../constants"
 import type { AnalysisSummary, CompositionProject, ProjectsPageProps } from "../types"
 
 export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProjectCreated }: ProjectsPageProps) {
@@ -10,6 +11,8 @@ export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProject
   const [name, setName] = useState("")
   const [message, setMessage] = useState("")
   const [busy, setBusy] = useState(false)
+  const [editingId, setEditingId] = useState("")
+  const [draftNickname, setDraftNickname] = useState("")
 
   useEffect(() => {
     fetchAnalyses().then(setAnalyses).catch((error: Error) => setMessage(error.message))
@@ -28,6 +31,18 @@ export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProject
     } finally { setBusy(false) }
   }
 
+  const saveNickname = async () => {
+    setBusy(true)
+    setMessage("")
+    try {
+      const updated = await renameAnalysis(editingId, draftNickname)
+      setAnalyses((current) => current.map((item) => item.analysis_id === editingId ? updated : item))
+      setEditingId("")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally { setBusy(false) }
+  }
+
   return (
     <section className="workflow-page">
       <div className="page-intro">
@@ -39,14 +54,31 @@ export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProject
         <h3>분석 선택 <span className="selected-count">{selected.length}개 선택</span></h3>
         <div className="analysis-list">
           {analyses.map((analysis) => (
-            <label key={analysis.analysis_id} className="analysis-item">
-              <input type="checkbox" checked={selected.includes(analysis.analysis_id)}
-                onChange={(event) => setSelected(event.target.checked
-                  ? [...selected, analysis.analysis_id]
-                  : selected.filter((id) => id !== analysis.analysis_id))} />
-              <span><strong>{analysis.source.path.split(/[\\/]/).pop()}</strong>
-                <small>{analysis.model_name} · {analysis.analysis_id}</small></span>
-            </label>
+            <div key={analysis.analysis_id} className="analysis-item">
+              <label className="analysis-select">
+                <input type="checkbox" checked={selected.includes(analysis.analysis_id)}
+                  onChange={(event) => setSelected(event.target.checked
+                    ? [...selected, analysis.analysis_id]
+                    : selected.filter((id) => id !== analysis.analysis_id))} />
+                <span><strong>{analysis.nickname || analysis.source.path.split(/[\\/]/).pop()}</strong>
+                  <small>{analysis.nickname ? `${analysis.source.path.split(/[\\/]/).pop()} / ` : ""}
+                    {analysis.model_name} / {analysis.analysis_id}</small></span>
+              </label>
+              {editingId === analysis.analysis_id ? (
+                <div className="analysis-nickname-edit">
+                  <input aria-label="분석 별명" value={draftNickname}
+                    maxLength={ANALYSIS_NICKNAME_MAX_LENGTH}
+                    onChange={(event) => setDraftNickname(event.target.value)} />
+                  <button disabled={busy} onClick={() => void saveNickname()}>저장</button>
+                  <button disabled={busy} onClick={() => setEditingId("")}>취소</button>
+                </div>
+              ) : (
+                <button disabled={busy} onClick={() => {
+                  setEditingId(analysis.analysis_id)
+                  setDraftNickname(analysis.nickname ?? "")
+                }}>별명 편집</button>
+              )}
+            </div>
           ))}
           {!analyses.length && <p>완료된 분석이 없습니다. 영상 분석부터 시작하세요.</p>}
         </div>

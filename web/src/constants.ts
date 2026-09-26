@@ -1,6 +1,7 @@
 export const MIN_VIEW_DURATION_MS = 1_000
 export const ANALYSIS_JOB_STORAGE_KEY = "madnolia.analysisJobId"
 export const ANALYSIS_MODEL_OPTIONS = ["large-v3", "large-v3-turbo", "small"] as const
+export const ANALYSIS_NICKNAME_MAX_LENGTH = 80
 export const DEFAULT_ANALYSIS_MODEL = "large-v3"
 export const DEFAULT_ANALYSIS_BACKEND = "openvino"
 export const DEFAULT_ANALYSIS_DEVICE = "GPU"

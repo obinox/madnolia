@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from madnolia.compositions import migrate_legacy_collages
 from madnolia.constants import (
+    ANALYSIS_NICKNAME_MAX_LENGTH,
     AUDIO_CACHE_DIR,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PROJECTS_DIR,
@@ -44,10 +45,49 @@ def list_analyses() -> list[dict[str, object]]:
                 "analysis_id": path.parent.name,
                 "created_at": manifest["created_at"],
                 "model_name": manifest["model_name"],
+                "nickname": manifest.get("nickname") or None,
                 "source": source,
             }
         )
     return results
+
+
+def rename_analysis(analysis_id: str, nickname: str) -> dict[str, object]:
+    directory = analysis_dir(analysis_id)
+    name = nickname.strip()
+    if len(name) > ANALYSIS_NICKNAME_MAX_LENGTH:
+        raise ValueError(f"Analysis nickname must be at most {ANALYSIS_NICKNAME_MAX_LENGTH} characters")
+    path = directory / "project.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["nickname"] = name or None
+    temporary = path.with_suffix(".json.tmp")
+    try:
+        write_json(temporary, manifest)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {
+        "analysis_id": analysis_id,
+        "created_at": manifest["created_at"],
+        "model_name": manifest["model_name"],
+        "nickname": manifest["nickname"],
+        "source": manifest["sources"][0],
+    }
+
+
+def project_source_labels(directory: Path) -> dict[str, str]:
+    manifest = json.loads((directory / "project.json").read_text(encoding="utf-8"))
+    labels = {}
+    for source in manifest["sources"]:
+        source_id = source["source_id"]
+        analysis_id = manifest.get("source_analyses", {}).get(source_id)
+        nickname = None
+        if analysis_id:
+            analysis = json.loads((analysis_dir(analysis_id) / "project.json").read_text(encoding="utf-8"))
+            nickname = analysis.get("nickname")
+        filename = Path(source["path"]).name
+        labels[source_id] = f"{nickname} · {filename}" if nickname else filename
+    return labels
 
 
 def create_project(request: CreateProjectRequest) -> dict[str, object]:

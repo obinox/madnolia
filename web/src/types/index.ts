@@ -190,6 +190,7 @@ export interface CandidateSearchResult {
   target_pronunciation: string
   target_phones: QueryPhone[]
   candidates: UnitCandidate[]
+  source_labels: Record<string, string>
 }
 
 export interface TimelineSegment {
@@ -239,6 +240,7 @@ export interface AnalysisSummary {
   analysis_id: string
   created_at: string
   model_name: string
+  nickname: string | null
   source: MediaSource
 }
 
@@ -256,6 +258,7 @@ export interface AnalysisJob {
 
 export interface AnalysisSettings {
   filename: string
+  nickname: string
   model_name: string
   backend: "openvino" | "faster-whisper"
   device: "GPU" | "CPU"

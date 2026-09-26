@@ -258,6 +258,7 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
               <article key={candidate.candidate_id} className={`candidate ${candidate.match_status.toLowerCase()}`}>
                 <div>
                   <strong>{candidate.target_ipa.join(" · ")}</strong>
+                  <span className="candidate-source">{result.source_labels[candidate.source_id] ?? candidate.source_id}</span>
                   <span>
                     입력 {candidate.target_start_index + 1}–{candidate.target_end_index} · {candidate.unit_type}
                   </span>

@@ -33,6 +33,7 @@ class ModelDownloadProgressBar(tqdm):
 
 MediaProgressCallback = Callable[[float], None]
 TranscriptionProgressCallback = Callable[[float], None]
+TranscriptionWindow = tuple[int, int, int, int]
 
 
 class AlignmentMethod(StrEnum):
@@ -68,6 +69,10 @@ class AnalysisJobStatus(StrEnum):
 
 
 class AnalysisCancelled(Exception):
+    pass
+
+
+class TranscriptionChunkFailure(RuntimeError):
     pass
 
 
@@ -232,6 +237,7 @@ class ProjectManifest:
     candidate_models: list[str]
     acoustic_unit_centroids_file: str | None
     audio_files: dict[str, str] = field(default_factory=dict)
+    nickname: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -403,6 +409,12 @@ class CreateAnalysisRequest:
     )
     candidate_models: list[str] = field(default_factory=list)
     acoustic_units: bool = DEFAULT_ANALYSIS_ACOUSTIC_UNITS
+    nickname: str = ""
+
+
+@dataclass(frozen=True)
+class RenameAnalysisRequest:
+    nickname: str
 
 
 @dataclass

@@ -49,7 +49,10 @@ select { min-width: 270px; padding: 10px 34px 10px 12px; border: 1px solid #2935
 @keyframes progress-shine { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 @media (prefers-reduced-motion: reduce) { .progress-fill.active::after { animation: none; } }
 .selected-count { color: #65a9ff; font-size: 13px; font-weight: 400; }
-.analysis-item { padding: 14px; border: 1px solid #293542; border-radius: 9px; background: #0c1218; cursor: pointer; }
+.analysis-item { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 14px; border: 1px solid #293542; border-radius: 9px; background: #0c1218; }
+.analysis-select { display: flex; align-items: center; gap: 9px; min-width: 0; cursor: pointer; }
+.analysis-nickname-edit { display: flex; gap: 6px; flex-wrap: wrap; }
+.analysis-nickname-edit input { min-width: 130px; }
 .analysis-item input { flex: 0 0 auto; accent-color: #65a9ff; }
 .analysis-item span { display: grid; gap: 6px; min-width: 0; }
 .analysis-item strong { overflow-wrap: anywhere; color: #dfe8f1; font-weight: 550; }
@@ -114,6 +117,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .candidate { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-width: 0; padding: 11px; border: 1px solid #25313c; border-radius: 8px; background: #0c1218; }
 .candidate > div:first-child { display: grid; min-width: 0; gap: 4px; }
 .candidate span { color: #8292a2; font-size: 11px; }
+.candidate .candidate-source { color: #bad9f5; overflow-wrap: anywhere; font-size: 12px; }
 .candidate.approximate { border-color: #713346; }
 .candidate .approximation { color: #ff91a5; }
 .candidate-actions { display: flex; flex-shrink: 0; gap: 5px; }

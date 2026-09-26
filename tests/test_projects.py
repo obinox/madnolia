@@ -9,6 +9,7 @@ from madnolia import cli, compositions, projects, viewer
 from madnolia.exporters import render_wav
 from madnolia.pipeline import IngestionPipeline
 from madnolia.types.common import (
+    CandidateSearchResult,
     CreateProjectRequest,
     MatchStatus,
     SaveCompositionRequest,
@@ -113,6 +114,35 @@ def test_multiple_analyses_can_be_selected_and_legacy_compositions_survive(tmp_p
     )
     directory = projects.project_dir(manifest["project_id"])
     assert len(projects.project_analyses(directory)) == 2
+    assert projects.project_source_labels(directory)["source_1"] == "video1.mp4"
+    nickname_response = TestClient(viewer.app).put(
+        "/api/analyses/proj_20260924_000001/nickname",
+        json={"nickname": "  summer show  "},
+    )
+    assert nickname_response.status_code == 200
+    assert nickname_response.json()["nickname"] == "summer show"
+    assert projects.project_source_labels(directory) == {
+        "source_1": "summer show · video1.mp4", "source_2": "video2.mp4"
+    }
+    assert next(item for item in projects.list_analyses() if item["analysis_id"] == old.name)[
+        "nickname"
+    ] == "summer show"
+    monkeypatch.setattr(viewer, "search_candidates", lambda *args: CandidateSearchResult("", "", [], []))
+    search = TestClient(viewer.app).post(
+        f"/api/projects/{manifest['project_id']}/search", json={"text": "hello"}
+    )
+    assert search.json()["source_labels"] == projects.project_source_labels(directory)
+    assert TestClient(viewer.app).put(
+        "/api/analyses/proj_20260924_000001/nickname", json={"nickname": "x" * 81}
+    ).status_code == 400
+    assert TestClient(viewer.app).put(
+        "/api/analyses/proj_20260924_000001/nickname", json={"nickname": " " * 81 + "x"}
+    ).status_code == 200
+    assert projects.project_source_labels(directory)["source_1"] == "x · video1.mp4"
+    assert TestClient(viewer.app).put(
+        "/api/analyses/proj_20260924_000001/nickname", json={"nickname": ""}
+    ).status_code == 200
+    assert projects.project_source_labels(directory)["source_1"] == "video1.mp4"
     assert projects.audio_path(directory, "source_1").resolve() == (
         tmp_path / "cache" / "audio" / "source_1.wav"
     )
