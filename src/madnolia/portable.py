@@ -30,6 +30,8 @@ def _open_viewer() -> None:
 
 def main() -> None:
     cuda_directory_handle = None
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     if getattr(sys, "frozen", False):
         root = Path(sys.executable).resolve().parent
         os.chdir(root)
