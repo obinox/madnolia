@@ -13,11 +13,11 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -65,7 +65,7 @@ jobs:
           if ((Get-Item Madnolia-windows-portable.zip).Length -gt 2GB) { throw 'ZIP exceeds the GitHub Release asset size limit' }
           Get-FileHash Madnolia-windows-portable.zip -Algorithm SHA256 | Format-List
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Madnolia-windows-portable
           path: Madnolia-windows-portable.zip
