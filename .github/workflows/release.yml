@@ -62,6 +62,7 @@ jobs:
           Copy-Item -Recurse web/dist dist/Madnolia/web/dist
           Copy-Item README-portable.md dist/Madnolia/README.md
           Compress-Archive -Path dist/Madnolia -DestinationPath Madnolia-windows-portable.zip
+          if ((Get-Item Madnolia-windows-portable.zip).Length -gt 2GB) { throw 'ZIP exceeds the GitHub Release asset size limit' }
           Get-FileHash Madnolia-windows-portable.zip -Algorithm SHA256 | Format-List
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

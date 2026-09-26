@@ -40,6 +40,7 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
+a.binaries = [item for item in a.binaries if not item[0].startswith("nvidia\\")]
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
