@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from madnolia import hardware, viewer
+from madnolia.cli import build_parser
 from madnolia.types.common import DetectedAnalysisHardware, InferenceBackend
 
 
@@ -32,3 +33,14 @@ def test_hardware_api_exposes_default(monkeypatch):
         "device": "VULKAN",
         "gpu_vendor": "AMD",
     }
+
+
+def test_viewer_does_not_accept_host_override():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["viewer", "--host", "0.0.0.0"])
+
+
+def test_portable_cuda_detection_requires_bundled_library(monkeypatch, tmp_path):
+    monkeypatch.setattr(hardware.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(hardware.sys, "executable", str(tmp_path / "Madnolia.exe"))
+    assert not hardware._backend_available("faster-whisper")

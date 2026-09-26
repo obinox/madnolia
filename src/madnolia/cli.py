@@ -61,7 +61,6 @@ def build_parser() -> argparse.ArgumentParser:
     realign.add_argument("--device", default=DEFAULT_INFERENCE_DEVICE)
     realign.add_argument("--acoustic-units", action="store_true")
     viewer = subparsers.add_parser("viewer", help="분석 결과 검수용 웹 API를 실행합니다.")
-    viewer.add_argument("--host", default=DEFAULT_VIEWER_HOST)
     viewer.add_argument("--port", type=int, default=DEFAULT_VIEWER_PORT)
     return parser
 
@@ -71,7 +70,7 @@ def main() -> None:
     if args.command == "viewer":
         import uvicorn
 
-        uvicorn.run("madnolia.viewer:app", host=args.host, port=args.port, reload=False)
+        uvicorn.run("madnolia.viewer:app", host=DEFAULT_VIEWER_HOST, port=args.port, reload=False)
         return
     if args.command == "finalize":
         try:

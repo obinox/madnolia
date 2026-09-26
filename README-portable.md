@@ -6,6 +6,8 @@ ZIP 파일을 원하는 위치에 압축 해제하고 `Madnolia.exe`를 실행�
 
 폴더 전체를 다른 위치로 옮길 수 있습니다. 기존 데이터까지 유지하려면 `data/` 폴더도 함께 옮기세요. 업데이트할 때에는 새 ZIP을 압축 해제한 후 기존 `data/` 폴더를 새 폴더로 복사하세요.
 
-첫 다운로드에는 인터넷 연결이 필요합니다. Windows GPU를 감지해 NVIDIA CUDA, AMD Vulkan, Intel OpenVINO 순서로 실행 방식을 고릅니다. GPU가 없거나 사용할 수 없으면 CPU를 선택합니다. 분석 화면에서 직접 변경할 수도 있습니다. GPU 제조사에 맞는 그래픽 드라이버가 필요합니다. NVIDIA/AMD에서는 전사를 GPU에서 실행하고 CTC 정렬과 HuBERT 음향 분석은 CPU에서 실행합니다. AMD는 별도 GGML Whisper 모델을 `data/cache/models/vulkan/`에 다운로드합니다.
+GPU에 맞는 ZIP을 선택하세요: Intel GPU 또는 CPU는 `Madnolia-windows-intel-cpu.zip`, NVIDIA GPU는 `Madnolia-windows-nvidia-cuda.zip`, AMD GPU는 `Madnolia-windows-amd-vulkan.zip`입니다. 모든 ZIP은 CPU 실행과 OpenVINO 기반 정렬·음향 분석을 지원합니다. NVIDIA ZIP에는 CUDA 라이브러리, AMD ZIP에는 Vulkan 전사 실행 파일이 추가됩니다. GPU 제조사에 맞는 그래픽 드라이버가 필요합니다. 프로그램은 포함된 실행 방식을 확인해 GPU를 자동 선택하며, 사용할 수 없으면 CPU로 실행합니다. 분석 화면에서 실행 방식을 변경할 수 있습니다.
+
+첫 모델 다운로드에는 인터넷 연결이 필요합니다. NVIDIA/AMD에서는 전사를 GPU에서 실행하고 CTC 정렬과 HuBERT 음향 분석은 CPU에서 실행합니다. AMD는 별도 GGML Whisper 모델을 `data/cache/models/vulkan/`에 다운로드합니다. 뷰어는 `127.0.0.1`에서만 접속할 수 있습니다.
 
 CLI를 사용하려면 PowerShell에서 `./Madnolia.exe --help`를 실행하세요.

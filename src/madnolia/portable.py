@@ -7,6 +7,7 @@ from threading import Thread
 from time import sleep
 
 from madnolia.constants import (
+    CUDA_BUNDLE_DIRECTORY,
     DEFAULT_INPUT_DIR,
     DEFAULT_VIEWER_HOST,
     DEFAULT_VIEWER_PORT,
@@ -35,7 +36,7 @@ def main() -> None:
     if getattr(sys, "frozen", False):
         root = Path(sys.executable).resolve().parent
         os.chdir(root)
-        cuda_libraries = root / "_internal" / "cuda"
+        cuda_libraries = root / CUDA_BUNDLE_DIRECTORY
         if cuda_libraries.is_dir():
             os.environ["PATH"] = f"{cuda_libraries}{os.pathsep}{os.environ.get('PATH', '')}"
             cuda_directory_handle = os.add_dll_directory(str(cuda_libraries))

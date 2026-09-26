@@ -1,8 +1,12 @@
 import os
+import sys
 from functools import lru_cache
+from pathlib import Path
 
 from madnolia.constants import (
     CPU_DEVICE,
+    CUDA_BUNDLE_DIRECTORY,
+    CUDA_BUNDLE_LIBRARY,
     GPU_VENDOR_PRIORITY,
     WINDOWS_DISPLAY_CLASS_GUID,
     WINDOWS_PCI_REGISTRY_PATH,
@@ -55,6 +59,10 @@ def _backend_available(backend: str) -> bool:
         except FileNotFoundError:
             return False
     if backend == InferenceBackend.FASTER_WHISPER:
+        if getattr(sys, "frozen", False) and not (
+            Path(sys.executable).resolve().parent / CUDA_BUNDLE_DIRECTORY / CUDA_BUNDLE_LIBRARY
+        ).is_file():
+            return False
         import ctranslate2
 
         try:

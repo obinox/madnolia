@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from sysconfig import get_paths
 
@@ -15,11 +16,12 @@ for package in ("openvino", "openvino_genai", "openvino_tokenizers", "ctranslate
     binaries += package_binaries
     hiddenimports += package_hiddenimports
 
-cuda_packages = Path(get_paths()["purelib"]) / "nvidia"
-for component in ("cublas", "cudnn", "cuda_runtime"):
-    for library in (cuda_packages / component / "bin").glob("*.dll"):
-        if library.name != "nvblas64_12.dll":
-            binaries.append((str(library), "cuda"))
+if os.environ.get("MADNOLIA_INCLUDE_CUDA", "1") == "1":
+    cuda_packages = Path(get_paths()["purelib"]) / "nvidia"
+    for component in ("cublas", "cudnn", "cuda_runtime"):
+        for library in (cuda_packages / component / "bin").glob("*.dll"):
+            if library.name != "nvblas64_12.dll":
+                binaries.append((str(library), "cuda"))
 
 hiddenimports += [
     "uvicorn.logging",
