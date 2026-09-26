@@ -10,7 +10,7 @@ datas = []
 binaries = []
 hiddenimports = collect_submodules("madnolia")
 
-for package in ("openvino", "openvino_genai", "openvino_tokenizers", "ctranslate2", "g2pk", "nltk"):
+for package in ("openvino", "openvino_genai", "openvino_tokenizers", "ctranslate2", "g2pk", "jamo", "nltk"):
     package_datas, package_binaries, package_hiddenimports = collect_all(package)
     datas += package_datas
     binaries += package_binaries

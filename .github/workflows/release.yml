@@ -47,6 +47,7 @@ jobs:
       - name: Check bundled startup
         shell: pwsh
         run: |
+          if (-not (Test-Path 'dist/Madnolia/_internal/jamo/data/U+11xx.json')) { throw 'Jamo pronunciation data is missing' }
           & dist/Madnolia/Madnolia.exe --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'Portable executable did not start' }
           $workerResult = & dist/Madnolia/Madnolia.exe --openvino-worker data/nonexistent CPU
