@@ -1,8 +1,12 @@
 import os
-import subprocess
 from functools import lru_cache
 
-from madnolia.constants import CPU_DEVICE, GPU_VENDOR_PRIORITY, WINDOWS_VIDEO_ADAPTER_COMMAND
+from madnolia.constants import (
+    CPU_DEVICE,
+    GPU_VENDOR_PRIORITY,
+    WINDOWS_DISPLAY_CLASS_GUID,
+    WINDOWS_PCI_REGISTRY_PATH,
+)
 from madnolia.types.common import DetectedAnalysisHardware, InferenceBackend
 
 
@@ -18,18 +22,27 @@ def detect_analysis_hardware() -> DetectedAnalysisHardware:
 def _windows_video_adapters() -> list[str]:
     if os.name != "nt":
         return []
+    import winreg
+
+    adapters = []
     try:
-        result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_VIDEO_ADAPTER_COMMAND],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, WINDOWS_PCI_REGISTRY_PATH) as pci:
+            for index in range(winreg.QueryInfoKey(pci)[0]):
+                device_id = winreg.EnumKey(pci, index)
+                if not any(vendor_id in device_id.upper() for vendor_id, *_ in GPU_VENDOR_PRIORITY):
+                    continue
+                with winreg.OpenKey(pci, device_id) as device:
+                    for instance_index in range(winreg.QueryInfoKey(device)[0]):
+                        try:
+                            with winreg.OpenKey(device, winreg.EnumKey(device, instance_index)) as instance:
+                                class_guid = winreg.QueryValueEx(instance, "ClassGUID")[0]
+                                if class_guid.lower() == WINDOWS_DISPLAY_CLASS_GUID:
+                                    adapters.append(device_id.upper())
+                        except OSError:
+                            continue
+    except OSError:
         return []
-    return [line.upper() for line in result.stdout.splitlines()]
+    return adapters
 
 
 def _backend_available(backend: str) -> bool:
