@@ -66,6 +66,8 @@ try {
     if (Test-Path -LiteralPath $backupPath) { Remove-Item -LiteralPath $backupPath -Recurse -Force -ErrorAction SilentlyContinue }
     exit 0
 } catch {
-    $_ | Out-String | Set-Content -LiteralPath (Join-Path $DownloadDirectory 'install-error.txt') -Encoding UTF8
+    $errorDetails = $_ | Out-String
+    $errorDetails | Set-Content -LiteralPath (Join-Path $DownloadDirectory 'install-error.txt') -Encoding UTF8
+    [Console]::Error.WriteLine($errorDetails)
     exit 1
 }

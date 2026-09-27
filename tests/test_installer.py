@@ -60,13 +60,24 @@ def test_install_upgrade_preserves_previous_on_failure(tmp_path: Path, failure: 
         capture_output=True,
         check=False,
     )
+    error_log = output / "install-error.txt"
+    diagnostic = result.stderr.decode(errors="replace")
+    if error_log.exists():
+        diagnostic += error_log.read_text(encoding="utf-8", errors="replace")
     assert user_data.read_text(encoding="utf-8") == "keep"
     assert not (destination / "escape.txt").exists()
     if failure:
         assert result.returncode != 0
+        assert result.stderr
+        if failure == "checksum":
+            assert "Checksum mismatch" in diagnostic
+        elif failure == "missing":
+            assert "Application file missing" in diagnostic
+        else:
+            assert "Archive contains an unsafe path" in diagnostic
         assert (runtime / "previous.txt").read_text(encoding="utf-8") == "previous"
     else:
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == 0, diagnostic
         assert (runtime / "installed.marker").read_text(encoding="utf-8") == "1.2.3"
         assert (runtime / "Madnolia.exe").read_text(encoding="utf-8") == "new server"
         assert not (destination / "runtime.previous").exists()
