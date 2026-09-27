@@ -34,7 +34,10 @@ def test_release_manifest_matches_download_bytes(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows installer")
 @pytest.mark.parametrize("failure", [None, "checksum", "missing", "traversal"])
-def test_install_upgrade_preserves_previous_on_failure(tmp_path: Path, failure: str | None) -> None:
+@pytest.mark.parametrize("commands_unavailable", [False, True])
+def test_install_upgrade_preserves_previous_on_failure(
+    tmp_path: Path, failure: str | None, commands_unavailable: bool
+) -> None:
     entries = {
         "Madnolia.exe": "new server",
         "MadnoliaLauncher.exe": "new launcher",
@@ -53,10 +56,23 @@ def test_install_upgrade_preserves_previous_on_failure(tmp_path: Path, failure: 
     (runtime / "previous.txt").write_text("previous", encoding="utf-8")
     user_data = tmp_path / "user-data.txt"
     user_data.write_text("keep", encoding="utf-8")
+    powershell = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
+    if commands_unavailable:
+        installer = Path("installer/InstallPayload.ps1").resolve().as_posix().replace("'", "''")
+        bootstrap = tmp_path / "run-installer.ps1"
+        bootstrap.write_text(
+            f"function Get-FileHash {{ throw 'Get-FileHash is unavailable' }}\n"
+            f"function Expand-Archive {{ throw 'Expand-Archive is unavailable' }}\n"
+            f". '{installer}' -DownloadDirectory $args[0] -Destination $args[1]\n"
+            "exit $LASTEXITCODE\n",
+            encoding="utf-8",
+        )
+        command = [*powershell, "-File", str(bootstrap), str(output), str(destination)]
+    else:
+        command = [*powershell, "-File", "installer/InstallPayload.ps1",
+                   "-DownloadDirectory", str(output), "-Destination", str(destination)]
     result = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-         "-File", "installer/InstallPayload.ps1", "-DownloadDirectory", str(output),
-         "-Destination", str(destination)],
+        command,
         capture_output=True,
         check=False,
     )

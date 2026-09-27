@@ -12,7 +12,16 @@ try {
         foreach ($part in $manifest.parts) {
             if ($part.name -notmatch '^Madnolia-windows-x64\.part\d{3}$') { throw 'Invalid payload name' }
             $partPath = Join-Path $DownloadDirectory $part.name
-            if ((Get-FileHash -LiteralPath $partPath -Algorithm SHA256).Hash -ne $part.sha256) {
+            $sha256 = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                $partStream = [System.IO.File]::OpenRead($partPath)
+                try {
+                    $actualHash = [BitConverter]::ToString($sha256.ComputeHash($partStream)).Replace('-', '').ToLowerInvariant()
+                } finally { $partStream.Dispose() }
+            } finally {
+                $sha256.Dispose()
+            }
+            if ($actualHash -ne $part.sha256) {
                 throw "Checksum mismatch: $($part.name)"
             }
             $partStream = [System.IO.File]::OpenRead($partPath)
@@ -48,7 +57,7 @@ try {
             }
         }
     } finally { $archive.Dispose() }
-    Expand-Archive -LiteralPath $archivePath -DestinationPath $stagingPath
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($archivePath, $stagingPath)
     foreach ($required in @('Madnolia.exe', 'MadnoliaLauncher.exe', 'web\dist\index.html')) {
         if (-not (Test-Path -LiteralPath (Join-Path $stagingPath $required) -PathType Leaf)) {
             throw "Application file missing: $required"
