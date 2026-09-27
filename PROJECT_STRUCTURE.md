@@ -119,7 +119,7 @@ madnolia/
 3. `transcription.py`가 발화/비발화 구간을 탐지하고 선택한 Whisper 백엔드로 한국어 문장과 단어·시간 정보를 만든다. `--candidate-model`을 지정했다면 같은 발화 구간에 추가 모델을 적용해 전사 후보도 보관한다.
 4. `hierarchy.py`가 단어를 문장으로 묶는다. `phonetics.py`가 발음을 IPA phone으로 변환하고, 기본 설정에서는 `alignment.py`가 단어 시간으로 phone 구간을 추정한다. `--alignment ctc`면 `ctc_alignment.py`를 통해 강제 정렬한다.
 5. `acoustic_features.py`가 phone별 특성을 계산한다. `--acoustic-units` 선택 시 `acoustic_units.py`가 HuBERT 특징을 군집화해 단위 ID와 중심점을 추가한다.
-6. `storage.py`가 영상별 분석 JSON과 SQLite를 `data/output/proj_.../`에 기록한다. 웹에서는 `data/input/videos/`에 있는 영상을 선택해 분석 작업을 시작하고 진행 상태를 확인한다. 분석 JSON이 있으나 DB/매니페스트 작성이 실패했으면 `madnolia finalize --project ... --backend ...`로 복구할 수 있다. 기존 분석을 CTC로 다시 계산하려면 `madnolia realign --project ...`를 사용한다.
+6. `storage.py`가 분석 JSON과 SQLite를 `data/output/<analysis-id>/versions/<uuid>/`에 새 버전으로 기록한다. 모든 파일이 완성된 뒤 루트 `project.json`을 마지막에 발행해 활성 버전을 가리킨다. 실패해 발행되지 않은 버전 디렉터리는 무시되며 자동 복구하지 않고, 이전 버전은 보존한다. `finalize`와 `realign`은 매니페스트의 `analysis_files`를 읽고 결과를 새 버전으로 발행한다. 매니페스트가 없는 기존 형식의 분석은 `analysis/*.json`에서 복구한다. 웹에서는 `data/input/videos/`에 있는 영상을 선택해 분석 작업을 시작하고 진행 상태를 확인한다.
 7. 웹에서 완료된 분석 여러 개를 선택하고 이름을 입력해 프로젝트를 만든다. 프로젝트 정의는 `data/projects/<project-id>/project.json`에 분석 ID와 영상별 연결 정보를 기록하며 원본 오디오와 분석 파일을 복제하지 않는다. 서버는 시작 시 기존 단일 영상 분석을 각각 프로젝트로 등록하고 기존 콜라주를 `data/collages/`로 이전한다.
 8. 프로젝트를 열면 FastAPI가 선택된 분석들에서 미디어/파형/타임라인 데이터를 읽는다. 콜라주 패널에서 문장을 검색하면 `search.py`가 모든 선택 분석의 phone 후보를 모은다. 조각 배치·미리 듣기·저장은 `compositions.py`와 `exporters.py`를 거쳐 독립된 콜라주 디렉터리에 기록된다. 각 콜라주는 프로젝트 ID 하나를 참조한다.
 
@@ -148,11 +148,16 @@ madnolia viewer
 ### 결과 디렉터리 예시
 
 ```text
-data/output/proj_<생성시각>/          # 단일 영상 분석
-├─ project.json                     # 분석 매니페스트, 원본 경로·캐시 WAV 참조(audio_files)
-├─ corpus.sqlite3                   # 영상·phone·발화·음향 특성 테이블
-├─ analysis/<source_id>.json        # 원본별 전사/구간/phone 분석
-└─ analysis/acoustic_unit_centroids.npy  # --acoustic-units 선택 시
+data/output/<analysis-id>/          # 단일 영상 분석; project.json이 활성 버전을 가리킴
+├─ project.json                     # 활성 버전 파일 경로와 원본 경로·캐시 WAV 참조(audio_files)
+└─ versions/<uuid>/                 # 완성 후 발행되는 불변 분석 버전
+   ├─ corpus.sqlite3                # 영상·phone·발화·음향 특성 테이블
+   └─ analysis/
+      ├─ <source_id>.json           # 원본별 전사/구간/phone 분석
+      └─ acoustic_unit_centroids.npy  # --acoustic-units 선택 시
+
+# 기존 형식의 analysis/*.json도 지원
+# 미발행 버전 디렉터리는 무시되며 자동 복구·롤백 UI는 제공하지 않음
 
 data/projects/<project-id>/          # 분석들의 집합
 └─ project.json                     # 선택 분석 ID·원본별 분석 연결

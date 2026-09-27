@@ -7,17 +7,17 @@
 웹 화면은 `#/analysis`, `#/projects`, `#/collage/<project-id>`로 구분됩니다. 분석 화면에서 단계별 진행률과 오디오 추출·전사가 처리한 영상 구간의 비율을 볼 수 있습니다. 
 구현 파일과 데이터 흐름은 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)에 정리되어 있습니다.
 
-발화가 포함된 영상을 로컬 Whisper로 분석하고, 발음형 IPA phone 구간을 JSON과 SQLite로 저장합니다.
+발화가 포함된 영상을 로컬 Whisper 또는 Qwen3-ASR로 분석하고, 발음형 IPA phone 구간을 JSON과 SQLite로 저장합니다.
 
 ## 준비
 
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev,web,intel,alignment]"
+python -m pip install -e ".[dev,web,intel,alignment,qwen]"
 ```
 
-FFmpeg 실행 파일은 필요하지 않습니다. PyAV가 영상의 오디오를 직접 디코딩합니다. Whisper 모델과 G2P 데이터는 첫 실행 시 다운로드되며 API 요금은 발생하지 않습니다.
+FFmpeg 실행 파일은 필요하지 않습니다. PyAV가 영상의 오디오를 직접 디코딩합니다. Whisper·Qwen3-ASR 모델과 G2P 데이터는 첫 실행 시 다운로드되며 API 요금은 발생하지 않습니다.
 
 ## 웹 실행
 
@@ -34,13 +34,15 @@ madnolia viewer
 
 `AUDIO COLLAGE`에서 문장을 검색하면 입력 음소 범위를 덮는 긴 연속 후보와 짧은 후보가 함께 표시됩니다. 정확한 음소가 코퍼스에 없으면 빨간색 `유사` 후보로 구분됩니다. 후보를 직접 배치한 뒤 조립 프로젝트로 저장하고 WAV, MP4, JSON, CMX 3600 EDL, FCPXML로 내보낼 수 있습니다.
 
-원본 영상은 `data/input/videos/`에 두고, 분석이 기록하는 원본 경로로 참조합니다. 영상에서 추출한 WAV는 `data/cache/audio/<캐시키>.wav`에 공유 저장되며 같은 이름의 JSON에 원본 영상 경로와 WAV 경로가 기록됩니다. 분석은 `data/output/<analysis-id>`, 분석을 모은 프로젝트는 `data/projects/<project-id>`, 프로젝트 하나를 참조하는 콜라주는 `data/collages/<collage-id>`에 생성됩니다.
+원본 영상은 `data/input/videos/`에 두고, 분석이 기록하는 원본 경로로 참조합니다. 영상에서 추출한 WAV는 `data/cache/audio/<캐시키>.wav`에 공유 저장되며 같은 이름의 JSON에 원본 영상 경로와 WAV 경로가 기록됩니다. 분석은 `data/output/<analysis-id>`, 분석을 모은 프로젝트는 `data/projects/<project-id>`, 프로젝트 하나를 참조하는 콜라주는 `data/collages/<collage-id>`에 생성됩니다. 분석 결과는 `versions/<uuid>/` 아래 새 버전으로 완성한 뒤, 루트 `project.json`을 마지막에 갱신해 활성 버전을 가리킵니다. 발행되지 않은 버전 디렉터리는 무시되며 자동 복구나 롤백 UI는 제공하지 않습니다. 이전 저장 형식의 루트 파일도 계속 읽을 수 있고, 이전 버전은 보존됩니다.
 
-- `project.json`: 분석 정보와 공유 오디오 경로
-- `corpus.sqlite3`: phone 검색용 코퍼스
+- `project.json`: 활성 분석 버전과 공유 오디오 경로를 가리키는 매니페스트
+- `versions/<uuid>/corpus.sqlite3`: 해당 버전의 phone 검색용 코퍼스
 - `project.json`의 `audio_files`: 공유 캐시 오디오의 경로
 - `data/cache/audio/*.wav`: 영상에서 추출한 16kHz mono PCM 오디오
-- `analysis/*.json`: 영상별 전사와 IPA phone 구간
+- `versions/<uuid>/analysis/<source_id>.json`: 버전별 전사와 IPA phone 구간
+- `versions/<uuid>/analysis/acoustic_unit_centroids.npy`: 음향 단위 분석을 선택한 경우의 중심점
+- 기존 형식의 `analysis/*.json`도 읽을 수 있습니다.
 - `data/collages/<collage-id>/collage.json`: 연결된 프로젝트 ID와 배치한 오디오 조각
 - `data/collages/<collage-id>/exports/*`: 렌더링 및 NLE 익스포트 결과
 
@@ -61,6 +63,19 @@ madnolia ingest
 
 ```powershell
 madnolia ingest --backend faster-whisper --device CPU --model tiny --alignment estimated --no-acoustic-units
+```
+
+Qwen3-ASR 0.6B와 1.7B는 PyTorch로 실행합니다. 단어 시간 정보에는 별도 Qwen3 강제 정렬 모델이 사용됩니다.
+Intel GPU에서는 PyTorch의 XPU 빌드를 설치한 뒤 `--device XPU`를 선택할 수 있습니다. 두 ASR 모델은 같은 0.6B 강제 정렬 모델을 사용합니다.
+
+```powershell
+python -m pip install --index-url https://download.pytorch.org/whl/xpu "torch==2.14.0+xpu"
+madnolia ingest --backend qwen3-asr --device XPU --model qwen3-asr-0.6b --file "data/input/videos/video.mp4"
+```
+
+```powershell
+madnolia ingest --backend qwen3-asr --device CPU --model qwen3-asr-0.6b --file "data/input/videos/video.mp4"
+madnolia ingest --backend qwen3-asr --device CPU --model qwen3-asr-1.7b --file "data/input/videos/video.mp4"
 ```
 
 Intel GPU에서는 OpenVINO 추가 의존성을 설치하고 실행합니다.
@@ -94,7 +109,7 @@ IPA CTC 실제 경계 정렬을 함께 실행하려면 다음 옵션을 사용�
 madnolia ingest --backend openvino --device GPU --model large-v3-turbo --candidate-model large-v3 --alignment ctc --acoustic-units --file "data/input/videos/video.mp4"
 ```
 
-분석 JSON 생성 후 DB 저장만 실패한 경우 프로젝트를 복구할 수 있습니다.
+`finalize`는 활성 매니페스트의 분석 파일(매니페스트가 없는 기존 형식은 `analysis/*.json`)로 새 버전을 생성합니다. 미발행 버전 디렉터리는 자동으로 선택하지 않습니다.
 
 ```powershell
 madnolia finalize --project "data/output/<project-id>" --backend openvino --device GPU

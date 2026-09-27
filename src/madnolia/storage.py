@@ -1,7 +1,13 @@
 import json
+import os
 import sqlite3
+import tempfile
 from pathlib import Path
+from uuid import uuid4
 
+import numpy as np
+
+from madnolia.constants import ANALYSIS_VERSIONS_DIR
 from madnolia.types.common import (
     AlignmentMethod,
     AlignmentStatus,
@@ -197,11 +203,59 @@ def save_analysis(connection: sqlite3.Connection, result: AnalysisResult) -> Non
 
 def write_json(path: Path, data: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    serialized = json.dumps(data, ensure_ascii=False, indent=2)
+    descriptor, temporary_path = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary_file:
+            temporary_file.write(serialized)
+        os.replace(temporary_path, path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
 
 
 def save_project(path: Path, project: ProjectManifest) -> None:
     write_json(path, project.to_dict())
+
+
+def publish_analysis_version(
+    project_dir: Path,
+    results: list[AnalysisResult],
+    manifest_data: dict[str, object],
+    centroids: np.ndarray | None = None,
+) -> dict[str, object]:
+    version_id = uuid4().hex
+    version_dir = project_dir / ANALYSIS_VERSIONS_DIR / version_id
+    analysis_dir = version_dir / "analysis"
+    analysis_files: list[str] = []
+    analysis_dir.mkdir(parents=True, exist_ok=False)
+    for result in results:
+        result_path = analysis_dir / f"{result.source.source_id}.json"
+        write_json(result_path, result.to_dict())
+        analysis_files.append(result_path.relative_to(project_dir).as_posix())
+    connection = initialize_database(version_dir / "corpus.sqlite3")
+    try:
+        for result in results:
+            save_analysis(connection, result)
+    finally:
+        connection.close()
+    centroids_file = None
+    if centroids is not None:
+        centroids_path = analysis_dir / "acoustic_unit_centroids.npy"
+        np.save(centroids_path, centroids)
+        centroids_file = centroids_path.relative_to(project_dir).as_posix()
+    published_manifest = dict(manifest_data)
+    published_manifest["analysis_files"] = analysis_files
+    published_manifest["database_file"] = (
+        (version_dir / "corpus.sqlite3").relative_to(project_dir).as_posix()
+    )
+    published_manifest["acoustic_unit_centroids_file"] = centroids_file
+    write_json(project_dir / "project.json", published_manifest)
+    return published_manifest
 
 
 def load_analysis(path: Path) -> AnalysisResult:

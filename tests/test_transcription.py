@@ -24,13 +24,10 @@ def test_cuda_transcription_and_gpu_auxiliary_fallback(tmp_path, monkeypatch):
         "WhisperModel",
         lambda *args, **kwargs: created.append((args, kwargs)),
     )
-    for backend, device in (
-        (InferenceBackend.FASTER_WHISPER, "CUDA"),
-        (InferenceBackend.VULKAN, "VULKAN"),
-    ):
-        pipeline = IngestionPipeline("small", backend, device)
-        assert pipeline._auxiliary_device == "CPU"
+    pipeline = IngestionPipeline("small", InferenceBackend.FASTER_WHISPER, "CUDA")
+    assert pipeline._auxiliary_device == "CPU"
     assert IngestionPipeline("small", InferenceBackend.OPENVINO, "GPU")._auxiliary_device == "GPU"
+    assert IngestionPipeline("qwen3-asr-0.6b", InferenceBackend.QWEN_ASR, "XPU")._auxiliary_device == "GPU"
     transcription.LocalWhisperTranscriber("small", "CUDA")
     assert created[0][1] == {"device": "cuda", "compute_type": "auto"}
 

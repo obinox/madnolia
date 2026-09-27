@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from madnolia import models
+from madnolia.constants import QWEN_REQUIRED_MODEL_FILES
 from madnolia.types.common import AlignmentMode, InferenceBackend
 
 
@@ -51,3 +52,28 @@ def test_missing_openvino_model_reports_downloaded_bytes(tmp_path, monkeypatch):
     requests.clear()
     models.ensure_analysis_models(*options)
     assert requests == []
+
+
+def test_qwen_download_includes_chat_templates(tmp_path, monkeypatch):
+    monkeypatch.setattr(models, "MODEL_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(
+        models, "model_info",
+        lambda *args, **kwargs: SimpleNamespace(
+            siblings=[SimpleNamespace(rfilename=name, size=4) for name in QWEN_REQUIRED_MODEL_FILES]
+        ),
+    )
+    downloads = []
+
+    def download(repository, filename, local_dir, tqdm_class):
+        downloads.append((repository, filename))
+        target = local_dir / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"data")
+        return str(target)
+
+    monkeypatch.setattr(models, "hf_hub_download", download)
+    models.ensure_analysis_models(
+        "qwen3-asr-0.6b", InferenceBackend.QWEN_ASR, [], AlignmentMode.ESTIMATED, False
+    )
+    assert len(downloads) == 2 * len(QWEN_REQUIRED_MODEL_FILES)
+    assert sum(filename == "chat_template.jinja" for _, filename in downloads) == 2

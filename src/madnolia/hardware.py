@@ -50,14 +50,6 @@ def _windows_video_adapters() -> list[str]:
 
 
 def _backend_available(backend: str) -> bool:
-    if backend == InferenceBackend.VULKAN:
-        from madnolia.vulkan_transcription import _whisper_executable
-
-        try:
-            _whisper_executable()
-            return True
-        except FileNotFoundError:
-            return False
     if backend == InferenceBackend.FASTER_WHISPER:
         if getattr(sys, "frozen", False) and not (
             Path(sys.executable).resolve().parent / CUDA_BUNDLE_DIRECTORY / CUDA_BUNDLE_LIBRARY

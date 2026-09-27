@@ -1,14 +1,19 @@
 import json
+import os
+import re
+import tempfile
 import wave
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from functools import lru_cache
 from pathlib import Path
 from threading import Condition, Thread
+from typing import Annotated
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -24,22 +29,30 @@ from madnolia.compositions import (
     validate_preview_request,
 )
 from madnolia.constants import (
+    ALIGNMENT_TEST_AUDIO,
+    ALIGNMENT_TEST_DIR,
+    ALIGNMENT_TEST_RESULTS,
     ANALYSIS_MODEL_OPTIONS,
     ANALYSIS_NICKNAME_MAX_LENGTH,
+    APPLICATION_ID,
     CUDA_DEVICE,
     DEFAULT_INPUT_DIR,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PROJECTS_DIR,
     OPENVINO_MODEL_REPOSITORIES,
+    QWEN_ASR_MODEL_REPOSITORIES,
     SUPPORTED_VIDEO_EXTENSIONS,
+    VIDEO_UPLOAD_CHUNK_SIZE,
     VIEWER_MAX_WAVEFORM_BINS,
     VIEWER_MIN_WAVEFORM_BINS,
-    VULKAN_DEVICE,
+    WINDOWS_RESERVED_FILENAME_PATTERN,
+    XPU_DEVICE,
 )
 from madnolia.exporters import export_composition, render_wav
 from madnolia.hardware import detect_analysis_hardware
 from madnolia.models import ensure_analysis_models
 from madnolia.pipeline import IngestionPipeline
+from madnolia.portable import web_directory
 from madnolia.projects import (
     audio_path,
     create_project,
@@ -89,6 +102,7 @@ app.add_middleware(
 
 _analysis_jobs: dict[str, AnalysisJob] = {}
 _analysis_lock = Condition()
+_WINDOWS_RESERVED_FILENAME = re.compile(WINDOWS_RESERVED_FILENAME_PATTERN, re.IGNORECASE)
 
 
 @app.get("/api/analysis-hardware")
@@ -105,6 +119,64 @@ def list_videos() -> list[str]:
         for path in DEFAULT_INPUT_DIR.iterdir()
         if path.is_file() and path.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
     )
+
+
+@app.post("/api/videos")
+async def upload_video(request: Request, file: Annotated[UploadFile, File()]) -> dict[str, str]:
+    origin = request.headers.get("origin")
+    if origin:
+        allowed_origins = {
+            f"{request.url.scheme}://{request.url.netloc}",
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+        }
+        if origin not in allowed_origins or urlsplit(origin).scheme not in {"http", "https"}:
+            raise HTTPException(status_code=403, detail="영상 업로드 요청을 허용하지 않는 주소입니다.")
+    filename = file.filename or ""
+    path = Path(filename)
+    if (
+        not filename
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+        or any(ord(character) < 32 or character in '<>:"|?*' for character in filename)
+        or filename.endswith((".", " "))
+        or _WINDOWS_RESERVED_FILENAME.fullmatch(filename.split(".", 1)[0])
+        or path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS
+    ):
+        raise HTTPException(status_code=400, detail="지원하지 않는 영상 파일 이름 또는 형식입니다.")
+
+    DEFAULT_INPUT_DIR.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=DEFAULT_INPUT_DIR, prefix=".upload-", suffix=".part", delete=False
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            while chunk := await file.read(VIDEO_UPLOAD_CHUNK_SIZE):
+                temporary.write(chunk)
+
+        candidate = DEFAULT_INPUT_DIR / filename
+        while True:
+            try:
+                if os.name == "nt":
+                    os.rename(temporary_path, candidate)
+                else:
+                    os.link(temporary_path, candidate)
+                break
+            except FileExistsError:
+                candidate = DEFAULT_INPUT_DIR / f"{path.stem}_{uuid4().hex[:8]}{path.suffix}"
+        return {"filename": candidate.name}
+    except HTTPException:
+        raise
+    except OSError as error:
+        raise HTTPException(status_code=500, detail="영상 파일을 저장하지 못했습니다. 저장 공간을 확인해 주세요.") from error
+    finally:
+        try:
+            await file.close()
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
 
 @app.get("/api/analyses")
@@ -135,7 +207,10 @@ def start_analysis(request: CreateAnalysisRequest) -> dict[str, str]:
         or path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS
     ):
         raise HTTPException(status_code=400, detail="Video must be in the input videos folder")
-    if request.model_name not in ANALYSIS_MODEL_OPTIONS or (
+    if request.model_name not in (
+        QWEN_ASR_MODEL_REPOSITORIES if request.backend == InferenceBackend.QWEN_ASR
+        else ANALYSIS_MODEL_OPTIONS
+    ) or (
         request.backend == InferenceBackend.OPENVINO
         and any(
             model not in OPENVINO_MODEL_REPOSITORIES
@@ -143,13 +218,17 @@ def start_analysis(request: CreateAnalysisRequest) -> dict[str, str]:
         )
     ):
         raise HTTPException(status_code=400, detail="Unsupported model")
+    if request.backend == InferenceBackend.QWEN_ASR and any(
+        model not in QWEN_ASR_MODEL_REPOSITORIES for model in request.candidate_models
+    ):
+        raise HTTPException(status_code=400, detail="Unsupported model")
     if (
         request.backend == InferenceBackend.OPENVINO
         and request.device.upper() not in ("CPU", "GPU")
         or request.backend == InferenceBackend.FASTER_WHISPER
         and request.device.upper() not in ("CPU", CUDA_DEVICE)
-        or request.backend == InferenceBackend.VULKAN
-        and request.device.upper() != VULKAN_DEVICE
+        or request.backend == InferenceBackend.QWEN_ASR
+        and request.device.upper() not in ("CPU", CUDA_DEVICE, XPU_DEVICE)
         or request.alignment_mode not in AlignmentMode
         or request.model_name in request.candidate_models
         or len(set(request.candidate_models)) != len(request.candidate_models)
@@ -293,7 +372,7 @@ def post_project(request: CreateProjectRequest) -> dict[str, object]:
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "app": APPLICATION_ID, "data_root": str(Path.cwd().resolve())}
 
 
 @app.post("/api/projects/{project_id}/search")
@@ -476,6 +555,55 @@ def get_project(project_id: str) -> dict[str, object]:
     return {"manifest": manifest, "analyses": [asdict(overview) for overview in overviews]}
 
 
+@app.get("/api/alignment-test")
+def get_alignment_test() -> dict[str, object]:
+    if not ALIGNMENT_TEST_AUDIO.is_file():
+        raise HTTPException(status_code=404, detail="Alignment experiment audio not found")
+    results = {}
+    for method, filename in ALIGNMENT_TEST_RESULTS.items():
+        path = ALIGNMENT_TEST_DIR / filename
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail=f"Alignment result not found: {filename}")
+        result = _read_json(path)
+        results[method] = {
+            "total_seconds": result["total_seconds"],
+            "phones": [{
+                "start_ms": phone["start_ms"],
+                "end_ms": phone["end_ms"],
+                "unknown": phone.get("unknown", False),
+                "ipa": phone["ipa"],
+            } for phone in result["phones"]],
+        }
+    baseline = _read_json(ALIGNMENT_TEST_DIR / ALIGNMENT_TEST_RESULTS["ctc"])
+    return {
+        "duration_ms": 600_000,
+        "words": baseline["words"],
+        "phones": [{"ipa": phone["ipa"], "word_index": phone["word_index"]}
+                   for phone in baseline["phones"]],
+        "results": results,
+    }
+
+
+@app.get("/api/alignment-test/audio")
+def get_alignment_test_audio() -> FileResponse:
+    if not ALIGNMENT_TEST_AUDIO.is_file():
+        raise HTTPException(status_code=404, detail="Alignment experiment audio not found")
+    return FileResponse(ALIGNMENT_TEST_AUDIO, media_type="audio/wav")
+
+
+@app.get("/api/alignment-test/waveform")
+def get_alignment_test_waveform(
+    start_ms: int = Query(ge=0),
+    end_ms: int = Query(gt=0),
+    bins: int = Query(default=1200, ge=VIEWER_MIN_WAVEFORM_BINS, le=VIEWER_MAX_WAVEFORM_BINS),
+) -> dict[str, object]:
+    if end_ms <= start_ms or end_ms > 600_000:
+        raise HTTPException(status_code=400, detail="Invalid waveform range")
+    if not ALIGNMENT_TEST_AUDIO.is_file():
+        raise HTTPException(status_code=404, detail="Alignment experiment audio not found")
+    return asdict(_waveform(ALIGNMENT_TEST_AUDIO, start_ms, end_ms, bins))
+
+
 @app.get("/api/projects/{project_id}/timeline")
 def get_timeline(
     project_id: str,
@@ -607,7 +735,7 @@ def _waveform(audio_path: Path, start_ms: int, end_ms: int, bins: int) -> Wavefo
     return WaveformData(start_ms=start_ms, end_ms=end_ms, peaks=peaks)
 
 
-web_dist = Path("web/dist")
+web_dist = web_directory()
 if web_dist.is_dir():
     app.mount("/assets", StaticFiles(directory=web_dist / "assets"), name="assets")
 

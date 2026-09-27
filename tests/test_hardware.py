@@ -9,8 +9,9 @@ from madnolia.types.common import DetectedAnalysisHardware, InferenceBackend
 @pytest.mark.parametrize(
     ("adapters", "available", "expected"),
     [
-        (["PCI\\VEN_8086", "PCI\\VEN_1002", "PCI\\VEN_10DE"], {"faster-whisper", "vulkan", "openvino"}, (InferenceBackend.FASTER_WHISPER, "CUDA", "NVIDIA")),
-        (["PCI\\VEN_8086", "PCI\\VEN_1002"], {"vulkan", "openvino"}, (InferenceBackend.VULKAN, "VULKAN", "AMD")),
+        (["PCI\\VEN_8086", "PCI\\VEN_1002", "PCI\\VEN_10DE"], {"faster-whisper", "openvino"}, (InferenceBackend.FASTER_WHISPER, "CUDA", "NVIDIA")),
+        (["PCI\\VEN_8086", "PCI\\VEN_1002"], {"openvino"}, (InferenceBackend.OPENVINO, "GPU", "Intel")),
+        (["PCI\\VEN_1002"], set(), (InferenceBackend.FASTER_WHISPER, "CPU", None)),
         (["PCI\\VEN_8086"], {"openvino"}, (InferenceBackend.OPENVINO, "GPU", "Intel")),
         (["PCI\\VEN_10DE", "PCI\\VEN_8086"], {"openvino"}, (InferenceBackend.OPENVINO, "GPU", "Intel")),
         ([], set(), (InferenceBackend.FASTER_WHISPER, "CPU", None)),
@@ -26,12 +27,12 @@ def test_gpu_detection_prefers_available_backend(monkeypatch, adapters, availabl
 
 
 def test_hardware_api_exposes_default(monkeypatch):
-    detected = DetectedAnalysisHardware(InferenceBackend.VULKAN, "VULKAN", "AMD")
+    detected = DetectedAnalysisHardware(InferenceBackend.OPENVINO, "GPU", "Intel")
     monkeypatch.setattr(viewer, "detect_analysis_hardware", lambda: detected)
     assert TestClient(viewer.app).get("/api/analysis-hardware").json() == {
-        "backend": "vulkan",
-        "device": "VULKAN",
-        "gpu_vendor": "AMD",
+        "backend": "openvino",
+        "device": "GPU",
+        "gpu_vendor": "Intel",
     }
 
 

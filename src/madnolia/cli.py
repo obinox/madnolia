@@ -106,6 +106,8 @@ def main() -> None:
             if detected.backend == args.backend
             else BACKEND_DEFAULT_DEVICES[args.backend]
         )
+    if args.backend == InferenceBackend.QWEN_ASR and args.model == DEFAULT_MODEL_NAME:
+        args.model = "qwen3-asr-0.6b"
     try:
         selected_files = (
             [args.file]

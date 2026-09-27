@@ -6,34 +6,49 @@ DEFAULT_PROJECTS_DIR = Path("data/projects")
 DEFAULT_COLLAGES_DIR = Path("data/collages")
 DEFAULT_VIEWER_HOST = "127.0.0.1"
 DEFAULT_VIEWER_PORT = 8000
+INSTALLED_MODE_MARKER = "installed.marker"
+INSTALLED_DATA_DIRECTORY = "Madnolia"
+INSTALLED_LOG_DIRECTORY = "logs"
+LAUNCHER_ENVIRONMENT_VARIABLE = "MADNOLIA_LAUNCHER"
+LAUNCHER_READY_TIMEOUT_SECONDS = 180
+LAUNCHER_LOCK_FILE = "launcher.lock"
+HEALTH_ENDPOINT = "/api/health"
+APPLICATION_ID = "Madnolia"
 OPENVINO_WORKER_ARGUMENT = "--openvino-worker"
 HUGGINGFACE_CACHE_DIR = Path("data/cache/huggingface-hub")
 TORCH_CACHE_DIR = Path("data/cache/torch")
 GENERAL_CACHE_DIR = Path("data/cache")
+ALIGNMENT_TEST_DIR = GENERAL_CACHE_DIR / "qwen-benchmark"
+ALIGNMENT_TEST_AUDIO = ALIGNMENT_TEST_DIR / "maple-now-2026-09-10-30m-40m-batched.wav"
+ALIGNMENT_TEST_RESULTS = {
+    "ctc": "phone-boundaries-ctc.json",
+    "ipa15": "phone-boundaries-ipa.json",
+    "ipa4": "phone-boundaries-ipa-4s.json",
+    "ipa2": "phone-boundaries-ipa-2s.json",
+}
 NLTK_DATA_DIR = Path("data/cache/nltk")
 DEFAULT_MODEL_NAME = "large-v3"
 DEFAULT_ANALYSIS_BACKEND = "openvino"
 DEFAULT_ANALYSIS_DEVICE = "GPU"
 CUDA_DEVICE = "CUDA"
+XPU_DEVICE = "XPU"
 CUDA_BUNDLE_DIRECTORY = Path("_internal/cuda")
 CUDA_BUNDLE_LIBRARY = "cublas64_12.dll"
-VULKAN_DEVICE = "VULKAN"
 CPU_DEVICE = "CPU"
 GPU_VENDOR_PRIORITY = (
     ("VEN_10DE", "NVIDIA", "faster-whisper", CUDA_DEVICE),
-    ("VEN_1002", "AMD", "vulkan", VULKAN_DEVICE),
     ("VEN_8086", "Intel", "openvino", "GPU"),
 )
 BACKEND_DEFAULT_DEVICES = {
     "openvino": "GPU",
     "faster-whisper": CPU_DEVICE,
-    "vulkan": VULKAN_DEVICE,
+    "qwen3-asr": CPU_DEVICE,
 }
 DEVICE_DEFAULT_BACKENDS = {
     "GPU": "openvino",
+    XPU_DEVICE: "qwen3-asr",
     CPU_DEVICE: "faster-whisper",
     CUDA_DEVICE: "faster-whisper",
-    VULKAN_DEVICE: "vulkan",
 }
 WINDOWS_PCI_REGISTRY_PATH = r"SYSTEM\CurrentControlSet\Enum\PCI"
 WINDOWS_DISPLAY_CLASS_GUID = "{4d36e968-e325-11ce-bfc1-08002be10318}"
@@ -82,6 +97,19 @@ OPENVINO_MODEL_REPOSITORIES = {
     "large-v3-turbo": "OpenVINO/whisper-large-v3-turbo-int8-ov",
     "small": "OpenVINO/whisper-small-int8-ov",
 }
+QWEN_ASR_MODEL_REPOSITORIES = {
+    "qwen3-asr-0.6b": "Qwen/Qwen3-ASR-0.6B-hf",
+    "qwen3-asr-1.7b": "Qwen/Qwen3-ASR-1.7B-hf",
+}
+QWEN_ALIGNER_REPOSITORY = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
+QWEN_REQUIRED_MODEL_FILES = (
+    "model.safetensors", "config.json", "processor_config.json",
+    "tokenizer.json", "chat_template.jinja",
+)
+QWEN_AUDIO_CHUNK_SECONDS = 25
+QWEN_AUDIO_OVERLAP_MS = 2000
+QWEN_MAX_NEW_TOKENS = 256
+QWEN_GPU_BATCH_SIZE = 2
 FASTER_WHISPER_MODEL_REPOSITORIES = {
     "tiny": "Systran/faster-whisper-tiny",
     "base": "Systran/faster-whisper-base",
@@ -89,12 +117,6 @@ FASTER_WHISPER_MODEL_REPOSITORIES = {
     "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
     "small": "Systran/faster-whisper-small",
     "medium": "Systran/faster-whisper-medium",
-}
-VULKAN_MODEL_REPOSITORY = "ggerganov/whisper.cpp"
-VULKAN_MODEL_FILES = {
-    "large-v3": "ggml-large-v3.bin",
-    "large-v3-turbo": "ggml-large-v3-turbo.bin",
-    "small": "ggml-small.bin",
 }
 MODEL_CACHE_DIR = Path("data/cache/models")
 AUDIO_CACHE_DIR = Path("data/cache/audio")
@@ -118,7 +140,10 @@ ACOUSTIC_MODEL_INPUT_SAMPLES = 248_000
 SUPPORTED_VIDEO_EXTENSIONS = frozenset(
     {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".mts", ".m2ts"}
 )
+VIDEO_UPLOAD_CHUNK_SIZE = 1024 * 1024
+WINDOWS_RESERVED_FILENAME_PATTERN = r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$"
 SCHEMA_VERSION = "0.3.0"
+ANALYSIS_VERSIONS_DIR = "versions"
 
 HANGUL_BASE = 0xAC00
 HANGUL_END = 0xD7A3

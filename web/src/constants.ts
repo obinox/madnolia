@@ -1,6 +1,7 @@
 export const MIN_VIEW_DURATION_MS = 1_000
 export const ANALYSIS_JOB_STORAGE_KEY = "madnolia.analysisJobId"
 export const ANALYSIS_MODEL_OPTIONS = ["large-v3", "large-v3-turbo", "small"] as const
+export const QWEN_ASR_MODEL_OPTIONS = ["qwen3-asr-0.6b", "qwen3-asr-1.7b"] as const
 export const ANALYSIS_NICKNAME_MAX_LENGTH = 80
 export const DEFAULT_ANALYSIS_MODEL = "large-v3"
 export const DEFAULT_ANALYSIS_BACKEND = "openvino"
@@ -10,10 +11,11 @@ export const FALLBACK_ANALYSIS_DEVICE = "CPU"
 export const ANALYSIS_DEVICE_OPTIONS = {
   openvino: ["GPU", "CPU"],
   "faster-whisper": ["CUDA", "CPU"],
-  vulkan: ["VULKAN"],
+  "qwen3-asr": ["CPU", "XPU", "CUDA"],
 } as const
 export const DEFAULT_ANALYSIS_ALIGNMENT = "ctc"
 export const DEFAULT_ANALYSIS_ACOUSTIC_UNITS = true
+export const VIDEO_UPLOAD_ACCEPT = ".mp4,.mov,.mkv,.avi,.webm,.m4v,.mts,.m2ts"
 export const ANALYSIS_PROGRESS_POLL_MS = 900
 export const ANALYSIS_PROGRESS_ANIMATION_MIN_MS = 350
 export const ANALYSIS_PROGRESS_ANIMATION_MAX_MS = 1800
@@ -21,11 +23,26 @@ export const ANALYSIS_PROGRESS_ANIMATION_PER_PERCENT_MS = 90
 export const WORD_DETAIL_MAX_MS = 15 * 60 * 1_000
 export const PHONE_DETAIL_MAX_MS = 2 * 60 * 1_000
 export const WAVEFORM_BINS = 1_400
+export const ALIGNMENT_TEST_METHODS = ["ctc", "ipa15", "ipa4", "ipa2"] as const
+export const ALIGNMENT_TEST_LABELS = {
+  ctc: "CTC",
+  ipa15: "IPA · 15초",
+  ipa4: "IPA · 4초",
+  ipa2: "IPA · 2초",
+} as const
+export const ALIGNMENT_TEST_COLORS = {
+  ctc: "#65a9ff",
+  ipa15: "#a78bfa",
+  ipa4: "#27c499",
+  ipa2: "#f59e63",
+} as const
+export const ALIGNMENT_TEST_INITIAL_SPAN_MS = 10_000
 export const TIMELINE_HEIGHT = 190
 export const TIMELINE_PADDING = 12
 export const PLAYBACK_LOOP_EPSILON_MS = 10
 export const MIN_STRETCH_PERCENT = 100
 export const MAX_STRETCH_PERCENT = 150
+export const COLLAGE_EXPORT_TARGETS = ["WAV", "MP4", "JSON", "EDL", "FCPXML"] as const
 
 export const COLORS = {
   background: "#0d1117",

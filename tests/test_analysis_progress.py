@@ -38,20 +38,28 @@ def test_transcription_reports_completed_video_duration(tmp_path):
     assert progress == [0.25, 0.75, 1.0]
 
 
-@pytest.mark.parametrize(
-    ("backend", "device"),
-    [
-        (InferenceBackend.FASTER_WHISPER, "CUDA"),
-        (InferenceBackend.VULKAN, "VULKAN"),
-    ],
-)
-def test_analysis_accepts_non_intel_gpu(tmp_path, monkeypatch, backend, device):
+def test_analysis_accepts_nvidia_gpu(tmp_path, monkeypatch):
     monkeypatch.setattr(viewer, "DEFAULT_INPUT_DIR", tmp_path)
     monkeypatch.setattr(viewer, "_analysis_jobs", {})
     monkeypatch.setattr(viewer, "Thread", lambda **kwargs: SimpleNamespace(start=lambda: None))
     (tmp_path / "sample.mp4").touch()
-    request = CreateAnalysisRequest("sample.mp4", backend=backend, device=device)
+    request = CreateAnalysisRequest("sample.mp4", backend=InferenceBackend.FASTER_WHISPER, device="CUDA")
     assert viewer.start_analysis(request)["job_id"].startswith("job_")
+
+
+def test_analysis_accepts_qwen_models(tmp_path, monkeypatch):
+    monkeypatch.setattr(viewer, "DEFAULT_INPUT_DIR", tmp_path)
+    monkeypatch.setattr(viewer, "_analysis_jobs", {})
+    monkeypatch.setattr(viewer, "Thread", lambda **kwargs: SimpleNamespace(start=lambda: None))
+    (tmp_path / "sample.mp4").touch()
+    for model_name in ("qwen3-asr-0.6b", "qwen3-asr-1.7b"):
+        for device in ("CPU", "XPU"):
+            viewer._analysis_jobs.clear()
+            request = CreateAnalysisRequest(
+                "sample.mp4", model_name=model_name,
+                backend=InferenceBackend.QWEN_ASR, device=device,
+            )
+            assert viewer.start_analysis(request)["job_id"].startswith("job_")
 
 
 def test_analysis_job_keeps_last_percent_on_failure(tmp_path, monkeypatch):

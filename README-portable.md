@@ -1,13 +1,22 @@
-# Madnolia Windows portable
+# Madnolia Windows 설치
 
-ZIP 파일을 원하는 위치에 압축 해제하고 `Madnolia.exe`를 실행하세요. 브라우저에서 `http://127.0.0.1:8000`이 열립니다. 실행 중 콘솔 창을 닫으면 서버도 종료됩니다.
+Windows 10·11 64비트에서 **`Madnolia-Setup.exe` 하나만 받아 실행**하세요. Python이나 CUDA Toolkit을 직접 설치할 필요가 없습니다.
 
-분석할 영상은 `data/input/videos/`에 넣으세요. 분석 화면에서 선택한 모델은 처음 사용할 때 다운로드되며, 다운로드 진행 상황이 표시됩니다. 모델, 다운로드 캐시, 프로젝트, 분석 결과는 모두 이 폴더의 `data/` 아래에 저장됩니다. ZIP 파일에는 모델과 개인 데이터가 포함되지 않습니다.
+1. 설치기를 실행하고 설치를 누릅니다. 인터넷에서 프로그램을 내려받고 무결성을 확인합니다.
+2. 설치가 끝나면 바탕 화면이나 시작 메뉴의 **Madnolia**를 실행합니다.
+3. 열린 화면에서 영상 파일을 선택하거나 끌어다 놓습니다.
+4. 모델을 선택하고 분석을 시작합니다. 처음 쓰는 모델은 인터넷으로 자동 다운로드합니다.
 
-폴더 전체를 다른 위치로 옮길 수 있습니다. 기존 데이터까지 유지하려면 `data/` 폴더도 함께 옮기세요. 업데이트할 때에는 새 ZIP을 압축 해제한 후 기존 `data/` 폴더를 새 폴더로 복사하세요.
+Intel·NVIDIA GPU를 자동 감지하며 CPU 실행도 지원합니다. 그래픽 드라이버는 제조사의 최신 버전을 권장합니다. NVIDIA CUDA 가속은 Whisper 전사에 사용하고, 정렬·음향 분석은 CPU에서 실행합니다. Intel GPU에서는 OpenVINO 가속을 지원합니다. 이 설치판의 Qwen3-ASR는 CPU에서 실행하며, PyTorch XPU는 포함하지 않습니다.
 
-GPU에 맞는 ZIP을 선택하세요: Intel GPU 또는 CPU는 `Madnolia-windows-intel-cpu.zip`, NVIDIA GPU는 `Madnolia-windows-nvidia-cuda.zip`, AMD GPU는 `Madnolia-windows-amd-vulkan.zip`입니다. 모든 ZIP은 CPU 실행과 OpenVINO 기반 정렬·음향 분석을 지원합니다. NVIDIA ZIP에는 CUDA 라이브러리, AMD ZIP에는 Vulkan 전사 실행 파일이 추가됩니다. GPU 제조사에 맞는 그래픽 드라이버가 필요합니다. 프로그램은 포함된 실행 방식을 확인해 GPU를 자동 선택하며, 사용할 수 없으면 CPU로 실행합니다. 분석 화면에서 실행 방식을 변경할 수 있습니다.
+프로그램은 `%LOCALAPPDATA%\Programs\Madnolia`에 설치됩니다. 영상, 모델, 프로젝트와 결과는 `%LOCALAPPDATA%\Madnolia\data`, 로그는 `%LOCALAPPDATA%\Madnolia\logs`에 저장됩니다. 새 설치기로 업데이트하거나 Windows 설정에서 앱을 제거해도 이 사용자 데이터는 유지됩니다. 완전히 지우려면 필요한 결과를 백업한 뒤 `%LOCALAPPDATA%\Madnolia`를 직접 삭제하세요.
 
-첫 모델 다운로드에는 인터넷 연결이 필요합니다. NVIDIA/AMD에서는 전사를 GPU에서 실행하고 CTC 정렬과 HuBERT 음향 분석은 CPU에서 실행합니다. AMD는 별도 GGML Whisper 모델을 `data/cache/models/vulkan/`에 다운로드합니다. 뷰어는 `127.0.0.1`에서만 접속할 수 있습니다.
+설치와 첫 모델 준비에는 인터넷과 충분한 디스크 여유 공간이 필요합니다. 프로그램과 모델 다운로드는 수 GB 이상일 수 있습니다. 설치 오류가 나면 인터넷 연결과 디스크 공간을 확인하고 설치기를 다시 실행하세요.
 
-CLI를 사용하려면 PowerShell에서 `./Madnolia.exe --help`를 실행하세요.
+기존 ZIP 사용자는 기존 `data` 폴더를 `%LOCALAPPDATA%\Madnolia\data`로 복사하면 결과와 모델을 이어서 사용할 수 있습니다. 이미 새 설치판을 사용했다면 두 폴더를 먼저 백업하세요.
+
+## 배포 빌드
+
+`v0.2.2` 같은 버전 태그를 푸시하면 GitHub Actions가 웹 화면과 실행 파일을 빌드하고, 하나의 설치기와 다운로드 조각을 같은 GitHub Release에 게시합니다. 설치기는 해당 버전의 정확한 URL과 SHA256만 사용합니다. 사용자는 `.part` 파일을 따로 받을 필요가 없습니다.
+
+Actions의 수동 실행은 게시하지 않고 검토용 아티팩트만 만듭니다. 입력한 `release_tag`의 파일이 실제 Release에 게시되기 전에는 그 설치기의 온라인 다운로드가 작동하지 않습니다. 설치기 소스는 `installer/Madnolia.iss`, 패키징 스크립트는 `installer/package_release.py`입니다. 컴파일러는 Inno Setup 6.7.3을 사용합니다.

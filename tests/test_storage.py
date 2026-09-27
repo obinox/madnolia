@@ -1,3 +1,9 @@
+import json
+from unittest.mock import MagicMock
+
+import pytest
+
+from madnolia import storage
 from madnolia.storage import initialize_database, save_analysis
 from madnolia.types.common import (
     AlignmentMethod,
@@ -56,3 +62,68 @@ def test_openvino_phone_without_confidence_is_stored(tmp_path) -> None:
     finally:
         connection.close()
     assert stored == (None,)
+
+
+def test_write_json_keeps_existing_file_when_serialization_fails(tmp_path) -> None:
+    path = tmp_path / "project.json"
+    original = '{"saved": true}\n'
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(TypeError):
+        storage.write_json(path, {"value": object()})
+
+    assert path.read_text(encoding="utf-8") == original
+    assert list(tmp_path.glob(".project.json.*.tmp")) == []
+
+
+def test_write_json_preserves_json_encoding_and_format(tmp_path) -> None:
+    path = tmp_path / "project.json"
+    data = {"text": "한국어", "saved": True}
+
+    storage.write_json(path, data)
+
+    assert path.read_text(encoding="utf-8") == json.dumps(data, ensure_ascii=False, indent=2)
+    assert list(tmp_path.glob(".project.json.*.tmp")) == []
+
+
+def test_write_json_keeps_existing_file_and_cleans_temp_when_replace_fails(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "project.json"
+    original = '{"saved": true}\n'
+    path.write_text(original, encoding="utf-8")
+
+    def fail_replace(source, destination):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(storage.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        storage.write_json(path, {"saved": False})
+
+    assert path.read_text(encoding="utf-8") == original
+    assert list(tmp_path.glob(".project.json.*.tmp")) == []
+
+
+def test_write_json_keeps_existing_file_and_cleans_temp_when_write_fails(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "project.json"
+    original = '{"saved": true}\n'
+    path.write_text(original, encoding="utf-8")
+    stream = MagicMock()
+    stream.__enter__.return_value = stream
+    stream.__exit__.return_value = False
+    stream.write.side_effect = OSError("disk full")
+
+    def failing_fdopen(descriptor, *args, **kwargs):
+        storage.os.close(descriptor)
+        return stream
+
+    monkeypatch.setattr(storage.os, "fdopen", failing_fdopen)
+
+    with pytest.raises(OSError, match="disk full"):
+        storage.write_json(path, {"saved": False})
+
+    assert path.read_text(encoding="utf-8") == original
+    assert list(tmp_path.glob(".project.json.*.tmp")) == []

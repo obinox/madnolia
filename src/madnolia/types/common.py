@@ -51,7 +51,7 @@ class AlignmentStatus(StrEnum):
 class InferenceBackend(StrEnum):
     FASTER_WHISPER = "faster-whisper"
     OPENVINO = "openvino"
-    VULKAN = "vulkan"
+    QWEN_ASR = "qwen3-asr"
 
 
 @dataclass(frozen=True)

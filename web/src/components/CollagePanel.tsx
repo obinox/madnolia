@@ -8,7 +8,7 @@ import {
   searchCandidates,
   updateComposition,
 } from "../api"
-import { MAX_STRETCH_PERCENT, MIN_STRETCH_PERCENT } from "../constants"
+import { COLLAGE_EXPORT_TARGETS, MAX_STRETCH_PERCENT, MIN_STRETCH_PERCENT } from "../constants"
 import type {
   CandidateSearchResult,
   CollagePanelProps,
@@ -19,8 +19,6 @@ import type {
   UnitCandidate,
 } from "../types"
 import { formatTime } from "./Timeline"
-
-const EXPORT_TARGETS: ExportTarget[] = ["WAV", "MP4", "JSON", "EDL", "FCPXML"]
 
 export function CollagePanel({ projectId, initialCompositionId, onPreview }: CollagePanelProps) {
   const [targetText, setTargetText] = useState("")
@@ -35,6 +33,19 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
   const [message, setMessage] = useState("")
   const [previewUrl, setPreviewUrl] = useState("")
   const previewController = useRef<AbortController | null>(null)
+  const projectIdRef = useRef(projectId)
+  const compositionsRequestId = useRef(0)
+  const appliedInitialCompositionKey = useRef("")
+  projectIdRef.current = projectId
+
+  const reloadProjectCompositions = async (targetProjectId: string): Promise<void> => {
+    if (projectIdRef.current !== targetProjectId) return
+    const requestId = ++compositionsRequestId.current
+    const items = await fetchCompositions(targetProjectId)
+    if (requestId === compositionsRequestId.current && projectIdRef.current === targetProjectId) {
+      setCompositions(items)
+    }
+  }
 
   useEffect(() => {
     if (previewController.current) {
@@ -50,22 +61,37 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
   }, [previewUrl])
 
   useEffect(() => {
+    compositionsRequestId.current += 1
     setResult(null)
     setSegments([])
     setCompositionId("")
     setMessage("")
-    void reloadCompositions(projectId, setCompositions)
+    setBusy(false)
+    setCompositions([])
+    void reloadProjectCompositions(projectId).catch((error: Error) => {
+      if (projectIdRef.current === projectId) setMessage(error.message)
+    })
+    return () => { compositionsRequestId.current += 1 }
   }, [projectId])
 
   useEffect(() => {
-    const selected = compositions.find((item) => item.composition_id === initialCompositionId)
+    if (!initialCompositionId) {
+      appliedInitialCompositionKey.current = ""
+      return
+    }
+    const key = `${projectId}:${initialCompositionId}`
+    if (appliedInitialCompositionKey.current === key) return
+    const selected = compositions.find((item) =>
+      item.composition_id === initialCompositionId && item.corpus_project_id === projectId,
+    )
     if (!selected) return
+    appliedInitialCompositionKey.current = key
     setCompositionId(selected.composition_id)
     setName(selected.name)
     setTargetText(selected.target_text)
     setCrossfadeMs(selected.crossfade_ms)
     setSegments(selected.segments)
-  }, [initialCompositionId, compositions])
+  }, [initialCompositionId, compositions, projectId])
 
   const visibleCandidates = useMemo(
     () => result?.candidates.filter(
@@ -80,15 +106,18 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
     setMessage("")
     try {
       const next = await searchCandidates(projectId, targetText)
+      if (projectIdRef.current !== projectId) return
       setResult(next)
       setSelectedPhone(0)
       setSegments([])
       setCompositionId("")
       setMessage(`${next.target_phones.length}개 음소 · ${next.candidates.length}개 후보`)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
+      if (projectIdRef.current === projectId) {
+        setMessage(error instanceof Error ? error.message : String(error))
+      }
     } finally {
-      setBusy(false)
+      if (projectIdRef.current === projectId) setBusy(false)
     }
   }
 
@@ -156,24 +185,32 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
     }
   }
 
+  const persistComposition = async (): Promise<CompositionProject> => {
+    const body = buildRequest()
+    const saved = compositionId
+      ? await updateComposition(compositionId, body)
+      : await createComposition(projectId, body)
+    if (projectIdRef.current === projectId) setCompositionId(saved.composition_id)
+    await reloadProjectCompositions(projectId)
+    return saved
+  }
+
   const save = async () => {
     if (!result && !compositionId) {
       setMessage("먼저 문장을 검색하세요.")
       return
     }
     setBusy(true)
+    setMessage("")
     try {
-      const body = buildRequest()
-      const saved = compositionId
-        ? await updateComposition(compositionId, body)
-        : await createComposition(projectId, body)
-      setCompositionId(saved.composition_id)
-      await reloadCompositions(projectId, setCompositions)
-      setMessage(`저장됨 · ${saved.composition_id}`)
+      const saved = await persistComposition()
+      if (projectIdRef.current === projectId) setMessage(`저장됨 · ${saved.composition_id}`)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
+      if (projectIdRef.current === projectId) {
+        setMessage(error instanceof Error ? error.message : String(error))
+      }
     } finally {
-      setBusy(false)
+      if (projectIdRef.current === projectId) setBusy(false)
     }
   }
 
@@ -190,18 +227,22 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
   }
 
   const runExport = async (target: ExportTarget) => {
-    if (!compositionId) {
-      setMessage("먼저 조립 프로젝트를 저장하세요.")
+    if (!result && !compositionId) {
+      setMessage("먼저 문장을 검색하세요.")
       return
     }
     setBusy(true)
+    setMessage("")
     try {
-      await exportComposition(compositionId, target)
-      setMessage(`${target} 익스포트 완료`)
+      const saved = await persistComposition()
+      await exportComposition(saved.composition_id, target)
+      if (projectIdRef.current === projectId) setMessage(`${target} 익스포트 완료`)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
+      if (projectIdRef.current === projectId) {
+        setMessage(error instanceof Error ? error.message : String(error))
+      }
     } finally {
-      setBusy(false)
+      if (projectIdRef.current === projectId) setBusy(false)
     }
   }
 
@@ -360,8 +401,8 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
           {!segments.length && <span className="muted">후보의 배치 버튼을 눌러 타임라인을 만드세요.</span>}
         </div>
         <div className="export-row">
-          {EXPORT_TARGETS.map((target) => (
-            <button key={target} disabled={busy || !compositionId} onClick={() => void runExport(target)}>
+          {COLLAGE_EXPORT_TARGETS.map((target) => (
+            <button key={target} disabled={busy || (!result && !compositionId)} onClick={() => void runExport(target)}>
               {target}
             </button>
           ))}
@@ -388,11 +429,4 @@ function retime(segments: TimelineSegment[]): TimelineSegment[] {
     cursor = start + duration
     return { ...segment, gap_before_ms: index ? gap : 0, timeline_start_ms: start, timeline_end_ms: cursor }
   })
-}
-
-async function reloadCompositions(
-  projectId: string,
-  apply: (items: CompositionProject[]) => void,
-): Promise<void> {
-  apply(await fetchCompositions(projectId))
 }

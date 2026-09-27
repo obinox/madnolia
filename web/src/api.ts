@@ -12,7 +12,18 @@ import type {
   AnalysisAction,
   AnalysisSettings,
   DetectedAnalysisHardware,
+  AlignmentTestData,
+  ApiErrorResponse,
+  VideoUploadResult,
 } from "./types"
+
+const responseError = async (response: Response): Promise<string> => {
+  try {
+    const body = await response.json() as ApiErrorResponse
+    if (typeof body.detail === "string") return body.detail
+  } catch { }
+  return `${response.status} ${response.statusText}`
+}
 
 const request = async <T>(
   path: string,
@@ -25,17 +36,50 @@ const request = async <T>(
     headers: init?.body ? { "Content-Type": "application/json", ...init.headers } : init?.headers,
   })
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`)
+    throw new Error(await responseError(response))
   }
   return response.json() as Promise<T>
 }
 
 export const fetchProjects = (): Promise<ProjectSummary[]> => request("/api/projects")
+export const fetchAlignmentTest = (): Promise<AlignmentTestData> => request("/api/alignment-test")
+export const fetchAlignmentTestWaveform = (
+  startMs: number, endMs: number, signal: AbortSignal,
+): Promise<WaveformData> => request(
+  `/api/alignment-test/waveform?start_ms=${Math.round(startMs)}&end_ms=${Math.round(endMs)}&bins=1200`,
+  signal,
+)
 export const fetchCollages = (): Promise<CompositionProject[]> => request("/api/collages")
 export const fetchCollage = (id: string): Promise<CompositionProject> =>
   request(`/api/collages/${encodeURIComponent(id)}`)
 
 export const fetchVideos = (): Promise<string[]> => request("/api/videos")
+export const uploadVideo = (
+  file: File,
+  onProgress: (percent: number) => void,
+): Promise<VideoUploadResult> => new Promise((resolve, reject) => {
+  const form = new FormData()
+  form.append("file", file)
+  const xhr = new XMLHttpRequest()
+  xhr.open("POST", "/api/videos")
+  xhr.upload.onprogress = (event) => {
+    if (event.lengthComputable) onProgress(Math.round(event.loaded / event.total * 100))
+  }
+  xhr.onerror = () => reject(new Error("업로드 중 연결이 끊겼습니다. 다시 시도해 주세요."))
+  xhr.onabort = () => reject(new Error("업로드가 취소되었습니다."))
+  xhr.onload = () => {
+    let body: VideoUploadResult | ApiErrorResponse
+    try { body = JSON.parse(xhr.responseText) as VideoUploadResult | ApiErrorResponse }
+    catch { reject(new Error(`${xhr.status} ${xhr.statusText}`)); return }
+    if (xhr.status < 200 || xhr.status >= 300) {
+      reject(new Error("detail" in body && typeof body.detail === "string"
+        ? body.detail : `${xhr.status} ${xhr.statusText}`))
+      return
+    }
+    resolve(body as VideoUploadResult)
+  }
+  xhr.send(form)
+})
 export const fetchAnalysisHardware = (): Promise<DetectedAnalysisHardware> =>
   request("/api/analysis-hardware")
 

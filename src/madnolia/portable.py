@@ -13,6 +13,9 @@ from madnolia.constants import (
     DEFAULT_VIEWER_PORT,
     GENERAL_CACHE_DIR,
     HUGGINGFACE_CACHE_DIR,
+    INSTALLED_DATA_DIRECTORY,
+    INSTALLED_MODE_MARKER,
+    LAUNCHER_ENVIRONMENT_VARIABLE,
     NLTK_DATA_DIR,
     OPENVINO_WORKER_ARGUMENT,
     TORCH_CACHE_DIR,
@@ -29,14 +32,30 @@ def _open_viewer() -> None:
             sleep(0.2)
 
 
+def runtime_root(executable_root: Path, local_app_data: Path | None = None) -> Path:
+    if not (executable_root / INSTALLED_MODE_MARKER).is_file():
+        return executable_root
+    if local_app_data is None:
+        local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
+    return local_app_data / INSTALLED_DATA_DIRECTORY
+
+
+def web_directory() -> Path:
+    root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path.cwd()
+    return root / "web/dist"
+
+
 def main() -> None:
     cuda_directory_handle = None
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     if getattr(sys, "frozen", False):
-        root = Path(sys.executable).resolve().parent
+        executable_root = Path(sys.executable).resolve().parent
+        root = runtime_root(executable_root)
+        root.mkdir(parents=True, exist_ok=True)
         os.chdir(root)
-        cuda_libraries = root / CUDA_BUNDLE_DIRECTORY
+        cuda_libraries = executable_root / CUDA_BUNDLE_DIRECTORY
         if cuda_libraries.is_dir():
             os.environ["PATH"] = f"{cuda_libraries}{os.pathsep}{os.environ.get('PATH', '')}"
             cuda_directory_handle = os.add_dll_directory(str(cuda_libraries))
@@ -52,7 +71,11 @@ def main() -> None:
         return
     if len(sys.argv) == 1:
         sys.argv.append("viewer")
-    if getattr(sys, "frozen", False) and sys.argv[1:] == ["viewer"]:
+    if (
+        getattr(sys, "frozen", False)
+        and sys.argv[1:] == ["viewer"]
+        and os.environ.get(LAUNCHER_ENVIRONMENT_VARIABLE) != "1"
+    ):
         Thread(target=_open_viewer, daemon=True).start()
     from madnolia.cli import main as cli_main
 

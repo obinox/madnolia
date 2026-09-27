@@ -1,7 +1,7 @@
 import json
 import os
 import shutil
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -26,19 +26,17 @@ from madnolia.constants import (
     CUDA_DEVICE,
     SCHEMA_VERSION,
     SUPPORTED_VIDEO_EXTENSIONS,
-    VULKAN_DEVICE,
+    XPU_DEVICE,
 )
 from madnolia.ctc_alignment import PhonemeCtcAligner
 from madnolia.hierarchy import segment_sentences
 from madnolia.media import get_cached_audio, inspect_media
 from madnolia.phonetics import KoreanPhonetics
 from madnolia.projects import analysis_audio_path
+from madnolia.qwen_transcription import QwenASRTranscriber
 from madnolia.storage import (
-    initialize_database,
     load_analysis,
-    save_analysis,
-    save_project,
-    write_json,
+    publish_analysis_version,
 )
 from madnolia.transcription import LocalWhisperTranscriber, OpenVINOWhisperTranscriber
 from madnolia.types.common import (
@@ -52,7 +50,6 @@ from madnolia.types.common import (
     TranscriptCandidate,
     TranscriptionResult,
 )
-from madnolia.vulkan_transcription import VulkanWhisperTranscriber
 
 
 class IngestionPipeline:
@@ -106,13 +103,11 @@ class IngestionPipeline:
         now = datetime.now().astimezone()
         project_id = f"proj_{now.strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
         project_dir = output_root / project_id
-        analysis_dir = project_dir / "analysis"
         project_dir.mkdir(parents=True, exist_ok=False)
-        connection = initialize_database(project_dir / "corpus.sqlite3")
         results: list[AnalysisResult] = []
         embedding_sets: list[np.ndarray] = []
-        analysis_files: list[str] = []
         audio_files: dict[str, str] = {}
+        centroids: np.ndarray | None = None
         try:
             for index, video_path in enumerate(video_paths):
                 source_id = f"source_{index}_{uuid4().hex[:12]}"
@@ -143,7 +138,9 @@ class IngestionPipeline:
                     progress_callback=lambda fraction: transcription_progress(fraction, 0),
                 )
                 sentences = segment_sentences(transcription.words)
-                transcript_candidates = [_transcript_candidate(0, self._model_name, transcription)]
+                transcript_candidates = [
+                    _transcript_candidate(0, self._model_name, transcription, self._backend)
+                ]
                 for candidate_index, model_name in enumerate(self._candidate_models, start=1):
                     candidate = self._create_transcriber(model_name).transcribe(
                         audio_path,
@@ -153,7 +150,7 @@ class IngestionPipeline:
                         ),
                     )
                     transcript_candidates.append(
-                        _transcript_candidate(candidate_index, model_name, candidate)
+                        _transcript_candidate(candidate_index, model_name, candidate, self._backend)
                     )
                 report("발음 정렬", ANALYSIS_PROGRESS_ALIGNMENT)
                 if self._alignment_mode == AlignmentMode.CTC:
@@ -201,7 +198,6 @@ class IngestionPipeline:
                     transcript_candidates=transcript_candidates,
                 )
                 results.append(result)
-            acoustic_unit_centroids_file = None
             if self._discover_acoustic_units:
                 unit_ids, centroids = cluster_acoustic_units(
                     embedding_sets,
@@ -217,51 +213,46 @@ class IngestionPipeline:
                     )
                     for result, source_unit_ids in zip(results, unit_ids, strict=True)
                 ]
-                centroids_path = analysis_dir / "acoustic_unit_centroids.npy"
-                centroids_path.parent.mkdir(parents=True, exist_ok=True)
-                np.save(centroids_path, centroids)
-                acoustic_unit_centroids_file = centroids_path.relative_to(project_dir).as_posix()
-            for result in results:
-                report("분석 결과 저장", ANALYSIS_PROGRESS_STORAGE)
-                result_path = analysis_dir / f"{result.source.source_id}.json"
-                write_json(result_path, result.to_dict())
-                save_analysis(connection, result)
-                analysis_files.append(result_path.relative_to(project_dir).as_posix())
+            report("분석 결과 저장", ANALYSIS_PROGRESS_STORAGE)
+            project = ProjectManifest(
+                project_id=project_id,
+                schema_version=SCHEMA_VERSION,
+                created_at=now.isoformat(),
+                model_name=self._model_name,
+                inference_backend=self._backend,
+                inference_device=self._device,
+                alignment_mode=self._alignment_mode,
+                language="ko",
+                sources=[result.source for result in results],
+                analysis_files=[],
+                database_file="",
+                candidate_models=self._candidate_models,
+                acoustic_unit_centroids_file=None,
+                audio_files=audio_files,
+            )
+            publish_analysis_version(project_dir, results, project.to_dict(), centroids)
         except AnalysisCancelled:
-            connection.close()
-            shutil.rmtree(project_dir)
+            output_root_resolved = output_root.resolve()
+            project_dir_resolved = project_dir.resolve()
+            if project_dir_resolved.parent == output_root_resolved:
+                shutil.rmtree(project_dir_resolved)
             raise
-        finally:
-            connection.close()
-        project = ProjectManifest(
-            project_id=project_id,
-            schema_version=SCHEMA_VERSION,
-            created_at=now.isoformat(),
-            model_name=self._model_name,
-            inference_backend=self._backend,
-            inference_device=self._device,
-            alignment_mode=self._alignment_mode,
-            language="ko",
-            sources=[result.source for result in results],
-            analysis_files=analysis_files,
-            database_file="corpus.sqlite3",
-            candidate_models=self._candidate_models,
-            acoustic_unit_centroids_file=acoustic_unit_centroids_file,
-            audio_files=audio_files,
-        )
-        save_project(project_dir / "project.json", project)
         return project_dir
 
     def _create_transcriber(self, model_name: str) -> Transcriber:
         if self._backend == InferenceBackend.OPENVINO:
             return OpenVINOWhisperTranscriber(model_name, self._device)
-        if self._backend == InferenceBackend.VULKAN:
-            return VulkanWhisperTranscriber(model_name)
+        if self._backend == InferenceBackend.QWEN_ASR:
+            return QwenASRTranscriber(model_name, self._device)
         return LocalWhisperTranscriber(model_name, self._device)
 
     @property
     def _auxiliary_device(self) -> str:
-        return "CPU" if self._device.upper() in (CUDA_DEVICE, VULKAN_DEVICE) else self._device
+        if self._device.upper() == CUDA_DEVICE:
+            return "CPU"
+        if self._device.upper() == XPU_DEVICE:
+            return "GPU"
+        return self._device
 
 
 def finalize_project(
@@ -271,47 +262,40 @@ def finalize_project(
     device: str,
     alignment_mode: AlignmentMode = AlignmentMode.ESTIMATED,
 ) -> Path:
-    analysis_paths = sorted((project_dir / "analysis").glob("*.json"))
-    if not analysis_paths:
-        raise ValueError(f"분석 JSON이 없습니다: {project_dir}")
+    manifest_path = project_dir / "project.json"
+    previous = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else None
+    analysis_paths = _active_analysis_paths(project_dir, previous, "*.json")
     results = [load_analysis(path) for path in analysis_paths]
-    previous_path = project_dir / "project.json"
-    previous = (
-        json.loads(previous_path.read_text(encoding="utf-8")) if previous_path.is_file() else {}
+    centroids = _load_active_centroids(project_dir, previous)
+    created_at = (
+        previous.get("created_at")
+        if previous is not None
+        else datetime.fromtimestamp(project_dir.stat().st_ctime).astimezone().isoformat()
     )
-    audio_files = previous.get("audio_files", {})
-    connection = initialize_database(project_dir / "corpus.sqlite3")
-    try:
-        for result in results:
-            save_analysis(connection, result)
-    finally:
-        connection.close()
-    created_at = datetime.fromtimestamp(project_dir.stat().st_ctime).astimezone()
-    project = ProjectManifest(
-        project_id=project_dir.name,
-        schema_version=SCHEMA_VERSION,
-        created_at=created_at.isoformat(),
-        model_name=model_name,
-        inference_backend=backend,
-        inference_device=device,
-        alignment_mode=alignment_mode,
-        language="ko",
-        sources=[result.source for result in results],
-        analysis_files=[path.relative_to(project_dir).as_posix() for path in analysis_paths],
-        database_file="corpus.sqlite3",
-        candidate_models=list(
-            dict.fromkeys(
-                candidate.model_name
-                for result in results
-                for candidate in result.transcript_candidates
-                if candidate.model_name != model_name
-            )
-        ),
-        acoustic_unit_centroids_file=None,
-        nickname=previous.get("nickname"),
-        audio_files=audio_files,
+    manifest = dict(previous or {})
+    manifest.update(
+        {
+            "project_id": project_dir.name,
+            "schema_version": SCHEMA_VERSION,
+            "created_at": created_at,
+            "model_name": model_name,
+            "inference_backend": backend.value,
+            "inference_device": device,
+            "alignment_mode": alignment_mode.value,
+            "language": "ko",
+            "sources": [asdict(result.source) for result in results],
+            "candidate_models": list(
+                dict.fromkeys(
+                    candidate.model_name
+                    for result in results
+                    for candidate in result.transcript_candidates
+                    if candidate.model_name != model_name
+                )
+            ),
+            "audio_files": dict((previous or {}).get("audio_files", {})),
+        }
     )
-    save_project(project_dir / "project.json", project)
+    publish_analysis_version(project_dir, results, manifest, centroids)
     return project_dir
 
 
@@ -320,9 +304,11 @@ def realign_project(
     device: str,
     discover_acoustic_units: bool,
 ) -> Path:
-    analysis_paths = sorted((project_dir / "analysis").glob("source_*.json"))
-    if not analysis_paths:
-        raise ValueError(f"분석 JSON이 없습니다: {project_dir}")
+    manifest_path = project_dir / "project.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(manifest_path)
+    previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+    analysis_paths = _active_analysis_paths(project_dir, previous, "source_*.json")
     phonetics = KoreanPhonetics()
     results: list[AnalysisResult] = []
     embedding_sets: list[np.ndarray] = []
@@ -351,7 +337,7 @@ def realign_project(
                 acoustic_features=features,
             )
         )
-    centroids_file = None
+    centroids = None
     if discover_acoustic_units:
         unit_ids, centroids = cluster_acoustic_units(embedding_sets)
         results = [
@@ -361,32 +347,58 @@ def realign_project(
             )
             for result, source_units in zip(results, unit_ids, strict=True)
         ]
-        centroids_path = project_dir / "analysis" / "acoustic_unit_centroids.npy"
-        np.save(centroids_path, centroids)
-        centroids_file = centroids_path.relative_to(project_dir).as_posix()
-    connection = initialize_database(project_dir / "corpus.sqlite3")
-    try:
-        for analysis_path, result in zip(analysis_paths, results, strict=True):
-            write_json(analysis_path, result.to_dict())
-            save_analysis(connection, result)
-    finally:
-        connection.close()
-    manifest_path = project_dir / "project.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["schema_version"] = SCHEMA_VERSION
-    manifest["alignment_mode"] = AlignmentMode.CTC.value
-    manifest["acoustic_unit_centroids_file"] = centroids_file
-    write_json(manifest_path, manifest)
+    manifest = dict(previous)
+    manifest.update(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "alignment_mode": AlignmentMode.CTC.value,
+            "sources": [asdict(result.source) for result in results],
+        }
+    )
+    publish_analysis_version(project_dir, results, manifest, centroids)
     return project_dir
+
+
+def _active_analysis_paths(
+    project_dir: Path,
+    manifest: dict[str, object] | None,
+    legacy_pattern: str,
+) -> list[Path]:
+    if manifest is None:
+        paths = sorted((project_dir / "analysis").glob(legacy_pattern))
+    else:
+        analysis_files = manifest.get("analysis_files")
+        if not isinstance(analysis_files, list) or not analysis_files:
+            raise ValueError(f"Active manifest has no analysis files: {project_dir}")
+        paths = [project_dir / str(relative_path) for relative_path in analysis_files]
+        missing = [path for path in paths if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(missing[0])
+    if not paths:
+        raise ValueError(f"No analysis JSON files: {project_dir}")
+    return paths
+
+
+def _load_active_centroids(
+    project_dir: Path,
+    manifest: dict[str, object] | None,
+) -> np.ndarray | None:
+    if manifest is None:
+        return None
+    relative_path = manifest.get("acoustic_unit_centroids_file")
+    if not relative_path:
+        return None
+    return np.load(project_dir / str(relative_path))
 
 
 def _transcript_candidate(
     candidate_index: int,
     model_name: str,
     transcription: TranscriptionResult,
+    backend: InferenceBackend,
 ) -> TranscriptCandidate:
     return TranscriptCandidate(
-        candidate_id=f"whisper_{candidate_index}_{model_name}",
+        candidate_id=f"{'qwen' if backend == InferenceBackend.QWEN_ASR else 'whisper'}_{candidate_index}_{model_name}",
         model_name=model_name,
         transcript=transcription.transcript,
         language_probability=transcription.language_probability,

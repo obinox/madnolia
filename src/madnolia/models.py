@@ -14,6 +14,9 @@ from madnolia.constants import (
     HUBERT_OPENVINO_MODEL_PATH,
     MODEL_CACHE_DIR,
     OPENVINO_MODEL_REPOSITORIES,
+    QWEN_ALIGNER_REPOSITORY,
+    QWEN_ASR_MODEL_REPOSITORIES,
+    QWEN_REQUIRED_MODEL_FILES,
 )
 from madnolia.types.common import (
     AlignmentMode,
@@ -22,7 +25,6 @@ from madnolia.types.common import (
     ModelDownloadCallback,
     ModelDownloadProgressBar,
 )
-from madnolia.vulkan_transcription import ensure_vulkan_model
 
 
 def ensure_analysis_models(
@@ -64,8 +66,15 @@ def ensure_analysis_models(
                     on_download,
                     checkpoint,
                 )
-        elif backend == InferenceBackend.VULKAN:
-            ensure_vulkan_model(name, on_download, checkpoint)
+        elif backend == InferenceBackend.QWEN_ASR:
+            repository = QWEN_ASR_MODEL_REPOSITORIES[name]
+            directory = MODEL_CACHE_DIR / "huggingface" / repository.rsplit("/", 1)[-1]
+            if not all((directory / filename).is_file() for filename in QWEN_REQUIRED_MODEL_FILES):
+                _download_repository(
+                    repository, directory, name,
+                    ("*.safetensors", "*.json", "*.jinja", "*.txt"),
+                    on_download, checkpoint,
+                )
         else:
             repository = FASTER_WHISPER_MODEL_REPOSITORIES.get(name)
             if repository is None:
@@ -80,6 +89,14 @@ def ensure_analysis_models(
                     on_download,
                     checkpoint,
                 )
+    if backend == InferenceBackend.QWEN_ASR:
+        directory = MODEL_CACHE_DIR / "huggingface" / QWEN_ALIGNER_REPOSITORY.rsplit("/", 1)[-1]
+        if not all((directory / filename).is_file() for filename in QWEN_REQUIRED_MODEL_FILES):
+            _download_repository(
+                QWEN_ALIGNER_REPOSITORY, directory, "Qwen3 word alignment",
+                ("*.safetensors", "*.json", "*.jinja", "*.txt"),
+                on_download, checkpoint,
+            )
     if alignment_mode == AlignmentMode.CTC:
         _ensure_torch_model(
             CTC_MODEL_REPOSITORY,

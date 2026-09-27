@@ -9,6 +9,7 @@ root = Path(SPECPATH)
 datas = []
 binaries = []
 hiddenimports = collect_submodules("madnolia")
+hiddenimports += collect_submodules("transformers.models.qwen3_asr")
 
 for package in ("openvino", "openvino_genai", "openvino_tokenizers", "ctranslate2", "g2pk", "jamo", "nltk"):
     package_datas, package_binaries, package_hiddenimports = collect_all(package)
@@ -31,7 +32,10 @@ hiddenimports += [
 ]
 
 a = Analysis(
-    [str(root / "src" / "madnolia" / "portable.py")],
+    [
+        str(root / "src" / "madnolia" / "portable.py"),
+        str(root / "src" / "madnolia" / "launcher.py"),
+    ],
     pathex=[str(root / "src")],
     binaries=binaries,
     datas=datas,
@@ -44,16 +48,27 @@ a = Analysis(
 )
 a.binaries = [item for item in a.binaries if not item[0].startswith("nvidia\\")]
 pyz = PYZ(a.pure)
-exe = EXE(
+console_scripts = [entry for entry in a.scripts if Path(entry[1]).name != "launcher.py"]
+launcher_scripts = [entry for entry in a.scripts if Path(entry[1]).name != "portable.py"]
+console_exe = EXE(
     pyz,
-    a.scripts,
+    console_scripts,
     [],
     exclude_binaries=True,
     name="Madnolia",
     console=True,
 )
+launcher_exe = EXE(
+    pyz,
+    launcher_scripts,
+    [],
+    exclude_binaries=True,
+    name="MadnoliaLauncher",
+    console=False,
+)
 coll = COLLECT(
-    exe,
+    console_exe,
+    launcher_exe,
     a.binaries,
     a.datas,
     strip=False,

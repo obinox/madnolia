@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react"
 
-import { controlAnalysisJob, fetchAnalysisHardware, fetchAnalysisJob, fetchVideos, startAnalysis } from "../api"
+import { controlAnalysisJob, fetchAnalysisHardware, fetchAnalysisJob, fetchVideos, startAnalysis, uploadVideo } from "../api"
 import {
+  VIDEO_UPLOAD_ACCEPT,
   ANALYSIS_MODEL_OPTIONS,
+  QWEN_ASR_MODEL_OPTIONS,
   ANALYSIS_DEVICE_OPTIONS,
   ANALYSIS_NICKNAME_MAX_LENGTH,
   ANALYSIS_JOB_STORAGE_KEY,
@@ -34,8 +36,13 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
   const displayedPercentRef = useRef(0)
   const [message, setMessage] = useState("")
   const [busy, setBusy] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadPercent, setUploadPercent] = useState(0)
+  const [dragging, setDragging] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [hardware, setHardware] = useState<DetectedAnalysisHardware | null>(null)
   const deviceChangedRef = useRef(false)
+  const modelOptions = settings.backend === "qwen3-asr" ? QWEN_ASR_MODEL_OPTIONS : ANALYSIS_MODEL_OPTIONS
 
   useEffect(() => {
     fetchAnalysisHardware()
@@ -146,14 +153,56 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
     } finally { setBusy(false) }
   }
 
+  const importVideo = async (file?: File) => {
+    if (!file || uploading || jobId) return
+    setMessage("")
+    setUploadPercent(0)
+    setUploading(true)
+    try {
+      const uploaded = await uploadVideo(file, setUploadPercent)
+      setFilename(uploaded.filename)
+      setVideos((current) => current.includes(uploaded.filename)
+        ? current : [...current, uploaded.filename].sort())
+      const available = await fetchVideos()
+      setVideos(available)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ""
+    }
+  }
+
   return (
     <section className="workflow-page">
       <div className="page-intro">
         <p className="section-label">STEP 01 / ANALYZE</p>
         <h2>영상 분석</h2>
-        <p>서버의 data/input/videos 폴더에 있는 영상으로 분석 결과를 만듭니다.</p>
+        <p>분석할 영상을 선택하거나 아래 영역에 끌어다 놓으세요.</p>
       </div>
       <div className="panel workflow-card">
+        <div className={`video-drop-zone${dragging ? " dragging" : ""}`}
+          onDragOver={(event) => { event.preventDefault(); setDragging(true) }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false)
+          }}
+          onDrop={(event) => {
+            event.preventDefault()
+            setDragging(false)
+            void importVideo(event.dataTransfer.files[0])
+          }}>
+          <strong>영상 파일을 여기에 끌어다 놓으세요</strong>
+          <span>또는 파일을 직접 선택할 수 있습니다. 큰 영상은 업로드가 끝날 때까지 잠시 기다려 주세요.</span>
+          <input ref={fileInputRef} id="analysis-video-file" type="file" accept={VIDEO_UPLOAD_ACCEPT}
+            className="visually-hidden" disabled={uploading || !!jobId}
+            onChange={(event) => void importVideo(event.currentTarget.files?.[0])} />
+          <button type="button" disabled={uploading || !!jobId}
+            onClick={() => fileInputRef.current?.click()}>영상 파일 선택</button>
+          {uploading && <div className="upload-progress" role="status" aria-live="polite">
+            <span>영상 복사 중 {uploadPercent}%</span>
+            <progress aria-label="영상 복사 진행률" max={100} value={uploadPercent} />
+          </div>}
+        </div>
         <label htmlFor="analysis-video">분석할 영상</label>
         <select id="analysis-video" value={filename} onChange={(event) => setFilename(event.target.value)}>
           {videos.map((video) => <option key={video} value={video}>{video}</option>)}
@@ -162,14 +211,14 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
         <input id="analysis-nickname" value={settings.nickname} maxLength={ANALYSIS_NICKNAME_MAX_LENGTH}
           disabled={!!jobId} placeholder="예: 2026 여름 쇼케이스"
           onChange={(event) => setSettings({ ...settings, nickname: event.target.value })} />
-        {!videos.length && <p>영상이 없습니다. data/input/videos 폴더에 영상을 넣고 새로고침하세요.</p>}
+        {!videos.length && <p>아직 추가한 영상이 없습니다. 위에서 영상 파일을 선택해 주세요.</p>}
         <div className="analysis-settings">
           <label>전사 모델
             <select value={settings.model_name} disabled={!!jobId} onChange={(event) => setSettings({
               ...settings, model_name: event.target.value,
               candidate_models: settings.candidate_models.filter((item) => item !== event.target.value),
             })}>
-              {ANALYSIS_MODEL_OPTIONS.map((model) => <option key={model} value={model}>{model}</option>)}
+              {modelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
             </select>
           </label>
           <label>실행 방식
@@ -178,15 +227,17 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
               setSettings({
                 ...settings, backend: event.target.value as AnalysisSettings["backend"],
                 device: ANALYSIS_DEVICE_OPTIONS[event.target.value as AnalysisSettings["backend"]][0],
+                model_name: event.target.value === "qwen3-asr" ? QWEN_ASR_MODEL_OPTIONS[0] : DEFAULT_ANALYSIS_MODEL,
+                candidate_models: [],
               })
             }}>
               <option value="openvino">Intel GPU (OpenVINO)</option>
               <option value="faster-whisper">NVIDIA CUDA / CPU (faster-whisper)</option>
-              <option value="vulkan">AMD GPU (Vulkan)</option>
+              <option value="qwen3-asr">Qwen3-ASR (PyTorch)</option>
             </select>
           </label>
           <label>실행 장치
-            <select value={settings.device} disabled={!!jobId || settings.backend === "vulkan"}
+            <select value={settings.device} disabled={!!jobId}
               onChange={(event) => {
                 deviceChangedRef.current = true
                 setSettings({ ...settings, device: event.target.value as AnalysisSettings["device"] })
@@ -208,7 +259,7 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
               ...settings, candidate_models: event.target.value ? [event.target.value] : [],
             })}>
               <option value="">사용 안 함</option>
-              {ANALYSIS_MODEL_OPTIONS.filter((model) => model !== settings.model_name).map((model) => (
+              {modelOptions.filter((model) => model !== settings.model_name).map((model) => (
                 <option key={model} value={model}>{model}</option>
               ))}
             </select>
@@ -220,7 +271,7 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
           </label>
         </div>
         {hardware && <p>자동 감지: {hardware.gpu_vendor ?? "GPU 없음"} · {hardware.device}. 필요하면 실행 방식을 변경하세요.</p>}
-        <p>전사는 선택한 장치에서 실행하며, NVIDIA/AMD에서는 CTC·HuBERT를 CPU에서 실행합니다.</p>
+        <p>전사는 선택한 장치에서 실행하며, NVIDIA에서는 CTC·HuBERT를 CPU에서 실행합니다.</p>
         <button disabled={!filename || !hardware || !!jobId || busy} onClick={() => void analyze()}>
           {jobId ? "분석 진행 중" : "분석 시작"}
         </button>

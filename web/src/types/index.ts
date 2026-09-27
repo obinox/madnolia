@@ -260,8 +260,8 @@ export interface AnalysisSettings {
   filename: string
   nickname: string
   model_name: string
-  backend: "openvino" | "faster-whisper" | "vulkan"
-  device: "GPU" | "CPU" | "CUDA" | "VULKAN"
+  backend: "openvino" | "faster-whisper" | "qwen3-asr"
+  device: "GPU" | "CPU" | "CUDA" | "XPU"
   alignment_mode: "ctc" | "estimated"
   candidate_models: string[]
   acoustic_units: boolean
@@ -273,9 +273,43 @@ export interface DetectedAnalysisHardware {
   gpu_vendor: string | null
 }
 
+export interface VideoUploadResult {
+  filename: string
+}
+
+export interface ApiErrorResponse {
+  detail?: unknown
+}
+
 export type AnalysisAction = "pause" | "resume" | "stop"
 
-export type WorkflowPage = "analysis" | "projects" | "collage"
+export type WorkflowPage = "analysis" | "projects" | "collage" | "alignment-test"
+
+export type AlignmentTestMethod = "ctc" | "ipa15" | "ipa4" | "ipa2"
+
+export interface AlignmentTestPhone {
+  ipa: string
+  word_index: number
+}
+
+export interface AlignmentTestBoundary {
+  start_ms: number
+  end_ms: number
+  unknown: boolean
+  ipa: string
+}
+
+export interface AlignmentTestResult {
+  total_seconds: number
+  phones: AlignmentTestBoundary[]
+}
+
+export interface AlignmentTestData {
+  duration_ms: number
+  words: TranscriptWord[]
+  phones: AlignmentTestPhone[]
+  results: Record<AlignmentTestMethod, AlignmentTestResult>
+}
 
 export interface AnalysisPageProps {
   onGoToProjects: () => void
