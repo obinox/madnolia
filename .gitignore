@@ -314,6 +314,7 @@ docs/.cache/
 *.iws
 
 # Generated assets and reports
+.runtime-audit/
 *.map
 *.prof
 *.profraw

@@ -11,7 +11,16 @@ binaries = []
 hiddenimports = collect_submodules("madnolia")
 hiddenimports += collect_submodules("transformers.models.qwen3_asr")
 
-for package in ("openvino", "openvino_genai", "openvino_tokenizers", "ctranslate2", "g2pk", "jamo", "nltk"):
+for package in (
+    "faster_whisper",
+    "openvino",
+    "openvino_genai",
+    "openvino_tokenizers",
+    "ctranslate2",
+    "g2pk",
+    "jamo",
+    "nltk",
+):
     package_datas, package_binaries, package_hiddenimports = collect_all(package)
     datas += package_datas
     binaries += package_binaries

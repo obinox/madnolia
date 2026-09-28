@@ -99,25 +99,6 @@ video { display: block; width: 100%; max-height: 62vh; background: #000; }
 .timeline-shell canvas { display: block; touch-action: none; cursor: crosshair; }
 .timeline-hint { display: flex; justify-content: space-between; padding: 8px 2px 0; color: #667789; font: 11px ui-monospace, monospace; }
 
-.alignment-test { display: grid; gap: 16px; }
-.alignment-overview { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; }
-.alignment-audio, .alignment-inspector, .alignment-chart, .alignment-words { padding: 18px; }
-.alignment-audio audio { width: 100%; margin-top: 20px; }
-.alignment-audio .muted { margin-top: 20px; font-size: 13px; }
-.alignment-inspector { display: grid; align-content: start; gap: 8px; }
-.alignment-inspector .section-label { margin: 0; }
-.alignment-inspector button { padding: 9px 12px; border: 1px solid #537ea4; border-radius: 8px; color: #e5f3ff; background: #174068; }
-.alignment-detail { display: grid; grid-template-columns: 100px 1fr; gap: 4px; padding: 7px 0; border-bottom: 1px solid #293542; font-size: 12px; }
-.alignment-detail small { grid-column: 2; color: #9aa9b7; }
-.alignment-scrub { width: 100%; margin: 0 0 10px; accent-color: #65a9ff; }
-.alignment-svg { display: block; width: 100%; min-width: 650px; height: 265px; touch-action: none; cursor: grab; }
-.alignment-svg:active { cursor: grabbing; }
-.alignment-words > div { display: flex; flex-wrap: wrap; gap: 5px; }
-.alignment-words button { padding: 5px 8px; border: 1px solid #293542; border-radius: 5px; color: #dfe8f1; background: #17222c; }
-.alignment-words button:hover { border-color: #65a9ff; }
-.alignment-words button.selected { border-color: #f59e63; background: #45301e; }
-@media (max-width: 850px) { .alignment-overview { grid-template-columns: 1fr; } .alignment-chart .timeline-toolbar { flex-wrap: wrap; } }
-
 .transcript { margin-top: 16px; padding: 18px; }
 .transcript p:last-child { max-height: 180px; margin: 0; overflow: auto; color: #b9c5cf; line-height: 1.8; white-space: pre-wrap; }
 .empty, .error { padding: 24px; }

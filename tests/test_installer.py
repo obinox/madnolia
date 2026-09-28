@@ -32,6 +32,38 @@ def test_release_manifest_matches_download_bytes(tmp_path: Path) -> None:
     assert part["sha256"] in metadata
 
 
+def test_bundle_check_rejects_host_cmudict_when_bundle_corpus_is_missing(
+    tmp_path: Path,
+) -> None:
+    import faster_whisper
+    from faster_whisper import vad
+
+    package_root = Path(faster_whisper.__file__).resolve().parent
+    original_loader = vad.SileroVADModel
+    vad.get_vad_model.cache_clear()
+    try:
+        vad.SileroVADModel = lambda path: path
+        source_asset = Path(vad.get_vad_model()).resolve()
+    finally:
+        vad.SileroVADModel = original_loader
+        vad.get_vad_model.cache_clear()
+
+    bundle = tmp_path / "bundle"
+    asset = bundle / "_internal" / source_asset.relative_to(package_root.parent)
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(source_asset.read_bytes())
+
+    result = subprocess.run(
+        [sys.executable, "installer/check_bundle.py", "--bundle", str(bundle)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "cmudict" in result.stderr
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows installer")
 @pytest.mark.parametrize("failure", [None, "checksum", "missing", "traversal"])
 @pytest.mark.parametrize("commands_unavailable", [False, True])

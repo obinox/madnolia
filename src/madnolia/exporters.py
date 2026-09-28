@@ -200,6 +200,10 @@ def _export_mp4(
     width = first.video_width or 1280
     height = first.video_height or 720
     fps = round(first.video_fps or 30)
+    for source_id in {segment.source_id for segment in composition.segments}:
+        with av.open(sources[source_id].path) as container:
+            if not container.streams.video:
+                raise ValueError("MP4 export requires a video track in each selected source.")
     output = av.open(str(destination), "w")
     video_stream = output.add_stream("libx264", rate=fps)
     video_stream.width = width

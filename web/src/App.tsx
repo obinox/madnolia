@@ -11,7 +11,6 @@ import { Timeline, formatTime } from "./components/Timeline"
 import { CollagePanel } from "./components/CollagePanel"
 import { AnalysisPage } from "./components/AnalysisPage"
 import { ProjectsPage } from "./components/ProjectsPage"
-import { AlignmentTestPage } from "./components/AlignmentTestPage"
 import type {
   ProjectDetail,
   ProjectSummary,
@@ -79,8 +78,6 @@ export default function App() {
         setRequestedCollageId("")
         setProjectId(decodeURIComponent(hash.slice("#/collage/".length)))
         setPage("collage")
-      } else if (hash === "#/alignment-test") {
-        setPage("alignment-test")
       } else if (hash === "#/projects") {
         setPage("projects")
       } else {
@@ -350,7 +347,6 @@ export default function App() {
           <h1>Madnolia Viewer</h1>
         </div>
         <nav className="workflow-nav" aria-label="작업 단계">
-          <a href="#/alignment-test" aria-current={page === "alignment-test" ? "page" : undefined}>IPA 테스트</a>
           <a href="#/analysis" aria-current={page === "analysis" ? "page" : undefined}>1. 영상 분석</a>
           <a href="#/projects" aria-current={page === "projects" ? "page" : undefined}>2. 프로젝트</a>
           {projectId && <a href={`#/collage/${encodeURIComponent(projectId)}`}
@@ -399,8 +395,6 @@ export default function App() {
 
       {page === "analysis" ? (
         <AnalysisPage onGoToProjects={() => { window.location.hash = "#/projects" }} />
-      ) : page === "alignment-test" ? (
-        <AlignmentTestPage />
       ) : page === "projects" ? (
         <ProjectsPage projects={projects}
           onOpenProject={openProject}

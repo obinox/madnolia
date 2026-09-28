@@ -1,4 +1,7 @@
 import re
+import shutil
+import sys
+from pathlib import Path
 
 import nltk
 
@@ -61,11 +64,17 @@ class KoreanPhonetics:
 def _prepare_nltk_data() -> None:
     data_dir = NLTK_DATA_DIR.resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
+    if getattr(sys, "frozen", False):
+        bundled_archive = Path(sys._MEIPASS) / "nltk_data" / "corpora" / "cmudict.zip"
+        cached_archive = data_dir / "corpora" / "cmudict.zip"
+        if bundled_archive.is_file() and not cached_archive.exists():
+            cached_archive.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(bundled_archive, cached_archive)
     data_path = str(data_dir)
     if data_path not in nltk.data.path:
         nltk.data.path.insert(0, data_path)
     try:
-        nltk.data.find("corpora/cmudict", paths=[data_path])
+        nltk.data.find("corpora/cmudict.zip", paths=[data_path])
     except LookupError:
         if not nltk.download("cmudict", download_dir=data_path, quiet=True):
             raise RuntimeError("g2pK용 cmudict 다운로드에 실패했습니다.")

@@ -23,20 +23,6 @@ export const ANALYSIS_PROGRESS_ANIMATION_PER_PERCENT_MS = 90
 export const WORD_DETAIL_MAX_MS = 15 * 60 * 1_000
 export const PHONE_DETAIL_MAX_MS = 2 * 60 * 1_000
 export const WAVEFORM_BINS = 1_400
-export const ALIGNMENT_TEST_METHODS = ["ctc", "ipa15", "ipa4", "ipa2"] as const
-export const ALIGNMENT_TEST_LABELS = {
-  ctc: "CTC",
-  ipa15: "IPA · 15초",
-  ipa4: "IPA · 4초",
-  ipa2: "IPA · 2초",
-} as const
-export const ALIGNMENT_TEST_COLORS = {
-  ctc: "#65a9ff",
-  ipa15: "#a78bfa",
-  ipa4: "#27c499",
-  ipa2: "#f59e63",
-} as const
-export const ALIGNMENT_TEST_INITIAL_SPAN_MS = 10_000
 export const TIMELINE_HEIGHT = 190
 export const TIMELINE_PADDING = 12
 export const PLAYBACK_LOOP_EPSILON_MS = 10

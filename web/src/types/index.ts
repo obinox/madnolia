@@ -283,33 +283,7 @@ export interface ApiErrorResponse {
 
 export type AnalysisAction = "pause" | "resume" | "stop"
 
-export type WorkflowPage = "analysis" | "projects" | "collage" | "alignment-test"
-
-export type AlignmentTestMethod = "ctc" | "ipa15" | "ipa4" | "ipa2"
-
-export interface AlignmentTestPhone {
-  ipa: string
-  word_index: number
-}
-
-export interface AlignmentTestBoundary {
-  start_ms: number
-  end_ms: number
-  unknown: boolean
-  ipa: string
-}
-
-export interface AlignmentTestResult {
-  total_seconds: number
-  phones: AlignmentTestBoundary[]
-}
-
-export interface AlignmentTestData {
-  duration_ms: number
-  words: TranscriptWord[]
-  phones: AlignmentTestPhone[]
-  results: Record<AlignmentTestMethod, AlignmentTestResult>
-}
+export type WorkflowPage = "analysis" | "projects" | "collage"
 
 export interface AnalysisPageProps {
   onGoToProjects: () => void

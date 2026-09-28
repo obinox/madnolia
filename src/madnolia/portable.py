@@ -47,6 +47,7 @@ def web_directory() -> Path:
 
 def main() -> None:
     cuda_directory_handle = None
+    dll_directory_handles = []
     for stream in (sys.stdout, sys.stderr):
         if stream is not None and hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
@@ -55,6 +56,11 @@ def main() -> None:
         root = runtime_root(executable_root)
         root.mkdir(parents=True, exist_ok=True)
         os.chdir(root)
+        internal_root = Path(getattr(sys, "_MEIPASS", executable_root / "_internal"))
+        for directory in (internal_root, internal_root / "torch" / "lib"):
+            if directory.is_dir():
+                os.environ["PATH"] = f"{directory}{os.pathsep}{os.environ.get('PATH', '')}"
+                dll_directory_handles.append(os.add_dll_directory(str(directory)))
         cuda_libraries = executable_root / CUDA_BUNDLE_DIRECTORY
         if cuda_libraries.is_dir():
             os.environ["PATH"] = f"{cuda_libraries}{os.pathsep}{os.environ.get('PATH', '')}"
@@ -82,6 +88,8 @@ def main() -> None:
     cli_main()
     if cuda_directory_handle is not None:
         cuda_directory_handle.close()
+    for handle in dll_directory_handles:
+        handle.close()
 
 
 if __name__ == "__main__":

@@ -88,6 +88,9 @@ def test_frozen_runtime_selects_persistent_paths_and_preserves_cli(
     expected_root = local_app_data / INSTALLED_DATA_DIRECTORY if installed else executable_root
     if installed:
         (executable_root / INSTALLED_MODE_MARKER).touch()
+    internal_root = tmp_path / "internal"
+    torch_library_root = internal_root / "torch" / "lib"
+    torch_library_root.mkdir(parents=True)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
     monkeypatch.setenv(LAUNCHER_ENVIRONMENT_VARIABLE, "1")
@@ -95,13 +98,25 @@ def test_frozen_runtime_selects_persistent_paths_and_preserves_cli(
         monkeypatch.setenv(name, "original")
     monkeypatch.setattr(portable.sys, "frozen", True, raising=False)
     monkeypatch.setattr(portable.sys, "executable", str(executable_root / "Madnolia.exe"))
+    monkeypatch.setattr(portable.sys, "_MEIPASS", str(internal_root), raising=False)
     monkeypatch.setattr(portable.sys, "argv", ["Madnolia.exe", "viewer", "--port", "9000"])
+    dll_handles = [MagicMock(), MagicMock()]
+    add_dll_directory = MagicMock(side_effect=dll_handles)
+    monkeypatch.setattr(portable.os, "add_dll_directory", add_dll_directory)
     cli = MagicMock()
     monkeypatch.setitem(portable.sys.modules, "madnolia.cli", cli)
 
     portable.main()
 
     cli.main.assert_called_once_with()
+    assert add_dll_directory.call_args_list == [
+        ((str(internal_root),),), ((str(torch_library_root),),),
+    ]
+    for handle in dll_handles:
+        handle.close.assert_called_once_with()
+    assert portable.os.environ["PATH"].startswith(
+        f"{torch_library_root}{portable.os.pathsep}{internal_root}{portable.os.pathsep}"
+    )
     assert portable.sys.argv[1:] == ["viewer", "--port", "9000"]
     assert Path.cwd() == expected_root
     assert DEFAULT_INPUT_DIR.is_dir()

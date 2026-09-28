@@ -29,9 +29,6 @@ from madnolia.compositions import (
     validate_preview_request,
 )
 from madnolia.constants import (
-    ALIGNMENT_TEST_AUDIO,
-    ALIGNMENT_TEST_DIR,
-    ALIGNMENT_TEST_RESULTS,
     ANALYSIS_MODEL_OPTIONS,
     ANALYSIS_NICKNAME_MAX_LENGTH,
     APPLICATION_ID,
@@ -553,55 +550,6 @@ def get_project(project_id: str) -> dict[str, object]:
             )
         )
     return {"manifest": manifest, "analyses": [asdict(overview) for overview in overviews]}
-
-
-@app.get("/api/alignment-test")
-def get_alignment_test() -> dict[str, object]:
-    if not ALIGNMENT_TEST_AUDIO.is_file():
-        raise HTTPException(status_code=404, detail="Alignment experiment audio not found")
-    results = {}
-    for method, filename in ALIGNMENT_TEST_RESULTS.items():
-        path = ALIGNMENT_TEST_DIR / filename
-        if not path.is_file():
-            raise HTTPException(status_code=404, detail=f"Alignment result not found: {filename}")
-        result = _read_json(path)
-        results[method] = {
-            "total_seconds": result["total_seconds"],
-            "phones": [{
-                "start_ms": phone["start_ms"],
-                "end_ms": phone["end_ms"],
-                "unknown": phone.get("unknown", False),
-                "ipa": phone["ipa"],
-            } for phone in result["phones"]],
-        }
-    baseline = _read_json(ALIGNMENT_TEST_DIR / ALIGNMENT_TEST_RESULTS["ctc"])
-    return {
-        "duration_ms": 600_000,
-        "words": baseline["words"],
-        "phones": [{"ipa": phone["ipa"], "word_index": phone["word_index"]}
-                   for phone in baseline["phones"]],
-        "results": results,
-    }
-
-
-@app.get("/api/alignment-test/audio")
-def get_alignment_test_audio() -> FileResponse:
-    if not ALIGNMENT_TEST_AUDIO.is_file():
-        raise HTTPException(status_code=404, detail="Alignment experiment audio not found")
-    return FileResponse(ALIGNMENT_TEST_AUDIO, media_type="audio/wav")
-
-
-@app.get("/api/alignment-test/waveform")
-def get_alignment_test_waveform(
-    start_ms: int = Query(ge=0),
-    end_ms: int = Query(gt=0),
-    bins: int = Query(default=1200, ge=VIEWER_MIN_WAVEFORM_BINS, le=VIEWER_MAX_WAVEFORM_BINS),
-) -> dict[str, object]:
-    if end_ms <= start_ms or end_ms > 600_000:
-        raise HTTPException(status_code=400, detail="Invalid waveform range")
-    if not ALIGNMENT_TEST_AUDIO.is_file():
-        raise HTTPException(status_code=404, detail="Alignment experiment audio not found")
-    return asdict(_waveform(ALIGNMENT_TEST_AUDIO, start_ms, end_ms, bins))
 
 
 @app.get("/api/projects/{project_id}/timeline")

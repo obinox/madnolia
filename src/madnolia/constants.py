@@ -18,14 +18,6 @@ OPENVINO_WORKER_ARGUMENT = "--openvino-worker"
 HUGGINGFACE_CACHE_DIR = Path("data/cache/huggingface-hub")
 TORCH_CACHE_DIR = Path("data/cache/torch")
 GENERAL_CACHE_DIR = Path("data/cache")
-ALIGNMENT_TEST_DIR = GENERAL_CACHE_DIR / "qwen-benchmark"
-ALIGNMENT_TEST_AUDIO = ALIGNMENT_TEST_DIR / "maple-now-2026-09-10-30m-40m-batched.wav"
-ALIGNMENT_TEST_RESULTS = {
-    "ctc": "phone-boundaries-ctc.json",
-    "ipa15": "phone-boundaries-ipa.json",
-    "ipa4": "phone-boundaries-ipa-4s.json",
-    "ipa2": "phone-boundaries-ipa-2s.json",
-}
 NLTK_DATA_DIR = Path("data/cache/nltk")
 DEFAULT_MODEL_NAME = "large-v3"
 DEFAULT_ANALYSIS_BACKEND = "openvino"

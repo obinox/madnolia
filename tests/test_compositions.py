@@ -198,3 +198,64 @@ def test_preview_matches_export_with_individual_gaps(tmp_path, monkeypatch) -> N
             segment.pop("stretch_percent")
     saved_path.write_text(json.dumps(saved), encoding="utf-8")
     assert get_composition(project_dir, composition.composition_id).segments == segments
+
+
+def test_mp4_export_rejects_audio_only_source_without_server_error(tmp_path, monkeypatch) -> None:
+    from madnolia import projects
+
+    project_id = "proj_20260928_100000"
+    project_dir = tmp_path / "projects" / project_id
+    project_dir.mkdir(parents=True)
+    audio_dir = project_dir / "audio"
+    audio_dir.mkdir()
+    source_audio = tmp_path / "source.wav"
+    with wave.open(str(source_audio), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(np.full(16000, 8000, dtype=np.int16).tobytes())
+    with wave.open(str(audio_dir / "source.wav"), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(np.full(16000, 8000, dtype=np.int16).tobytes())
+    (project_dir / "project.json").write_text(
+        json.dumps(
+            {
+                "project_id": project_id,
+                "sources": [
+                    {
+                        "source_id": "source",
+                        "path": str(source_audio),
+                        "duration_ms": 1000,
+                        "audio_sample_rate": 16000,
+                        "audio_channels": 1,
+                        "video_width": None,
+                        "video_height": None,
+                        "video_fps": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(projects, "DEFAULT_PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(compositions, "DEFAULT_COLLAGES_DIR", tmp_path / "collages")
+    request = SaveCompositionRequest(
+        name="audio only",
+        target_text="test",
+        target_pronunciation="test",
+        crossfade_ms=8,
+        segments=[_segment()],
+    )
+    composition = create_composition(project_dir, project_id, request)
+
+    response = TestClient(viewer.app).post(
+        f"/api/projects/{project_id}/compositions/{composition.composition_id}/export/MP4"
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "MP4 export requires a video track in each selected source."
+    assert not list(
+        (tmp_path / "collages" / composition.composition_id / "exports").glob("*.mp4")
+    )

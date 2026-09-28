@@ -12,7 +12,6 @@ import type {
   AnalysisAction,
   AnalysisSettings,
   DetectedAnalysisHardware,
-  AlignmentTestData,
   ApiErrorResponse,
   VideoUploadResult,
 } from "./types"
@@ -42,13 +41,6 @@ const request = async <T>(
 }
 
 export const fetchProjects = (): Promise<ProjectSummary[]> => request("/api/projects")
-export const fetchAlignmentTest = (): Promise<AlignmentTestData> => request("/api/alignment-test")
-export const fetchAlignmentTestWaveform = (
-  startMs: number, endMs: number, signal: AbortSignal,
-): Promise<WaveformData> => request(
-  `/api/alignment-test/waveform?start_ms=${Math.round(startMs)}&end_ms=${Math.round(endMs)}&bins=1200`,
-  signal,
-)
 export const fetchCollages = (): Promise<CompositionProject[]> => request("/api/collages")
 export const fetchCollage = (id: string): Promise<CompositionProject> =>
   request(`/api/collages/${encodeURIComponent(id)}`)
