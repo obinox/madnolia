@@ -23,9 +23,3 @@ GitHub Release에서 `Madnolia-Portable-windows-x64.zip`을 내려받아 원하�
 처음 분석할 때 필요한 모델을 인터넷에서 내려받습니다. 설치와 모델 다운로드에 수 GB의 여유 공간이 필요할 수 있습니다.
 
 CPU 분석을 지원합니다. NVIDIA GPU에서는 CUDA 기반 faster-whisper가 Whisper 전사를 가속하고, 정렬과 음향 분석은 CPU에서 실행됩니다. Intel GPU에서는 OpenVINO를 사용해 Whisper 전사와 정렬·음향 분석을 가속할 수 있습니다. 배포판에는 CPU 전용 PyTorch가 포함되어 있어 Qwen3-ASR는 CPU에서 실행되며 GPU 가속은 제공하지 않습니다. GPU를 사용할 때는 그래픽 드라이버를 최신 버전으로 유지하세요.
-
-## 개발자용 배포 빌드
-
-`v0.2.2` 형식의 버전 태그를 푸시하면 GitHub Actions가 설치판과 `Madnolia-Portable-windows-x64.zip`을 빌드해 GitHub Release에 게시합니다. 수동 실행은 검토용 아티팩트만 만들며 Release에는 게시하지 않습니다. 수동 실행에 입력한 태그가 실제 Release에 게시되어야 온라인 설치기의 다운로드가 작동합니다. 설치기는 Release에 올라간 해당 버전의 분할 파일과 SHA256을 사용합니다. 사용자는 `.part` 파일을 따로 받을 필요가 없습니다. 포터블 ZIP은 GitHub의 파일당 2 GB 제한을 넘을 수 없습니다.
-
-설치기 설정은 `installer/Madnolia.iss`, 분할 파일 생성은 `installer/package_release.py`에서 관리합니다. 빌드에는 Inno Setup 6.7.3을 사용합니다.

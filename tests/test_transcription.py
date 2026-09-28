@@ -1,5 +1,9 @@
+import io
+import json
 import queue
 import wave
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -161,3 +165,80 @@ def test_worker_response_wait_times_out_and_checks_cancellation(monkeypatch):
     with pytest.raises(TimeoutError, match="timed out"):
         worker._receive(0.01, lambda: checks.append(True))
     assert checks
+
+
+def test_worker_request_json_escapes_korean_path_and_context():
+    payload = {
+        "audio_path": "C:\\Users\\test\\\uC790\uB8CC\\\uC74C\uC131.wav",
+        "start_ms": 123,
+        "end_ms": 456,
+        "initial_prompt": "\uC548\uB155\uD558\uC138\uC694 \uBB38\uC7A5",
+        "max_new_tokens": 64,
+    }
+    wire = io.StringIO()
+
+    worker = transcription._OpenVINOWorker.__new__(transcription._OpenVINOWorker)
+    worker.device = "CPU"
+    worker._process = SimpleNamespace(stdin=wire)
+    worker._receive = lambda timeout, callback: {"words": []}
+    worker.run(payload, None)
+
+    request = wire.getvalue().strip()
+    assert request.isascii()
+    assert json.loads(request) == payload
+
+
+def test_worker_decodes_utf8_request_with_cp949_console(monkeypatch):
+    import sys
+
+    from madnolia import transcription_worker
+
+    prompt = "\uD55C\uAD6D\uC5B4 \uBB38\uC7A5"
+    audio_path = "C:\\Users\\test\\\uC790\uB8CC\\\uC74C\uC131.wav"
+    request = json.dumps(
+        {
+            "audio_path": audio_path,
+            "start_ms": 10,
+            "end_ms": 20,
+            "initial_prompt": prompt,
+            "max_new_tokens": 64,
+        },
+        ensure_ascii=False,
+    )
+    stdin = io.TextIOWrapper(io.BytesIO((request + "\n").encode("utf-8")), encoding="cp949")
+    stdout = io.StringIO()
+    seen = {}
+    response_text = "\uC74C\uC131 \uC778\uC2DD \uACB0\uACFC"
+
+    def generate(samples, **options):
+        seen["prompt"] = options["initial_prompt"]
+        return SimpleNamespace(
+            words=[SimpleNamespace(word=response_text, start_ts=0.1, end_ts=0.5)]
+        )
+
+    def read_audio_interval(*args):
+        seen["audio_args"] = args
+        return []
+
+    monkeypatch.setitem(
+        sys.modules,
+        "openvino_genai",
+        SimpleNamespace(
+            WhisperPipeline=lambda *args, **kwargs: SimpleNamespace(generate=generate)
+        ),
+    )
+    monkeypatch.setattr(transcription_worker, "_read_audio_interval", read_audio_interval)
+    monkeypatch.setattr(transcription_worker.sys, "stdin", stdin)
+    monkeypatch.setattr(transcription_worker.sys, "stdout", stdout)
+
+    transcription_worker.run_openvino_worker(Path("model"), "CPU")
+
+    assert seen["prompt"] == prompt
+    assert seen["audio_args"] == (Path(audio_path), 10, 20)
+    response_lines = stdout.getvalue().splitlines()
+    assert all(line.isascii() for line in response_lines)
+    responses = [json.loads(line) for line in response_lines]
+    assert responses == [
+        {"ready": True},
+        {"words": [{"text": response_text, "start_ms": 100, "end_ms": 500}]},
+    ]

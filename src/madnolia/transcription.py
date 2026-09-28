@@ -342,7 +342,7 @@ class _OpenVINOWorker:
 
     def run(self, command: dict, callback: AnalysisCheckpoint | None) -> dict:
         assert self._process.stdin is not None
-        self._process.stdin.write(json.dumps(command, ensure_ascii=False) + "\n")
+        self._process.stdin.write(json.dumps(command, ensure_ascii=True) + "\n")
         self._process.stdin.flush()
         timeout = (
             OPENVINO_GPU_CHUNK_TIMEOUT_SECONDS

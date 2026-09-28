@@ -8,6 +8,8 @@ from madnolia.transcription import _read_audio_interval
 
 def run_openvino_worker(model_dir: Path, device: str) -> None:
     try:
+        if hasattr(sys.stdin, "reconfigure"):
+            sys.stdin.reconfigure(encoding="utf-8", errors="strict")
         import openvino_genai as ov_genai
 
         pipeline = ov_genai.WhisperPipeline(str(model_dir.resolve()), device, word_timestamps=True)
@@ -49,7 +51,7 @@ def run_openvino_worker(model_dir: Path, device: str) -> None:
 
 
 def _respond(payload: dict) -> None:
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    sys.stdout.write(json.dumps(payload, ensure_ascii=True) + "\n")
     sys.stdout.flush()
 
 
