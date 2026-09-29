@@ -1,7 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react"
 
 import { fetchCollage, fetchProject, fetchProjects, fetchTimeline, fetchWaveform, mediaUrl } from "./api"
 import {
+  EDITOR_SPLIT_X_DEFAULT_PERCENT,
+  EDITOR_SPLIT_X_MAX_PERCENT,
+  EDITOR_SPLIT_X_MIN_PERCENT,
+  EDITOR_SPLIT_Y_DEFAULT_PERCENT,
+  EDITOR_SPLIT_Y_MAX_PERCENT,
+  EDITOR_SPLIT_Y_MIN_PERCENT,
   PHONE_DETAIL_MAX_MS,
   PLAYBACK_LOOP_EPSILON_MS,
   WAVEFORM_BINS,
@@ -13,6 +19,7 @@ import { AnalysisPage } from "./components/AnalysisPage"
 import { ProjectsPage } from "./components/ProjectsPage"
 import type {
   ProjectDetail,
+  SplitAxis,
   ProjectSummary,
   PhoneCache,
   TimelineSelection,
@@ -43,6 +50,31 @@ export default function App() {
   const [loopSelection, setLoopSelection] = useState(false)
   const [pendingCandidate, setPendingCandidate] = useState<UnitCandidate | null>(null)
   const [error, setError] = useState("")
+  const [splitX, setSplitX] = useState(EDITOR_SPLIT_X_DEFAULT_PERCENT)
+  const [splitY, setSplitY] = useState(EDITOR_SPLIT_Y_DEFAULT_PERCENT)
+  const splitAxisRef = useRef<SplitAxis | null>(null)
+
+  const startSplitterDrag = (axis: SplitAxis, event: ReactPointerEvent<HTMLDivElement>) => {
+    splitAxisRef.current = axis
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  const moveSplitter = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const axis = splitAxisRef.current
+    const bounds = event.currentTarget.parentElement?.getBoundingClientRect()
+    if (!axis || !bounds) return
+    if (axis === "x") {
+      setSplitX(Math.max(EDITOR_SPLIT_X_MIN_PERCENT, Math.min(
+        EDITOR_SPLIT_X_MAX_PERCENT, (event.clientX - bounds.left) / bounds.width * 100,
+      )))
+    } else {
+      setSplitY(Math.max(EDITOR_SPLIT_Y_MIN_PERCENT, Math.min(
+        EDITOR_SPLIT_Y_MAX_PERCENT, (event.clientY - bounds.top) / bounds.height * 100,
+      )))
+    }
+  }
+
+  const stopSplitterDrag = () => { splitAxisRef.current = null }
 
   const source = project?.manifest.sources.find((item) => item.source_id === sourceId) ?? null
   const analysis = project?.analyses.find((item) => item.source_id === sourceId) ?? null
@@ -340,7 +372,7 @@ export default function App() {
   }
 
   return (
-    <main>
+    <main className={page === "collage" ? "editor-app" : undefined}>
       <header>
         <div>
           <p className="eyebrow">CONCATENATIVE CORPUS LAB</p>
@@ -350,7 +382,7 @@ export default function App() {
           <a href="#/analysis" aria-current={page === "analysis" ? "page" : undefined}>1. 영상 분석</a>
           <a href="#/projects" aria-current={page === "projects" ? "page" : undefined}>2. 프로젝트</a>
           {projectId && <a href={`#/collage/${encodeURIComponent(projectId)}`}
-            aria-current={page === "collage" ? "page" : undefined}>3. 콜라주</a>}
+            aria-current={page === "collage" ? "page" : undefined}>3. 합성</a>}
         </nav>
         {page === "collage" && (
         <div className="header-controls">
@@ -402,6 +434,7 @@ export default function App() {
           onProjectCreated={async () => { setProjects(await fetchProjects()) }} />
       ) : project && source && analysis ? (
         <>
+          <div className="editor-shell" style={{ "--editor-split-x": `${splitX}%`, "--editor-split-y": `${splitY}%` } as React.CSSProperties}>
           <section className="workspace-grid">
             <div className="video-card panel">
               <video
@@ -423,6 +456,10 @@ export default function App() {
               <div className="transport-readout">
                 <span>{formatTime(currentMs)}</span>
                 <span>{formatTime(durationMs)}</span>
+              </div>
+              <div className="source-summary">
+                <strong>{source.path.split(/[\\/]/).pop()}</strong>
+                <span>{project.manifest.model_name} · {analysis.phone_count.toLocaleString()} phonemes · {formatTime(durationMs)}</span>
               </div>
             </div>
 
@@ -529,6 +566,27 @@ export default function App() {
             <p className="section-label">TRANSCRIPT</p>
             <p>{transcriptCandidate?.transcript ?? analysis.transcript}</p>
           </section>
+          <div
+            className="editor-splitter vertical"
+            role="separator"
+            aria-label="미리보기와 검색 패널 크기 조절"
+            aria-orientation="vertical"
+            onPointerDown={(event) => startSplitterDrag("x", event)}
+            onPointerMove={moveSplitter}
+            onPointerUp={stopSplitterDrag}
+            onPointerCancel={stopSplitterDrag}
+          />
+          <div
+            className="editor-splitter horizontal"
+            role="separator"
+            aria-label="위아래 작업공간 크기 조절"
+            aria-orientation="horizontal"
+            onPointerDown={(event) => startSplitterDrag("y", event)}
+            onPointerMove={moveSplitter}
+            onPointerUp={stopSplitterDrag}
+            onPointerCancel={stopSplitterDrag}
+          />
+          </div>
         </>
       ) : (
         <div className="empty panel">프로젝트를 불러오는 중입니다.</div>

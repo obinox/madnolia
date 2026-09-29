@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from functools import lru_cache
 from pathlib import Path
-from threading import Condition, Thread
+from threading import Condition, Lock, Thread
 from typing import Annotated
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -76,6 +76,9 @@ from madnolia.types.common import (
     ProjectSummary,
     RenameAnalysisRequest,
     SaveCompositionRequest,
+    SearchCancelled,
+    SearchJob,
+    SearchJobStatus,
     SearchRequest,
     TimelineSlice,
     WaveformData,
@@ -93,12 +96,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
 _analysis_jobs: dict[str, AnalysisJob] = {}
 _analysis_lock = Condition()
+_search_jobs: dict[str, SearchJob] = {}
+_search_lock = Lock()
 _WINDOWS_RESERVED_FILENAME = re.compile(WINDOWS_RESERVED_FILENAME_PATTERN, re.IGNORECASE)
 
 
@@ -380,10 +385,105 @@ def search_project(project_id: str, request: SearchRequest) -> dict[str, object]
             request.text,
             _project_analyses(project_dir),
             request.max_candidates_per_start,
+            request.input_language,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {**asdict(result), "source_labels": project_source_labels(project_dir)}
+
+
+def _run_search_job(job_id: str, project_id: str, request: SearchRequest) -> None:
+    def checkpoint() -> None:
+        with _search_lock:
+            job = _search_jobs[job_id]
+            if job.status == SearchJobStatus.CANCELLED:
+                raise SearchCancelled()
+
+    def report(stage: str, stage_percent: float) -> None:
+        ranges = {"corpus": (0, 8), "phonetic": (8, 15), "exact": (15, 42), "approximate": (42, 90), "sorting": (90, 100)}
+        start, end = ranges[stage]
+        with _search_lock:
+            job = _search_jobs[job_id]
+            if job.status == SearchJobStatus.RUNNING:
+                job.stage = stage
+                job.percent = max(job.percent, start + (end - start) * stage_percent / 100)
+
+    try:
+        directory = _project_dir(project_id)
+        report("corpus", 0)
+        checkpoint()
+        analyses = _project_analyses(directory)
+        report("corpus", 100)
+        result = search_candidates(
+            request.text,
+            analyses,
+            request.max_candidates_per_start,
+            request.input_language,
+            progress_callback=report,
+            checkpoint=checkpoint,
+        )
+        payload = {**asdict(result), "source_labels": project_source_labels(directory)}
+        with _search_lock:
+            job = _search_jobs[job_id]
+            if job.status == SearchJobStatus.RUNNING:
+                job.status = SearchJobStatus.COMPLETE
+                job.stage = "complete"
+                job.percent = 100
+                job.result = payload
+    except SearchCancelled:
+        with _search_lock:
+            job = _search_jobs[job_id]
+            job.status = SearchJobStatus.CANCELLED
+            job.stage = "cancelled"
+    except (ValueError, FileNotFoundError) as error:
+        with _search_lock:
+            job = _search_jobs[job_id]
+            job.status = SearchJobStatus.FAILED
+            job.stage = "failed"
+            job.error = str(error)
+    except Exception as error:  # noqa: BLE001
+        with _search_lock:
+            job = _search_jobs[job_id]
+            job.status = SearchJobStatus.FAILED
+            job.stage = "failed"
+            job.error = str(error)
+
+
+@app.post("/api/projects/{project_id}/search-jobs")
+def start_search_job(project_id: str, request: SearchRequest) -> dict[str, object]:
+    _project_dir(project_id)
+    job_id = f"search_{uuid4().hex}"
+    with _search_lock:
+        _search_jobs[job_id] = SearchJob(
+            job_id=job_id,
+            project_id=project_id,
+            status=SearchJobStatus.RUNNING,
+            percent=0,
+            stage="queued",
+        )
+    Thread(target=_run_search_job, args=(job_id, project_id, request), daemon=True).start()
+    return {"job_id": job_id}
+
+
+@app.get("/api/search-jobs/{job_id}")
+def get_search_job(job_id: str) -> dict[str, object]:
+    with _search_lock:
+        job = _search_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Search job not found")
+        return asdict(job)
+
+
+@app.delete("/api/search-jobs/{job_id}")
+def cancel_search_job(job_id: str) -> dict[str, object]:
+    with _search_lock:
+        job = _search_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Search job not found")
+        if job.status == SearchJobStatus.RUNNING:
+            job.status = SearchJobStatus.CANCELLED
+            job.stage = "cancelled"
+        return asdict(job)
 
 
 @app.get("/api/projects/{project_id}/compositions")
@@ -413,7 +513,7 @@ def get_collage(composition_id: str) -> dict[str, object]:
             raise FileNotFoundError(composition_id)
         return asdict(load_composition(path))
     except (ValueError, FileNotFoundError) as error:
-        raise HTTPException(status_code=404, detail="Collage not found") from error
+        raise HTTPException(status_code=404, detail="합성을 찾을 수 없습니다.") from error
 
 
 @app.put("/api/collages/{composition_id}")

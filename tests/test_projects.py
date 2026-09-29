@@ -11,6 +11,7 @@ from madnolia.pipeline import IngestionPipeline
 from madnolia.types.common import (
     CandidateSearchResult,
     CreateProjectRequest,
+    InputLanguage,
     MatchStatus,
     SaveCompositionRequest,
     TimelineSegment,
@@ -102,9 +103,7 @@ def test_multiple_analyses_can_be_selected_and_legacy_compositions_survive(tmp_p
     assert (
         tmp_path / "collages" / "comp_1234567890abcdef" / "exports" / "original.wav"
     ).read_bytes() == b"original"
-    assert json.loads((collections / old.name / "project.json").read_text(encoding="utf-8"))[
-        "analysis_ids"
-    ] == [old.name]
+    assert not collections.exists()
 
     manifest = projects.create_project(
         CreateProjectRequest(
@@ -127,7 +126,11 @@ def test_multiple_analyses_can_be_selected_and_legacy_compositions_survive(tmp_p
     assert next(item for item in projects.list_analyses() if item["analysis_id"] == old.name)[
         "nickname"
     ] == "summer show"
-    monkeypatch.setattr(viewer, "search_candidates", lambda *args: CandidateSearchResult("", "", [], []))
+    monkeypatch.setattr(
+        viewer,
+        "search_candidates",
+        lambda *args: CandidateSearchResult("", "", InputLanguage.AUTO, [], []),
+    )
     search = TestClient(viewer.app).post(
         f"/api/projects/{manifest['project_id']}/search", json={"text": "hello"}
     )
@@ -234,4 +237,5 @@ def test_existing_analysis_reads_shared_cache_without_output_audio(tmp_path, mon
     manifest = json.loads((root / "project.json").read_text(encoding="utf-8"))
     assert manifest["audio_files"][source_id] == "../../cache/audio/cached.wav"
     assert not original.exists()
-    assert projects.audio_path(tmp_path / "projects" / analysis_id, source_id).resolve() == cache
+    assert not (tmp_path / "projects").exists()
+    assert projects.analysis_audio_path(root, source_id).resolve() == cache

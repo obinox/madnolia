@@ -4,12 +4,14 @@ from madnolia.constants import STRETCH_FRAME_SAMPLES, STRETCH_SEARCH_SAMPLES
 
 
 def stretch_audio(samples: np.ndarray, target_length: int) -> np.ndarray:
-    if target_length <= len(samples):
-        return samples[:target_length]
+    if target_length == len(samples):
+        return samples.copy()
+    if target_length <= 0:
+        return np.zeros(0, dtype=np.float32)
     if len(samples) < 2:
         return np.full(target_length, samples[0] if len(samples) else 0, dtype=np.float32)
 
-    frame_size = min(STRETCH_FRAME_SAMPLES, len(samples))
+    frame_size = min(STRETCH_FRAME_SAMPLES, len(samples), target_length)
     hop = max(1, frame_size // 2)
     last_start = target_length - frame_size
     source_last = len(samples) - frame_size

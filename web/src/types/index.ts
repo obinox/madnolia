@@ -3,6 +3,10 @@ export type AlignmentMethod = "ESTIMATED_WORD" | "CTC_FORCED"
 export type AlignmentStatus = "ESTIMATED" | "ALIGNED" | "LOW_CONFIDENCE" | "MISSING"
 export type SelectionKind = "WORD" | "PHONE"
 export type MatchStatus = "EXACT" | "APPROXIMATE" | "MISSING"
+export type CompositionMode = "SIMPLE" | "PROFESSIONAL"
+export type InputLanguage = "AUTO" | "KO" | "EN" | "JA"
+export type SplitAxis = "x" | "y"
+export type PhoneAlignmentOperation = "MATCH" | "SUBSTITUTE" | "INSERT" | "DELETE"
 export type UnitType = "WORD" | "SYLLABLE" | "PHONEME" | "PHONE_SEQUENCE"
 export type ExportTarget = "JSON" | "WAV" | "MP4" | "EDL" | "FCPXML"
 
@@ -183,14 +187,64 @@ export interface UnitCandidate {
   match_status: MatchStatus
   similarity: number
   score: number
+  alignments: CandidatePhoneAlignment[]
+}
+
+export interface CandidatePhoneAlignment {
+  operation: PhoneAlignmentOperation
+  target_index: number | null
+  target_phone_id: string | null
+  target_ipa: string | null
+  source_occurrence_id: string | null
+  source_phone_id: string | null
+  source_ipa: string | null
+  source_start_ms: number | null
+  source_end_ms: number | null
+  similarity: number
+  source_f0_hz: number | null
+  voiced_probability: number
+}
+
+export interface PhoneUnit {
+  phone_unit_id: string
+  operation: PhoneAlignmentOperation
+  target_index: number | null
+  target_phone_id: string | null
+  target_ipa: string | null
+  source_occurrence_id: string | null
+  source_phone_id: string | null
+  source_ipa: string | null
+  source_start_ms: number | null
+  source_end_ms: number | null
+  output_duration_ms: number
+  source_f0_hz: number | null
+  voiced_probability: number
+  target_pitch_midi: number | null
+  formant_shift_semitones: number
+  transition_to_next_ms: number
+  transition_strength_percent: number
+  transition_center_ms: number
 }
 
 export interface CandidateSearchResult {
   target_text: string
   target_pronunciation: string
+  input_language: InputLanguage
   target_phones: QueryPhone[]
   candidates: UnitCandidate[]
   source_labels: Record<string, string>
+}
+
+export type SearchJobStatus = "running" | "complete" | "cancelled" | "failed"
+
+export interface SearchJob {
+  job_id: string
+  project_id: string
+  status: SearchJobStatus
+  percent: number
+  stage: string
+  result: CandidateSearchResult | null
+  error: string | null
 }
 
 export interface TimelineSegment {
@@ -208,6 +262,8 @@ export interface TimelineSegment {
   matched_ipa: string[]
   gap_before_ms: number
   stretch_percent: number
+  lane: number
+  phone_units: PhoneUnit[]
 }
 
 export interface CompositionProject {
@@ -220,6 +276,8 @@ export interface CompositionProject {
   updated_at: string
   crossfade_ms: number
   segments: TimelineSegment[]
+  mode: CompositionMode
+  schema_version: number
 }
 
 export interface SaveCompositionRequest {
@@ -228,12 +286,27 @@ export interface SaveCompositionRequest {
   target_pronunciation: string
   crossfade_ms: number
   segments: TimelineSegment[]
+  mode: CompositionMode
+  schema_version: number
 }
 
 export interface CollagePanelProps {
   projectId: string
   initialCompositionId?: string
   onPreview: (candidate: UnitCandidate) => void
+}
+
+export interface ProfessionalEditorProps {
+  segments: TimelineSegment[]
+  selectedSegmentId: string
+  playheadMs: number
+  onSelectSegment: (segmentId: string) => void
+  onPlayheadChange: (timeMs: number) => void
+  onUpdatePhone: (segmentId: string, phoneUnitId: string, updates: Partial<PhoneUnit>) => void
+  onUpdateSegment: (segmentId: string, updates: Partial<TimelineSegment>) => void
+  onReorderSegment: (segmentId: string, destinationId: string) => void
+  onDeleteSegment: (segmentId: string) => void
+  onChangeOrder: (segmentId: string, offset: number) => void
 }
 
 export interface AnalysisSummary {

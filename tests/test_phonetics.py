@@ -4,8 +4,8 @@ import nltk
 
 from madnolia import phonetics
 from madnolia.alignment import estimate_phone_occurrences
-from madnolia.phonetics import KoreanPhonetics
-from madnolia.types.common import AlignmentMethod, TranscriptWord
+from madnolia.phonetics import KoreanPhonetics, MultilingualPhonetics
+from madnolia.types.common import AlignmentMethod, InputLanguage, TranscriptWord
 
 
 def test_hangul_pronunciation_to_ipa() -> None:
@@ -23,6 +23,44 @@ def test_phone_timing_stays_inside_word() -> None:
     assert phones[0].start_ms == 100
     assert phones[-1].end_ms == 700
     assert all(phone.alignment_method == AlignmentMethod.ESTIMATED_WORD for phone in phones)
+
+
+def test_english_text_uses_arpabet_pronunciation() -> None:
+    result = MultilingualPhonetics().transcribe("hello", InputLanguage.EN)
+
+    assert result.language == InputLanguage.EN
+    assert next(ipa for _, ipa, _ in result.phones) == "h"
+    assert any(phone_id.startswith("en.vowel") for phone_id, _, _ in result.phones)
+    assert any(phone_id == "en.consonant.alveolar.lateral.voiced" for phone_id, _, _ in result.phones)
+
+
+def test_japanese_kana_uses_japanese_pronunciation() -> None:
+    result = MultilingualPhonetics().transcribe("こんにちは")
+
+    assert result.language == InputLanguage.JA
+    assert any(phone_id == "ja.consonant.alveolar.nasal.voiced" for phone_id, _, _ in result.phones)
+    assert any(phone_id == "ja.vowel.a" for phone_id, _, _ in result.phones)
+
+
+def test_japanese_geminate_and_long_vowel_are_preserved() -> None:
+    result = MultilingualPhonetics().transcribe("がっこう", InputLanguage.JA)
+
+    assert any(phone_id == "ja.consonant.geminate" for phone_id, _, _ in result.phones)
+    assert any(ipa.endswith("ː") for _, ipa, _ in result.phones)
+
+
+def test_auto_language_detection_excludes_chinese() -> None:
+    phonetics = MultilingualPhonetics()
+
+    assert phonetics.detect_language("hello") == InputLanguage.EN
+    assert phonetics.detect_language("こんにちは") == InputLanguage.JA
+    assert phonetics.detect_language("안녕하세요") == InputLanguage.KO
+    try:
+        phonetics.detect_language("你好")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Han-only input must not be treated as supported Chinese")
 
 
 def test_frozen_runtime_seeds_bundled_cmudict_before_g2pk_download(monkeypatch, tmp_path) -> None:

@@ -1,6 +1,8 @@
 import json
 import wave
 from dataclasses import asdict, replace
+from fractions import Fraction
+from io import BytesIO
 
 import numpy as np
 import pytest
@@ -8,10 +10,13 @@ from fastapi.testclient import TestClient
 
 from madnolia import compositions, viewer
 from madnolia.compositions import create_composition, get_composition, update_composition
-from madnolia.exporters import export_composition, render_wav
+from madnolia.exporters import _video_overlap_alpha, export_composition, render_wav
 from madnolia.types.common import (
+    CompositionMode,
     ExportTarget,
     MatchStatus,
+    PhoneAlignmentOperation,
+    PhoneUnit,
     SaveCompositionRequest,
     TimelineSegment,
 )
@@ -200,6 +205,151 @@ def test_preview_matches_export_with_individual_gaps(tmp_path, monkeypatch) -> N
     assert get_composition(project_dir, composition.composition_id).segments == segments
 
 
+def test_professional_composition_round_trip_and_phone_duration(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(compositions, "DEFAULT_COLLAGES_DIR", tmp_path / "collages")
+    project_dir = tmp_path / "proj"
+    audio_dir = project_dir / "audio"
+    audio_dir.mkdir(parents=True)
+    (project_dir / "project.json").write_text(
+        json.dumps({
+            "sources": [{
+                "source_id": "source",
+                "path": "video.mp4",
+                "duration_ms": 1000,
+                "audio_sample_rate": 16000,
+                "audio_channels": 1,
+                "video_width": 1920,
+                "video_height": 1080,
+                "video_fps": 30,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    with wave.open(str(audio_dir / "source.wav"), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(np.full(16000, 8000, dtype=np.int16).tobytes())
+    unit = PhoneUnit(
+        phone_unit_id="phone_0",
+        operation=PhoneAlignmentOperation.MATCH,
+        target_index=0,
+        target_phone_id="ko.vowel.a",
+        target_ipa="a",
+        source_occurrence_id="occurrence_0",
+        source_phone_id="ko.vowel.a",
+        source_ipa="a",
+        source_start_ms=100,
+        source_end_ms=200,
+        output_duration_ms=250,
+    )
+    segment = replace(
+        _segment(),
+        timeline_end_ms=250,
+        lane=0,
+        phone_units=[unit],
+    )
+    request = SaveCompositionRequest(
+        name="professional",
+        target_text="가",
+        target_pronunciation="가",
+        crossfade_ms=8,
+        segments=[segment],
+        mode=CompositionMode.PROFESSIONAL,
+    )
+
+    composition = create_composition(project_dir, "proj", request)
+    loaded = get_composition(project_dir, composition.composition_id)
+
+    assert loaded == composition
+    assert loaded.mode == CompositionMode.PROFESSIONAL
+    with wave.open(BytesIO(render_wav(project_dir, loaded)), "rb") as audio:
+        assert audio.getnframes() == 250 * 16
+
+
+def test_professional_mp4_retimes_phone_video(tmp_path, monkeypatch) -> None:
+    import av
+
+    monkeypatch.setattr(compositions, "DEFAULT_COLLAGES_DIR", tmp_path / "collages")
+    project_dir = tmp_path / "proj"
+    audio_dir = project_dir / "audio"
+    audio_dir.mkdir(parents=True)
+    source_video = tmp_path / "source.mp4"
+    _write_test_video(source_video)
+    (project_dir / "project.json").write_text(
+        json.dumps({
+            "sources": [{
+                "source_id": "source",
+                "path": str(source_video),
+                "duration_ms": 1000,
+                "audio_sample_rate": 16000,
+                "audio_channels": 1,
+                "video_width": 64,
+                "video_height": 64,
+                "video_fps": 10,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    with wave.open(str(audio_dir / "source.wav"), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(np.full(16000, 8000, dtype=np.int16).tobytes())
+    unit = PhoneUnit(
+        phone_unit_id="phone_0",
+        operation=PhoneAlignmentOperation.MATCH,
+        target_index=0,
+        target_phone_id="ko.vowel.a",
+        target_ipa="a",
+        source_occurrence_id="occurrence_0",
+        source_phone_id="ko.vowel.a",
+        source_ipa="a",
+        source_start_ms=100,
+        source_end_ms=300,
+        output_duration_ms=400,
+    )
+    segment = replace(
+        _segment(),
+        source_start_ms=100,
+        source_end_ms=300,
+        timeline_end_ms=400,
+        lane=0,
+        phone_units=[unit],
+    )
+    request = SaveCompositionRequest(
+        name="professional video",
+        target_text="가",
+        target_pronunciation="가",
+        crossfade_ms=8,
+        segments=[segment],
+        mode=CompositionMode.PROFESSIONAL,
+    )
+    composition = create_composition(project_dir, "proj", request)
+
+    output = export_composition(project_dir, composition, ExportTarget.MP4)
+    with av.open(str(output)) as container:
+        frames = list(container.decode(video=0))
+
+    assert len(frames) == 4
+    assert frames[-1].time is not None
+    assert float(frames[-1].time) >= 0.3
+
+
+def test_professional_video_overlap_uses_dissolve_progress() -> None:
+    previous = replace(_segment(), timeline_start_ms=0, timeline_end_ms=200)
+    current = replace(
+        _segment(),
+        segment_id="segment_1",
+        timeline_start_ms=100,
+        timeline_end_ms=300,
+    )
+
+    assert _video_overlap_alpha(current, previous, 3, 30) == 0.0
+    assert _video_overlap_alpha(current, previous, 4, 30) == pytest.approx(1 / 3)
+    assert _video_overlap_alpha(current, previous, 6, 30) == 1.0
+
+
 def test_mp4_export_rejects_audio_only_source_without_server_error(tmp_path, monkeypatch) -> None:
     from madnolia import projects
 
@@ -259,3 +409,23 @@ def test_mp4_export_rejects_audio_only_source_without_server_error(tmp_path, mon
     assert not list(
         (tmp_path / "collages" / composition.composition_id / "exports").glob("*.mp4")
     )
+
+
+def _write_test_video(path) -> None:
+    import av
+
+    output = av.open(str(path), "w")
+    stream = output.add_stream("libx264", rate=10)
+    stream.width = 64
+    stream.height = 64
+    stream.pix_fmt = "yuv420p"
+    for index in range(10):
+        pixels = np.full((64, 64, 3), index * 20, dtype=np.uint8)
+        frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+        frame.pts = index
+        frame.time_base = Fraction(1, 10)
+        for packet in stream.encode(frame):
+            output.mux(packet)
+    for packet in stream.encode():
+        output.mux(packet)
+    output.close()

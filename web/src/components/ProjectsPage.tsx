@@ -101,14 +101,14 @@ export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProject
         </div>
       </div>
       <div className="panel workflow-card">
-        <h3>저장된 콜라주</h3>
+        <h3>저장된 합성</h3>
         <div className="project-list">
           {collages.map((collage) => (
             <button key={collage.composition_id} onClick={() => onOpenCollage(collage.composition_id)}>
               <strong>{collage.name}</strong><span>연결 프로젝트: {projects.find((item) => item.project_id === collage.corpus_project_id)?.name ?? collage.corpus_project_id} →</span>
             </button>
           ))}
-          {!collages.length && <p>저장된 콜라주가 없습니다.</p>}
+          {!collages.length && <p>저장된 합성이 없습니다.</p>}
         </div>
       </div>
       {message && <p className="error" role="alert">{message}</p>}

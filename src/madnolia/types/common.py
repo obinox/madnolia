@@ -12,12 +12,16 @@ from madnolia.constants import (
     DEFAULT_ANALYSIS_BACKEND,
     DEFAULT_ANALYSIS_DEVICE,
     DEFAULT_MODEL_NAME,
+    PITCH_TRANSITION_DEFAULT_MS,
+    PITCH_TRANSITION_DEFAULT_STRENGTH,
 )
 
 AnalysisProgressCallback = Callable[[str, float], None]
 AnalysisCheckpoint = Callable[[], None]
 ModelDownloadCallback = Callable[[str, float], None]
 DownloadBytesCallback = Callable[[int, int], None]
+SearchProgressCallback = Callable[[str, float], None]
+SearchCheckpoint = Callable[[], None]
 
 
 class ModelDownloadProgressBar(tqdm):
@@ -100,6 +104,25 @@ class MatchStatus(StrEnum):
     EXACT = "EXACT"
     APPROXIMATE = "APPROXIMATE"
     MISSING = "MISSING"
+
+
+class CompositionMode(StrEnum):
+    SIMPLE = "SIMPLE"
+    PROFESSIONAL = "PROFESSIONAL"
+
+
+class InputLanguage(StrEnum):
+    AUTO = "AUTO"
+    KO = "KO"
+    EN = "EN"
+    JA = "JA"
+
+
+class PhoneAlignmentOperation(StrEnum):
+    MATCH = "MATCH"
+    SUBSTITUTE = "SUBSTITUTE"
+    INSERT = "INSERT"
+    DELETE = "DELETE"
 
 
 class ExportTarget(StrEnum):
@@ -319,6 +342,29 @@ class QueryPhone:
 
 
 @dataclass(frozen=True)
+class PhoneticTranscription:
+    language: InputLanguage
+    pronunciation: str
+    phones: list[tuple[str, str, str]]
+
+
+@dataclass(frozen=True)
+class CandidatePhoneAlignment:
+    operation: PhoneAlignmentOperation
+    target_index: int | None
+    target_phone_id: str | None
+    target_ipa: str | None
+    source_occurrence_id: str | None
+    source_phone_id: str | None
+    source_ipa: str | None
+    source_start_ms: int | None
+    source_end_ms: int | None
+    similarity: float
+    source_f0_hz: float | None
+    voiced_probability: float
+
+
+@dataclass(frozen=True)
 class UnitCandidate:
     candidate_id: str
     target_start_index: int
@@ -333,12 +379,14 @@ class UnitCandidate:
     match_status: MatchStatus
     similarity: float
     score: float
+    alignments: list[CandidatePhoneAlignment] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class CandidateSearchResult:
     target_text: str
     target_pronunciation: str
+    input_language: InputLanguage
     target_phones: list[QueryPhone]
     candidates: list[UnitCandidate]
 
@@ -347,6 +395,51 @@ class CandidateSearchResult:
 class SearchRequest:
     text: str
     max_candidates_per_start: int = 8
+    input_language: InputLanguage = InputLanguage.AUTO
+
+
+class SearchJobStatus(StrEnum):
+    RUNNING = "running"
+    COMPLETE = "complete"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+class SearchCancelled(Exception):
+    pass
+
+
+@dataclass
+class SearchJob:
+    job_id: str
+    project_id: str
+    status: SearchJobStatus
+    percent: float
+    stage: str
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class PhoneUnit:
+    phone_unit_id: str
+    operation: PhoneAlignmentOperation
+    target_index: int | None
+    target_phone_id: str | None
+    target_ipa: str | None
+    source_occurrence_id: str | None
+    source_phone_id: str | None
+    source_ipa: str | None
+    source_start_ms: int | None
+    source_end_ms: int | None
+    output_duration_ms: int
+    source_f0_hz: float | None = None
+    voiced_probability: float = 0.0
+    target_pitch_midi: float | None = None
+    formant_shift_semitones: float = 0.0
+    transition_to_next_ms: int = PITCH_TRANSITION_DEFAULT_MS
+    transition_strength_percent: int = PITCH_TRANSITION_DEFAULT_STRENGTH
+    transition_center_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -365,6 +458,8 @@ class TimelineSegment:
     matched_ipa: list[str]
     gap_before_ms: int = 0
     stretch_percent: int = 100
+    lane: int = 0
+    phone_units: list[PhoneUnit] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -378,6 +473,8 @@ class CompositionProject:
     updated_at: str
     crossfade_ms: int
     segments: list[TimelineSegment]
+    mode: CompositionMode = CompositionMode.SIMPLE
+    schema_version: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -390,6 +487,8 @@ class SaveCompositionRequest:
     target_pronunciation: str
     crossfade_ms: int
     segments: list[TimelineSegment]
+    mode: CompositionMode = CompositionMode.SIMPLE
+    schema_version: int = 1
 
 
 @dataclass(frozen=True)

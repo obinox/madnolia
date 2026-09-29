@@ -127,17 +127,7 @@ def migrate_legacy_projects() -> None:
     migrate_analysis_audio()
     for item in list_analyses():
         analysis_id = item["analysis_id"]
-        destination = DEFAULT_PROJECTS_DIR / analysis_id
-        if not (destination / "project.json").exists():
-            name = Path(item["source"]["path"]).name
-            manifest = create_project(CreateProjectRequest(name=name, analysis_ids=[analysis_id]))
-            created_dir = DEFAULT_PROJECTS_DIR / manifest["project_id"]
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            created_dir.rename(destination)
-            manifest["project_id"] = analysis_id
-            manifest["created_at"] = item["created_at"]
-            write_json(destination / "project.json", manifest)
-        migrate_legacy_collages(destination, analysis_dir(analysis_id))
+        migrate_legacy_collages(analysis_dir(analysis_id))
     for manifest in DEFAULT_PROJECTS_DIR.glob("*/project.json"):
         migrate_legacy_collages(manifest.parent)
 

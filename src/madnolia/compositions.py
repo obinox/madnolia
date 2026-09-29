@@ -7,11 +7,27 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from madnolia.constants import DEFAULT_COLLAGES_DIR, MAX_STRETCH_PERCENT, MIN_STRETCH_PERCENT
+from madnolia.constants import (
+    DEFAULT_COLLAGES_DIR,
+    FORMANT_SHIFT_MAX_SEMITONES,
+    FORMANT_SHIFT_MIN_SEMITONES,
+    MAX_STRETCH_PERCENT,
+    MIN_STRETCH_PERCENT,
+    PITCH_MAX_MIDI,
+    PITCH_MIN_MIDI,
+    PITCH_TRANSITION_CENTER_MAX_MS,
+    PITCH_TRANSITION_CENTER_MIN_MS,
+    PITCH_TRANSITION_MAX_MS,
+    PROFESSIONAL_MAX_DURATION_PERCENT,
+    PROFESSIONAL_MIN_DURATION_PERCENT,
+)
 from madnolia.storage import write_json
 from madnolia.types.common import (
+    CompositionMode,
     CompositionProject,
     MatchStatus,
+    PhoneAlignmentOperation,
+    PhoneUnit,
     SaveCompositionRequest,
     TimelineSegment,
 )
@@ -35,7 +51,7 @@ def list_all_collages() -> list[CompositionProject]:
 
 def collage_dir(composition_id: str) -> Path:
     if not re.fullmatch(r"comp_[0-9a-f]{16}", composition_id):
-        raise ValueError("잘못된 콜라주 ID입니다.")
+        raise ValueError("잘못된 합성 ID입니다.")
     return DEFAULT_COLLAGES_DIR / composition_id
 
 
@@ -45,7 +61,7 @@ def migrate_legacy_collages(project_dir: Path, *legacy_roots: Path) -> None:
         for source in directory.glob("comp_*.json"):
             collage = load_composition(source)
             if collage.corpus_project_id != project_dir.name:
-                raise ValueError(f"콜라주 프로젝트 참조가 다릅니다: {source}")
+                raise ValueError(f"합성 프로젝트 참조가 다릅니다: {source}")
             destination = collage_dir(collage.composition_id) / "collage.json"
             _move_verified(source, destination)
             exports = root / "exports" / collage.composition_id
@@ -70,12 +86,12 @@ def migrate_legacy_collages(project_dir: Path, *legacy_roots: Path) -> None:
 def _move_verified(source: Path, destination: Path) -> None:
     if destination.is_file():
         if not filecmp.cmp(source, destination, shallow=False):
-            raise ValueError(f"콜라주 이전 충돌: {destination}")
+            raise ValueError(f"합성 이전 충돌: {destination}")
     else:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         if not filecmp.cmp(source, destination, shallow=False):
-            raise OSError(f"콜라주 복사 검증 실패: {destination}")
+            raise OSError(f"합성 복사 검증 실패: {destination}")
     source.unlink()
 
 
@@ -96,6 +112,8 @@ def create_composition(
         updated_at=now,
         crossfade_ms=request.crossfade_ms,
         segments=request.segments,
+        mode=request.mode,
+        schema_version=request.schema_version,
     )
     _validate_sources(project_dir, composition.segments)
     save_composition(project_dir, composition)
@@ -119,6 +137,8 @@ def update_composition(
         updated_at=datetime.now().astimezone().isoformat(),
         crossfade_ms=request.crossfade_ms,
         segments=request.segments,
+        mode=request.mode,
+        schema_version=request.schema_version,
     )
     _validate_sources(project_dir, composition.segments)
     save_composition(project_dir, composition)
@@ -153,10 +173,22 @@ def load_composition(path: Path) -> CompositionProject:
                         - (data["segments"][index - 1]["timeline_end_ms"] if index else 0),
                     ),
                     "stretch_percent": segment.get("stretch_percent", MIN_STRETCH_PERCENT),
+                    "lane": segment.get("lane", index % 2),
+                    "phone_units": [
+                        PhoneUnit(
+                            **{
+                                **unit,
+                                "operation": PhoneAlignmentOperation(unit["operation"]),
+                            }
+                        )
+                        for unit in segment.get("phone_units", [])
+                    ],
                 }
             )
             for index, segment in enumerate(data["segments"])
         ],
+        mode=CompositionMode(data.get("mode", CompositionMode.SIMPLE)),
+        schema_version=data.get("schema_version", 1),
     )
 
 
@@ -181,7 +213,11 @@ def _validate_request(request: SaveCompositionRequest) -> None:
         raise ValueError("대상 문장이 비어 있습니다.")
     if not 0 <= request.crossfade_ms <= 100:
         raise ValueError("크로스페이드는 0ms 이상 100ms 이하여야 합니다.")
-    for segment in request.segments:
+    if request.schema_version < 1:
+        raise ValueError("합성 스키마 버전이 잘못됐습니다.")
+    previous: TimelineSegment | None = None
+    two_back: TimelineSegment | None = None
+    for index, segment in enumerate(request.segments):
         if segment.target_end_index <= segment.target_start_index:
             raise ValueError("대상 음소 범위가 잘못됐습니다.")
         if segment.source_end_ms <= segment.source_start_ms:
@@ -189,13 +225,76 @@ def _validate_request(request: SaveCompositionRequest) -> None:
         if segment.timeline_end_ms <= segment.timeline_start_ms:
             raise ValueError("타임라인 구간이 잘못됐습니다.")
 
-        if not MIN_STRETCH_PERCENT <= segment.stretch_percent <= MAX_STRETCH_PERCENT:
-            raise ValueError("Stretch must be between 100% and 150%.")
-        expected_ms = (
-            (segment.source_end_ms - segment.source_start_ms) * segment.stretch_percent + 50
-        ) // 100
+        if request.mode == CompositionMode.PROFESSIONAL:
+            _validate_professional_segment(segment, index, previous, two_back)
+            expected_ms = sum(unit.output_duration_ms for unit in segment.phone_units)
+        else:
+            if not MIN_STRETCH_PERCENT <= segment.stretch_percent <= MAX_STRETCH_PERCENT:
+                raise ValueError("Stretch must be between 100% and 150%.")
+            expected_ms = (
+                (segment.source_end_ms - segment.source_start_ms) * segment.stretch_percent + 50
+            ) // 100
         if segment.timeline_end_ms - segment.timeline_start_ms != expected_ms:
-            raise ValueError("Stretched segment duration does not match its timeline duration.")
+            raise ValueError("합성 조각의 출력 길이가 타임라인 길이와 다릅니다.")
+        two_back, previous = previous, segment
+
+
+def _validate_professional_segment(
+    segment: TimelineSegment,
+    index: int,
+    previous: TimelineSegment | None,
+    two_back: TimelineSegment | None,
+) -> None:
+    if not segment.phone_units:
+        raise ValueError("전문 합성 조각에는 음소 편집 단위가 필요합니다.")
+    if segment.lane != index % 2:
+        raise ValueError("전문 합성 조각의 레인이 순서와 일치하지 않습니다.")
+    expected_start = 0 if previous is None else previous.timeline_end_ms + segment.gap_before_ms
+    if segment.timeline_start_ms != expected_start:
+        raise ValueError("전문 합성 조각의 상대 위치가 잘못됐습니다.")
+    if two_back is not None and segment.timeline_start_ms < two_back.timeline_end_ms:
+        raise ValueError("동시에 세 개 이상의 합성 조각을 재생할 수 없습니다.")
+    for unit in segment.phone_units:
+        if unit.output_duration_ms < 0:
+            raise ValueError("음소 출력 길이는 음수가 될 수 없습니다.")
+        if unit.source_f0_hz is not None and unit.source_f0_hz <= 0:
+            raise ValueError("원본 피치는 0보다 커야 합니다.")
+        if unit.target_pitch_midi is not None and not (
+            PITCH_MIN_MIDI <= unit.target_pitch_midi <= PITCH_MAX_MIDI
+        ):
+            raise ValueError("목표 피치가 허용 범위를 벗어났습니다.")
+        if not (
+            FORMANT_SHIFT_MIN_SEMITONES
+            <= unit.formant_shift_semitones
+            <= FORMANT_SHIFT_MAX_SEMITONES
+        ):
+            raise ValueError("포먼트 이동량이 허용 범위를 벗어났습니다.")
+        if not 0 <= unit.transition_to_next_ms <= PITCH_TRANSITION_MAX_MS:
+            raise ValueError("피치 전환 시간이 허용 범위를 벗어났습니다.")
+        if not 0 <= unit.transition_strength_percent <= 100:
+            raise ValueError("피치 전환 강도가 허용 범위를 벗어났습니다.")
+        if not (
+            PITCH_TRANSITION_CENTER_MIN_MS
+            <= unit.transition_center_ms
+            <= PITCH_TRANSITION_CENTER_MAX_MS
+        ):
+            raise ValueError("피치 전환 중심이 허용 범위를 벗어났습니다.")
+        has_source = unit.source_start_ms is not None and unit.source_end_ms is not None
+        if has_source:
+            if unit.source_end_ms <= unit.source_start_ms:
+                raise ValueError("음소 원본 구간이 잘못됐습니다.")
+            if (
+                unit.source_start_ms < segment.source_start_ms
+                or unit.source_end_ms > segment.source_end_ms
+            ):
+                raise ValueError("음소 원본 구간이 합성 조각을 벗어났습니다.")
+            source_duration = unit.source_end_ms - unit.source_start_ms
+            minimum = max(1, round(source_duration * PROFESSIONAL_MIN_DURATION_PERCENT / 100))
+            maximum = round(source_duration * PROFESSIONAL_MAX_DURATION_PERCENT / 100)
+            if not minimum <= unit.output_duration_ms <= maximum:
+                raise ValueError("음소 출력 길이가 허용 범위를 벗어났습니다.")
+        elif unit.operation != PhoneAlignmentOperation.DELETE:
+            raise ValueError("원본 음소가 없는 편집 단위는 누락 연산이어야 합니다.")
 
 
 def validate_preview_request(project_dir: Path, request: SaveCompositionRequest) -> None:

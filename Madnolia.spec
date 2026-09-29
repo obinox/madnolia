@@ -18,8 +18,10 @@ for package in (
     "openvino_tokenizers",
     "ctranslate2",
     "g2pk",
+    "g2p_en",
     "jamo",
     "nltk",
+    "pykakasi",
 ):
     package_datas, package_binaries, package_hiddenimports = collect_all(package)
     datas += package_datas

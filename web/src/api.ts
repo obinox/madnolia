@@ -1,5 +1,6 @@
 import type {
-  CandidateSearchResult,
+  SearchJob,
+  InputLanguage,
   CompositionProject,
   ExportTarget,
   ProjectDetail,
@@ -139,13 +140,26 @@ export const fetchWaveform = (
 export const mediaUrl = (projectId: string, sourceId: string): string =>
   `/api/projects/${encodeURIComponent(projectId)}/media/${encodeURIComponent(sourceId)}`
 
-export const searchCandidates = (
+export const startSearch = (
   projectId: string,
   text: string,
-): Promise<CandidateSearchResult> => request(
-  `/api/projects/${encodeURIComponent(projectId)}/search`,
+  inputLanguage: InputLanguage,
+  signal?: AbortSignal,
+): Promise<{ job_id: string }> => request(
+  `/api/projects/${encodeURIComponent(projectId)}/search-jobs`,
+  signal,
+  { method: "POST", body: JSON.stringify({
+    text, max_candidates_per_start: 8, input_language: inputLanguage,
+  }) },
+)
+
+export const getSearchJob = (jobId: string, signal?: AbortSignal): Promise<SearchJob> =>
+  request(`/api/search-jobs/${encodeURIComponent(jobId)}`, signal)
+
+export const cancelSearch = (jobId: string): Promise<SearchJob> => request(
+  `/api/search-jobs/${encodeURIComponent(jobId)}`,
   undefined,
-  { method: "POST", body: JSON.stringify({ text, max_candidates_per_start: 8 }) },
+  { method: "DELETE" },
 )
 
 export const fetchCompositions = (projectId: string): Promise<CompositionProject[]> =>

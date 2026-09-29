@@ -79,9 +79,31 @@ VIEWER_MAX_WAVEFORM_BINS = 4000
 VIEWER_MIN_WAVEFORM_BINS = 100
 SEARCH_MAX_JOIN_GAP_MS = 500
 SEARCH_MAX_CANDIDATES_PER_TARGET_START = 120
+SEARCH_MAX_TARGET_SPAN = 8
+SEARCH_MAX_EDIT_COUNT = 2
+SEARCH_MAX_APPROXIMATE_ANCHORS_PER_SOURCE = 48
+SEARCH_MAX_APPROXIMATE_RANKED_POOL_PER_TARGET_START = 32
+SEARCH_INSERT_DELETE_COST = 0.72
+SEARCH_MIN_SEQUENCE_SIMILARITY = 0.42
 DEFAULT_CROSSFADE_MS = 8
 MIN_STRETCH_PERCENT = 100
 MAX_STRETCH_PERCENT = 150
+PROFESSIONAL_MIN_DURATION_PERCENT = 25
+PROFESSIONAL_MAX_DURATION_PERCENT = 800
+PITCH_MIN_MIDI = 24.0
+PITCH_MAX_MIDI = 108.0
+FORMANT_SHIFT_MIN_SEMITONES = -12.0
+FORMANT_SHIFT_MAX_SEMITONES = 12.0
+FORMANT_ENVELOPE_LIFTER = 18
+FORMANT_GAIN_MIN = 0.25
+FORMANT_GAIN_MAX = 4.0
+PITCH_TRANSITION_DEFAULT_MS = 80
+PITCH_TRANSITION_MAX_MS = 500
+PITCH_TRANSITION_DEFAULT_STRENGTH = 100
+PITCH_TRANSITION_CENTER_MIN_MS = -250
+PITCH_TRANSITION_CENTER_MAX_MS = 250
+PITCH_SHIFT_FRAME_SAMPLES = 640
+PITCH_SHIFT_HOP_SAMPLES = 320
 STRETCH_FRAME_SAMPLES = 320
 STRETCH_SEARCH_SAMPLES = 64
 OPENVINO_MODEL_REPOSITORIES = {
@@ -207,3 +229,86 @@ FINAL_IPA = {
     "ㅎ": ("ko.coda.alveolar", "t̚"),
 }
 VOWEL_PHONE_PREFIX = "ko.vowel."
+
+ARPABET_IPA = {
+    "AA": (("en.vowel.a", "ɑ"),),
+    "AE": (("en.vowel.ae", "æ"),),
+    "AH": (("en.vowel.eo", "ʌ"),),
+    "AO": (("en.vowel.o", "ɔ"),),
+    "AW": (("en.vowel.a", "a"), ("en.vowel.u", "ʊ")),
+    "AY": (("en.vowel.a", "a"), ("en.vowel.i", "ɪ")),
+    "EH": (("en.vowel.e", "ɛ"),),
+    "ER": (("en.vowel.eo", "ɝ"),),
+    "EY": (("en.vowel.e", "e"), ("en.vowel.i", "ɪ")),
+    "IH": (("en.vowel.i", "ɪ"),),
+    "IY": (("en.vowel.i", "i"),),
+    "OW": (("en.vowel.o", "o"), ("en.vowel.u", "ʊ")),
+    "OY": (("en.vowel.o", "ɔ"), ("en.vowel.i", "ɪ")),
+    "UH": (("en.vowel.u", "ʊ"),),
+    "UW": (("en.vowel.u", "u"),),
+    "B": (("en.consonant.bilabial.plosive.voiced", "b"),),
+    "CH": (("en.consonant.postalveolar.affricate.voiceless", "tʃ"),),
+    "D": (("en.consonant.alveolar.plosive.voiced", "d"),),
+    "DH": (("en.consonant.dental.fricative.voiced", "ð"),),
+    "F": (("en.consonant.labiodental.fricative.voiceless", "f"),),
+    "G": (("en.consonant.velar.plosive.voiced", "ɡ"),),
+    "HH": (("en.consonant.glottal.fricative.voiceless", "h"),),
+    "JH": (("en.consonant.postalveolar.affricate.voiced", "dʒ"),),
+    "K": (("en.consonant.velar.plosive.voiceless", "k"),),
+    "L": (("en.consonant.alveolar.lateral.voiced", "l"),),
+    "M": (("en.consonant.bilabial.nasal.voiced", "m"),),
+    "N": (("en.consonant.alveolar.nasal.voiced", "n"),),
+    "NG": (("en.consonant.velar.nasal.voiced", "ŋ"),),
+    "P": (("en.consonant.bilabial.plosive.voiceless", "p"),),
+    "R": (("en.consonant.postalveolar.approximant.voiced", "ɹ"),),
+    "S": (("en.consonant.alveolar.fricative.voiceless", "s"),),
+    "SH": (("en.consonant.postalveolar.fricative.voiceless", "ʃ"),),
+    "T": (("en.consonant.alveolar.plosive.voiceless", "t"),),
+    "TH": (("en.consonant.dental.fricative.voiceless", "θ"),),
+    "V": (("en.consonant.labiodental.fricative.voiced", "v"),),
+    "W": (("en.consonant.labiovelar.approximant.voiced", "w"),),
+    "Y": (("en.consonant.palatal.approximant.voiced", "j"),),
+    "Z": (("en.consonant.alveolar.fricative.voiced", "z"),),
+    "ZH": (("en.consonant.postalveolar.fricative.voiced", "ʒ"),),
+}
+
+JAPANESE_VOWELS = {
+    "a": ("ja.vowel.a", "a"),
+    "i": ("ja.vowel.i", "i"),
+    "u": ("ja.vowel.u", "ɯ"),
+    "e": ("ja.vowel.e", "e"),
+    "o": ("ja.vowel.o", "o"),
+}
+
+JAPANESE_ONSETS = {
+    "ky": ("ja.consonant.palatalized.velar.plosive.voiceless", "kʲ"),
+    "gy": ("ja.consonant.palatalized.velar.plosive.voiced", "ɡʲ"),
+    "sh": ("ja.consonant.alveolopalatal.fricative.voiceless", "ɕ"),
+    "ch": ("ja.consonant.alveolopalatal.affricate.voiceless", "tɕ"),
+    "ny": ("ja.consonant.palatalized.alveolar.nasal.voiced", "nʲ"),
+    "hy": ("ja.consonant.palatal.fricative.voiceless", "ç"),
+    "my": ("ja.consonant.palatalized.bilabial.nasal.voiced", "mʲ"),
+    "ry": ("ja.consonant.palatalized.alveolar.tap.voiced", "ɾʲ"),
+    "by": ("ja.consonant.palatalized.bilabial.plosive.voiced", "bʲ"),
+    "py": ("ja.consonant.palatalized.bilabial.plosive.voiceless", "pʲ"),
+    "ts": ("ja.consonant.alveolar.affricate.voiceless", "ts"),
+    "j": ("ja.consonant.alveolopalatal.affricate.voiced", "dʑ"),
+    "f": ("ja.consonant.bilabial.fricative.voiceless", "ɸ"),
+    "k": ("ja.consonant.velar.plosive.voiceless", "k"),
+    "g": ("ja.consonant.velar.plosive.voiced", "ɡ"),
+    "s": ("ja.consonant.alveolar.fricative.voiceless", "s"),
+    "z": ("ja.consonant.alveolar.fricative.voiced", "z"),
+    "t": ("ja.consonant.alveolar.plosive.voiceless", "t"),
+    "d": ("ja.consonant.alveolar.plosive.voiced", "d"),
+    "n": ("ja.consonant.alveolar.nasal.voiced", "n"),
+    "h": ("ja.consonant.glottal.fricative.voiceless", "h"),
+    "b": ("ja.consonant.bilabial.plosive.voiced", "b"),
+    "p": ("ja.consonant.bilabial.plosive.voiceless", "p"),
+    "m": ("ja.consonant.bilabial.nasal.voiced", "m"),
+    "y": ("ja.consonant.palatal.approximant.voiced", "j"),
+    "r": ("ja.consonant.alveolar.tap.voiced", "ɾ"),
+    "w": ("ja.consonant.labiovelar.approximant.voiced", "w"),
+}
+
+JAPANESE_MORAIC_NASAL = ("ja.consonant.uvular.nasal.voiced", "ɴ")
+JAPANESE_GEMINATE = ("ja.consonant.geminate", "Q")

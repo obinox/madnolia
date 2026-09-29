@@ -1,0 +1,139 @@
+import numpy as np
+
+from madnolia.constants import (
+    FORMANT_ENVELOPE_LIFTER,
+    FORMANT_GAIN_MAX,
+    FORMANT_GAIN_MIN,
+    PITCH_SHIFT_FRAME_SAMPLES,
+    PITCH_SHIFT_HOP_SAMPLES,
+)
+from madnolia.time_stretch import stretch_audio
+
+
+def hz_to_midi(frequency_hz: float) -> float:
+    return 69.0 + 12.0 * float(np.log2(frequency_hz / 440.0))
+
+
+def midi_to_hz(midi_pitch: float) -> float:
+    return 440.0 * 2.0 ** ((midi_pitch - 69.0) / 12.0)
+
+
+def render_pitched_audio(
+    samples: np.ndarray,
+    target_length: int,
+    source_f0_hz: float | None,
+    target_pitch_midi: float | None,
+    start_pitch_midi: float | None = None,
+    start_transition_samples: int = 0,
+    end_pitch_midi: float | None = None,
+    end_transition_samples: int = 0,
+    formant_shift_semitones: float = 0.0,
+) -> np.ndarray:
+    stretched = stretch_audio(samples, target_length)
+    if source_f0_hz is None or target_pitch_midi is None or len(stretched) < 2:
+        return stretched
+    source_pitch = hz_to_midi(source_f0_hz)
+    frame_size = min(PITCH_SHIFT_FRAME_SAMPLES, len(stretched))
+    hop = min(PITCH_SHIFT_HOP_SAMPLES, max(1, frame_size // 2))
+    last_start = len(stretched) - frame_size
+    positions = list(range(0, last_start, hop)) + [last_start]
+    positions = list(dict.fromkeys(positions))
+    window = np.hanning(frame_size + 2)[1:-1].astype(np.float32)
+    output = np.zeros(len(stretched), dtype=np.float32)
+    weights = np.zeros(len(stretched), dtype=np.float32)
+    for position in positions:
+        center = position + frame_size // 2
+        pitch = _pitch_at(
+            center,
+            len(stretched),
+            target_pitch_midi,
+            start_pitch_midi,
+            start_transition_samples,
+            end_pitch_midi,
+            end_transition_samples,
+        )
+        frame = stretched[position : position + frame_size]
+        shifted = _shift_frame(frame, pitch - source_pitch, formant_shift_semitones)
+        output[position : position + frame_size] += shifted * window
+        weights[position : position + frame_size] += window
+    return output / np.maximum(weights, np.finfo(np.float32).eps)
+
+
+def _pitch_at(
+    position: int,
+    length: int,
+    target_pitch: float,
+    start_pitch: float | None,
+    start_samples: int,
+    end_pitch: float | None,
+    end_samples: int,
+) -> float:
+    if start_pitch is not None and start_samples > 0 and position < start_samples:
+        progress = _smooth(position / start_samples)
+        return start_pitch + (target_pitch - start_pitch) * progress
+    if end_pitch is not None and end_samples > 0 and position > length - end_samples:
+        progress = _smooth((position - (length - end_samples)) / end_samples)
+        return target_pitch + (end_pitch - target_pitch) * progress
+    return target_pitch
+
+
+def _shift_frame(
+    samples: np.ndarray, semitones: float, formant_shift_semitones: float
+) -> np.ndarray:
+    if abs(semitones) < 0.01 and abs(formant_shift_semitones) < 0.01:
+        return samples.copy()
+    if abs(semitones) < 0.01:
+        shifted = samples.copy()
+    else:
+        ratio = 2.0 ** (semitones / 12.0)
+        resampled_length = max(2, round(len(samples) / ratio))
+        source_positions = np.arange(len(samples), dtype=np.float64)
+        target_positions = np.linspace(0, len(samples) - 1, resampled_length)
+        resampled = np.interp(target_positions, source_positions, samples).astype(np.float32)
+        shifted = stretch_audio(resampled, len(samples))
+    return _correct_formants(samples, shifted, formant_shift_semitones)
+
+
+def _correct_formants(
+    source: np.ndarray, shifted: np.ndarray, formant_shift_semitones: float
+) -> np.ndarray:
+    source_envelope = _spectral_envelope(source)
+    shifted_envelope = _spectral_envelope(shifted)
+    bins = np.arange(len(source_envelope), dtype=np.float64)
+    ratio = 2.0 ** (formant_shift_semitones / 12.0)
+    target_envelope = np.interp(
+        bins / ratio,
+        bins,
+        source_envelope,
+        left=source_envelope[0],
+        right=source_envelope[-1],
+    )
+    gain = np.clip(
+        np.exp(target_envelope - shifted_envelope),
+        FORMANT_GAIN_MIN,
+        FORMANT_GAIN_MAX,
+    )
+    spectrum = np.fft.rfft(shifted)
+    corrected = np.fft.irfft(spectrum * gain, n=len(shifted)).astype(np.float32)
+    source_rms = float(np.sqrt(np.mean(np.square(shifted))))
+    corrected_rms = float(np.sqrt(np.mean(np.square(corrected))))
+    if corrected_rms > 1e-8:
+        corrected *= source_rms / corrected_rms
+    return np.clip(corrected, -1.0, 1.0)
+
+
+def _spectral_envelope(samples: np.ndarray) -> np.ndarray:
+    windowed = samples * np.hanning(len(samples))
+    log_magnitude = np.log(np.maximum(np.abs(np.fft.rfft(windowed)), 1e-7))
+    cepstrum = np.fft.irfft(log_magnitude, n=len(samples))
+    liftered = np.zeros_like(cepstrum)
+    keep = min(FORMANT_ENVELOPE_LIFTER, max(1, len(cepstrum) // 2))
+    liftered[:keep] = cepstrum[:keep]
+    if keep > 1:
+        liftered[-keep + 1 :] = cepstrum[-keep + 1 :]
+    return np.fft.rfft(liftered).real
+
+
+def _smooth(value: float) -> float:
+    clamped = min(1.0, max(0.0, value))
+    return clamped * clamped * (3.0 - 2.0 * clamped)
