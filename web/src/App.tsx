@@ -1,15 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
-import { fetchCollage, fetchProject, fetchProjects, fetchTimeline, fetchWaveform, mediaUrl } from "./api"
+import { audioUrl, fetchAudioBlob, fetchCollage, fetchProject, fetchProjects, fetchTimeline, fetchWaveform } from "./api"
 import {
-  EDITOR_SPLIT_X_DEFAULT_PERCENT,
-  EDITOR_SPLIT_X_MAX_PERCENT,
-  EDITOR_SPLIT_X_MIN_PERCENT,
-  EDITOR_SPLIT_Y_DEFAULT_PERCENT,
-  EDITOR_SPLIT_Y_MAX_PERCENT,
-  EDITOR_SPLIT_Y_MIN_PERCENT,
   PHONE_DETAIL_MAX_MS,
   PLAYBACK_LOOP_EPSILON_MS,
+  SOURCE_TIMELINE_FETCH_DEBOUNCE_MS,
   WAVEFORM_BINS,
   WORD_DETAIL_MAX_MS,
 } from "./constants"
@@ -17,9 +12,9 @@ import { Timeline, formatTime } from "./components/Timeline"
 import { CollagePanel } from "./components/CollagePanel"
 import { AnalysisPage } from "./components/AnalysisPage"
 import { ProjectsPage } from "./components/ProjectsPage"
+import { ProfessionalSynthesisPage } from "./components/ProfessionalSynthesisPage"
 import type {
   ProjectDetail,
-  SplitAxis,
   ProjectSummary,
   PhoneCache,
   TimelineSelection,
@@ -30,8 +25,9 @@ import type {
 } from "./types"
 
 export default function App() {
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const audioRefs = useRef<Map<string, HTMLAudioElement>>(new Map())
   const playbackFrameRef = useRef<number | null>(null)
+  const waveformRequestRef = useRef(0)
   const loopSelectionRef = useRef(false)
   const selectionRef = useRef<TimelineSelection | null>(null)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
@@ -40,41 +36,28 @@ export default function App() {
   const [requestedCollageId, setRequestedCollageId] = useState("")
   const [project, setProject] = useState<ProjectDetail | null>(null)
   const [sourceId, setSourceId] = useState("")
+  const [audioObjectUrls, setAudioObjectUrls] = useState<Record<string, string>>({})
+  const [audioCacheCount, setAudioCacheCount] = useState(0)
+  const [audioCacheProcessedCount, setAudioCacheProcessedCount] = useState(0)
   const [transcriptCandidateId, setTranscriptCandidateId] = useState("")
   const [viewStartMs, setViewStartMs] = useState(0)
   const [viewEndMs, setViewEndMs] = useState(1)
   const [currentMs, setCurrentMs] = useState(0)
   const [waveform, setWaveform] = useState<WaveformData | null>(null)
+  const [waveformLoading, setWaveformLoading] = useState(false)
   const [phoneCache, setPhoneCache] = useState<PhoneCache | null>(null)
   const [selection, setSelection] = useState<TimelineSelection | null>(null)
   const [loopSelection, setLoopSelection] = useState(false)
   const [pendingCandidate, setPendingCandidate] = useState<UnitCandidate | null>(null)
   const [error, setError] = useState("")
-  const [splitX, setSplitX] = useState(EDITOR_SPLIT_X_DEFAULT_PERCENT)
-  const [splitY, setSplitY] = useState(EDITOR_SPLIT_Y_DEFAULT_PERCENT)
-  const splitAxisRef = useRef<SplitAxis | null>(null)
+  const audioObjectUrlsRef = useRef<string[]>([])
 
-  const startSplitterDrag = (axis: SplitAxis, event: ReactPointerEvent<HTMLDivElement>) => {
-    splitAxisRef.current = axis
-    event.currentTarget.setPointerCapture(event.pointerId)
+  const activeAudio = () => audioRefs.current.get(sourceId) ?? null
+
+  const prepareSourceAudio = (nextSourceId: string) => {
+    const audio = audioRefs.current.get(nextSourceId)
+    if (audio && audio.readyState < 2) audio.load()
   }
-
-  const moveSplitter = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const axis = splitAxisRef.current
-    const bounds = event.currentTarget.parentElement?.getBoundingClientRect()
-    if (!axis || !bounds) return
-    if (axis === "x") {
-      setSplitX(Math.max(EDITOR_SPLIT_X_MIN_PERCENT, Math.min(
-        EDITOR_SPLIT_X_MAX_PERCENT, (event.clientX - bounds.left) / bounds.width * 100,
-      )))
-    } else {
-      setSplitY(Math.max(EDITOR_SPLIT_Y_MIN_PERCENT, Math.min(
-        EDITOR_SPLIT_Y_MAX_PERCENT, (event.clientY - bounds.top) / bounds.height * 100,
-      )))
-    }
-  }
-
-  const stopSplitterDrag = () => { splitAxisRef.current = null }
 
   const source = project?.manifest.sources.find((item) => item.source_id === sourceId) ?? null
   const analysis = project?.analyses.find((item) => item.source_id === sourceId) ?? null
@@ -85,10 +68,10 @@ export default function App() {
   const durationMs = source?.duration_ms ?? 1
   const viewSpan = viewEndMs - viewStartMs
 
-  const openProject = (id: string) => {
+  const openProject = (id: string, destination: "collage" | "professional" = "collage") => {
     setRequestedCollageId("")
     setProjectId(id)
-    window.location.hash = `#/collage/${encodeURIComponent(id)}`
+    window.location.hash = `#/${destination}/${encodeURIComponent(id)}`
   }
 
   useEffect(() => {
@@ -100,9 +83,11 @@ export default function App() {
         const id = decodeURIComponent(hash.slice("#/collages/".length))
         setRequestedCollageId(id)
         setProjectId("")
-        setPage("collage")
         fetchCollage(id).then((collage) => {
-          if (currentRequestId === routeRequestId) setProjectId(collage.corpus_project_id)
+          if (currentRequestId === routeRequestId) {
+            setProjectId(collage.corpus_project_id)
+            setPage(collage.mode === "PROFESSIONAL" ? "professional" : "collage")
+          }
         }).catch((caught: Error) => {
           if (currentRequestId === routeRequestId) setError(caught.message)
         })
@@ -110,6 +95,10 @@ export default function App() {
         setRequestedCollageId("")
         setProjectId(decodeURIComponent(hash.slice("#/collage/".length)))
         setPage("collage")
+      } else if (hash.startsWith("#/professional/")) {
+        setRequestedCollageId("")
+        setProjectId(decodeURIComponent(hash.slice("#/professional/".length)))
+        setPage("professional")
       } else if (hash === "#/projects") {
         setPage("projects")
       } else {
@@ -148,6 +137,9 @@ export default function App() {
   useEffect(() => {
     setProject(null)
     setSourceId("")
+    setAudioObjectUrls({})
+    setAudioCacheCount(0)
+    setAudioCacheProcessedCount(0)
     if (!projectId) return
     let active = true
     setError("")
@@ -174,6 +166,47 @@ export default function App() {
   }, [projectId])
 
   useEffect(() => {
+    if (!projectId || !project) return
+    const controller = new AbortController()
+    let active = true
+    for (const url of audioObjectUrlsRef.current) URL.revokeObjectURL(url)
+    audioObjectUrlsRef.current = []
+    setAudioObjectUrls({})
+    setAudioCacheCount(0)
+    setAudioCacheProcessedCount(0)
+    void Promise.all(project.manifest.sources.map(async (sourceItem) => {
+      try {
+        const blob = await fetchAudioBlob(projectId, sourceItem.source_id, controller.signal)
+        if (!active) return
+        const url = URL.createObjectURL(blob)
+        audioObjectUrlsRef.current.push(url)
+        setAudioObjectUrls((current) => ({ ...current, [sourceItem.source_id]: url }))
+        setAudioCacheCount((current) => current + 1)
+      } catch (caught) {
+        if (caught instanceof Error && caught.name !== "AbortError" && active) {
+          setError(caught.message)
+        }
+      } finally {
+        if (active) setAudioCacheProcessedCount((current) => current + 1)
+      }
+    }))
+    return () => {
+      active = false
+      controller.abort()
+    }
+  }, [project, projectId])
+
+  useEffect(() => () => {
+    for (const url of audioObjectUrlsRef.current) URL.revokeObjectURL(url)
+  }, [])
+
+  useEffect(() => {
+    audioRefs.current.forEach((audio, id) => {
+      if (id !== sourceId && !audio.paused) audio.pause()
+    })
+  }, [sourceId])
+
+  useEffect(() => {
     if (!analysis?.transcript_candidates.length) {
       setTranscriptCandidateId("")
       return
@@ -187,37 +220,48 @@ export default function App() {
 
   useEffect(() => {
     if (!pendingCandidate || pendingCandidate.source_id !== sourceId) return
-    const video = videoRef.current
-    if (!video) return
+    const audio = activeAudio()
+    if (!audio) return
     const playCandidate = () => {
-      video.currentTime = pendingCandidate.source_start_ms / 1000
+      audio.currentTime = pendingCandidate.source_start_ms / 1000
       setCurrentMs(pendingCandidate.source_start_ms)
-      void video.play()
+      void audio.play()
       setPendingCandidate(null)
     }
-    if (video.readyState >= 1) {
+    if (audio.readyState >= 1) {
       playCandidate()
       return
     }
-    video.addEventListener("loadedmetadata", playCandidate, { once: true })
-    return () => video.removeEventListener("loadedmetadata", playCandidate)
+    audio.addEventListener("loadedmetadata", playCandidate, { once: true })
+    return () => audio.removeEventListener("loadedmetadata", playCandidate)
   }, [pendingCandidate, sourceId])
 
   useEffect(() => {
-    if (!projectId || !sourceId || viewEndMs <= viewStartMs) return
+    const requestId = ++waveformRequestRef.current
+    setWaveform(null)
+    if (!projectId || !sourceId || viewEndMs <= viewStartMs) {
+      setWaveformLoading(false)
+      return
+    }
     const controller = new AbortController()
+    setWaveformLoading(true)
     const timer = window.setTimeout(() => {
       fetchWaveform(projectId, sourceId, viewStartMs, viewEndMs, WAVEFORM_BINS, controller.signal)
-        .then(setWaveform)
+        .then((nextWaveform) => {
+          if (waveformRequestRef.current === requestId) setWaveform(nextWaveform)
+        })
         .catch((caught: Error) => {
           if (caught.name !== "AbortError") setError(caught.message)
         })
-    }, 180)
+        .finally(() => {
+          if (waveformRequestRef.current === requestId) setWaveformLoading(false)
+        })
+    }, SOURCE_TIMELINE_FETCH_DEBOUNCE_MS)
     return () => {
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [projectId, sourceId, viewEndMs, viewSpan, viewStartMs])
+  }, [projectId, sourceId, viewEndMs, viewStartMs])
 
   useEffect(() => {
     if (!projectId || !sourceId || viewEndMs <= viewStartMs || viewSpan > PHONE_DETAIL_MAX_MS) return
@@ -230,20 +274,25 @@ export default function App() {
     const padding = Math.max(viewSpan, 30_000)
     const fetchStart = Math.max(0, viewStartMs - padding)
     const fetchEnd = Math.min(durationMs, viewEndMs + padding)
-    fetchTimeline(projectId, sourceId, fetchStart, fetchEnd, false, true, controller.signal)
-      .then((slice) => {
-        setPhoneCache({
-          sourceId,
-          startMs: fetchStart,
-          endMs: fetchEnd,
-          phones: slice.phones,
-          acousticFeatures: slice.acoustic_features,
+    const timer = window.setTimeout(() => {
+      fetchTimeline(projectId, sourceId, fetchStart, fetchEnd, false, true, controller.signal)
+        .then((slice) => {
+          setPhoneCache({
+            sourceId,
+            startMs: fetchStart,
+            endMs: fetchEnd,
+            phones: slice.phones,
+            acousticFeatures: slice.acoustic_features,
+          })
         })
-      })
-      .catch((caught: Error) => {
-        if (caught.name !== "AbortError") setError(caught.message)
-      })
-    return () => controller.abort()
+        .catch((caught: Error) => {
+          if (caught.name !== "AbortError") setError(caught.message)
+        })
+    }, SOURCE_TIMELINE_FETCH_DEBOUNCE_MS)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
   }, [durationMs, phoneCache, projectId, sourceId, viewEndMs, viewSpan, viewStartMs])
 
   const timeline = useMemo<TimelineSlice | null>(() => {
@@ -286,9 +335,10 @@ export default function App() {
   }, [analysis])
 
   const seek = (timeMs: number) => {
-    if (!videoRef.current) return
+    const audio = activeAudio()
+    if (!audio) return
     const exactTimeMs = Math.max(0, Math.min(durationMs, timeMs))
-    videoRef.current.currentTime = exactTimeMs / 1000
+    audio.currentTime = exactTimeMs / 1000
     setCurrentMs(exactTimeMs)
   }
 
@@ -309,19 +359,19 @@ export default function App() {
   const startPlaybackClock = () => {
     stopPlaybackClock()
     const tick = () => {
-      const video = videoRef.current
-      if (!video || video.paused || video.ended) {
+      const audio = activeAudio()
+      if (!audio || audio.paused || audio.ended) {
         playbackFrameRef.current = null
         return
       }
-      const timeMs = video.currentTime * 1000
+      const timeMs = audio.currentTime * 1000
       const activeSelection = selectionRef.current
       if (
         loopSelectionRef.current &&
         activeSelection &&
         timeMs >= activeSelection.end_ms - PLAYBACK_LOOP_EPSILON_MS
       ) {
-        video.currentTime = activeSelection.start_ms / 1000
+        audio.currentTime = activeSelection.start_ms / 1000
         setCurrentMs(activeSelection.start_ms)
       } else {
         setCurrentMs(timeMs)
@@ -332,9 +382,9 @@ export default function App() {
   }
 
   const syncPlaybackPosition = () => {
-    const video = videoRef.current
-    if (!video) return
-    setCurrentMs(video.currentTime * 1000)
+    const audio = activeAudio()
+    if (!audio) return
+    setCurrentMs(audio.currentTime * 1000)
   }
 
   const handleSelection = (nextSelection: TimelineSelection | null) => {
@@ -350,6 +400,9 @@ export default function App() {
     )
     const candidateDuration = candidateSource?.duration_ms ?? durationMs
     const padding = Math.max(500, candidate.source_end_ms - candidate.source_start_ms)
+    setWaveform(null)
+    setPhoneCache(null)
+    prepareSourceAudio(candidate.source_id)
     setSourceId(candidate.source_id)
     setViewStartMs(Math.max(0, candidate.source_start_ms - padding))
     setViewEndMs(Math.min(candidateDuration, candidate.source_end_ms + padding))
@@ -371,40 +424,69 @@ export default function App() {
     setPendingCandidate(candidate)
   }
 
+  const prepareCandidatePreview = (candidate: UnitCandidate) => {
+    prepareSourceAudio(candidate.source_id)
+  }
+
+  const selectSource = (nextSourceId: string) => {
+    const nextSource = project?.manifest.sources.find((item) => item.source_id === nextSourceId)
+    setWaveform(null)
+    setPhoneCache(null)
+    setSelection(null)
+    setCurrentMs(0)
+    prepareSourceAudio(nextSourceId)
+    setSourceId(nextSourceId)
+    setViewStartMs(0)
+    setViewEndMs(nextSource?.duration_ms ?? 1)
+  }
+
   return (
-    <main className={page === "collage" ? "editor-app" : undefined}>
-      <header>
-        <div>
+    <main className="editor-app">
+      <header className="app-header">
+        <div className="app-brand">
           <p className="eyebrow">CONCATENATIVE CORPUS LAB</p>
           <h1>Madnolia Viewer</h1>
         </div>
         <nav className="workflow-nav" aria-label="작업 단계">
           <a href="#/analysis" aria-current={page === "analysis" ? "page" : undefined}>1. 영상 분석</a>
           <a href="#/projects" aria-current={page === "projects" ? "page" : undefined}>2. 프로젝트</a>
-          {projectId && <a href={`#/collage/${encodeURIComponent(projectId)}`}
-            aria-current={page === "collage" ? "page" : undefined}>3. 합성</a>}
+          <a
+            href={projectId ? `#/collage/${encodeURIComponent(projectId)}` : "#/projects"}
+            className={projectId ? undefined : "disabled"}
+            aria-disabled={projectId ? undefined : true}
+            aria-current={page === "collage" ? "page" : undefined}
+          >3. 합성</a>
+          <a
+            href={projectId ? `#/professional/${encodeURIComponent(projectId)}` : "#/projects"}
+            className={projectId ? undefined : "disabled"}
+            aria-disabled={projectId ? undefined : true}
+            aria-current={page === "professional" ? "page" : undefined}
+          >4. 전문 편집</a>
         </nav>
-        {page === "collage" && (
-        <div className="header-controls">
+        <div className="header-context">
+        {page === "collage" || page === "professional" ? <div className="header-controls">
           <label>
             Project
-            <select value={projectId} onChange={(event) => openProject(event.target.value)}>
+            <select value={projectId} onChange={(event) => openProject(
+              event.target.value,
+              page === "professional" ? "professional" : "collage",
+            )}>
               {projects.map((item) => (
                 <option key={item.project_id} value={item.project_id}>{item.name}</option>
               ))}
             </select>
           </label>
-          {project && project.manifest.sources.length > 1 && (
+          {page === "collage" && project && project.manifest.sources.length > 1 && (
             <label>
               Source
-              <select value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
+              <select value={sourceId} onChange={(event) => selectSource(event.target.value)}>
                 {project.manifest.sources.map((item) => (
                   <option key={item.source_id} value={item.source_id}>{item.path.split(/[\\/]/).pop()}</option>
                 ))}
               </select>
             </label>
           )}
-          {analysis && analysis.transcript_candidates.length > 1 && (
+          {page === "collage" && analysis && analysis.transcript_candidates.length > 1 && (
             <label>
               Transcript
               <select
@@ -419,8 +501,11 @@ export default function App() {
               </select>
             </label>
           )}
+        </div> : <div className="header-stage">
+          <strong>{page === "analysis" ? "STEP 01" : "STEP 02"}</strong>
+          <span>{page === "analysis" ? "ANALYZE" : "COLLECT"}</span>
+        </div>}
         </div>
-        )}
       </header>
 
       {error && <div className="error">{error}</div>}
@@ -432,27 +517,52 @@ export default function App() {
           onOpenProject={openProject}
           onOpenCollage={(id) => { window.location.hash = `#/collages/${encodeURIComponent(id)}` }}
           onProjectCreated={async () => { setProjects(await fetchProjects()) }} />
+      ) : page === "professional" && project ? (
+        <ProfessionalSynthesisPage
+          projectId={projectId}
+          initialCompositionId={requestedCollageId}
+        />
       ) : project && source && analysis ? (
         <>
-          <div className="editor-shell" style={{ "--editor-split-x": `${splitX}%`, "--editor-split-y": `${splitY}%` } as React.CSSProperties}>
+          <div className="editor-shell">
           <section className="workspace-grid">
-            <div className="video-card panel">
-              <video
-                ref={videoRef}
-                src={mediaUrl(projectId, sourceId)}
-                controls
-                preload="metadata"
-                onPlay={startPlaybackClock}
-                onPause={() => {
-                  stopPlaybackClock()
-                  syncPlaybackPosition()
-                }}
-                onEnded={() => {
-                  stopPlaybackClock()
-                  syncPlaybackPosition()
-                }}
-                onSeeked={syncPlaybackPosition}
-              />
+            <div className="source-audio-card panel">
+              <div className="quadrant-heading">
+                <strong>SOURCE AUDIO</strong>
+                <span>{source.path.split(/[\\/]/).pop()} · CACHE {audioCacheProcessedCount}/{project.manifest.sources.length} · RAM {audioCacheCount}</span>
+              </div>
+              <div className="source-audio-pool">
+                {project.manifest.sources.map((bufferedSource) => {
+                  const bufferedSourceId = bufferedSource.source_id
+                  const cachedAudioUrl = audioObjectUrls[bufferedSourceId]
+                  const attachedAudioUrl = cachedAudioUrl ?? (
+                    bufferedSourceId === sourceId ? audioUrl(projectId, bufferedSourceId) : undefined
+                  )
+                  return (
+                  <audio
+                    key={`${projectId}:${bufferedSourceId}`}
+                    ref={(element) => {
+                      if (element) audioRefs.current.set(bufferedSourceId, element)
+                      else audioRefs.current.delete(bufferedSourceId)
+                    }}
+                    className={bufferedSourceId === sourceId ? "active" : ""}
+                    src={attachedAudioUrl}
+                    controls={bufferedSourceId === sourceId}
+                    preload="auto"
+                    onPlay={bufferedSourceId === sourceId ? startPlaybackClock : undefined}
+                    onPause={bufferedSourceId === sourceId ? () => {
+                      stopPlaybackClock()
+                      syncPlaybackPosition()
+                    } : undefined}
+                    onEnded={bufferedSourceId === sourceId ? () => {
+                      stopPlaybackClock()
+                      syncPlaybackPosition()
+                    } : undefined}
+                    onSeeked={bufferedSourceId === sourceId ? syncPlaybackPosition : undefined}
+                  />
+                  )
+                })}
+              </div>
               <div className="transport-readout">
                 <span>{formatTime(currentMs)}</span>
                 <span>{formatTime(durationMs)}</span>
@@ -507,7 +617,7 @@ export default function App() {
                         loopSelectionRef.current = nextLoopState
                         if (nextLoopState) {
                           seek(selection.start_ms)
-                          void videoRef.current?.play()
+                          void activeAudio()?.play()
                         }
                       }}
                     >
@@ -523,6 +633,10 @@ export default function App() {
 
           <section className="timeline-panel panel">
             <div className="timeline-toolbar">
+              <strong className="panel-kicker">SOURCE TIMELINE</strong>
+              <span className={`waveform-status${waveformLoading ? " loading" : ""}`}>
+                {waveformLoading ? "파형 업데이트 중" : "파형 최신"}
+              </span>
               <div className="legend">
                 <span><i className="speech" />Speech</span>
                 <span><i className="non-speech" />Non-speech</span>
@@ -560,32 +674,17 @@ export default function App() {
             </div>
           </section>
 
-          <CollagePanel projectId={projectId} initialCompositionId={requestedCollageId} onPreview={previewCandidate} />
+          <CollagePanel
+            projectId={projectId}
+            initialCompositionId={requestedCollageId}
+            onPreview={previewCandidate}
+            onPreparePreview={prepareCandidatePreview}
+          />
 
           <section className="transcript panel">
             <p className="section-label">TRANSCRIPT</p>
             <p>{transcriptCandidate?.transcript ?? analysis.transcript}</p>
           </section>
-          <div
-            className="editor-splitter vertical"
-            role="separator"
-            aria-label="미리보기와 검색 패널 크기 조절"
-            aria-orientation="vertical"
-            onPointerDown={(event) => startSplitterDrag("x", event)}
-            onPointerMove={moveSplitter}
-            onPointerUp={stopSplitterDrag}
-            onPointerCancel={stopSplitterDrag}
-          />
-          <div
-            className="editor-splitter horizontal"
-            role="separator"
-            aria-label="위아래 작업공간 크기 조절"
-            aria-orientation="horizontal"
-            onPointerDown={(event) => startSplitterDrag("y", event)}
-            onPointerMove={moveSplitter}
-            onPointerUp={stopSplitterDrag}
-            onPointerCancel={stopSplitterDrag}
-          />
           </div>
         </>
       ) : (

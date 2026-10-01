@@ -10,15 +10,25 @@ from fastapi.testclient import TestClient
 
 from madnolia import compositions, viewer
 from madnolia.compositions import create_composition, get_composition, update_composition
-from madnolia.exporters import _video_overlap_alpha, export_composition, render_wav
+from madnolia.exporters import (
+    _professional_segment_frames,
+    _render_edit_regions,
+    _video_overlap_alpha,
+    export_composition,
+    render_wav,
+)
 from madnolia.types.common import (
     CompositionMode,
+    CompositionProject,
+    EditRegion,
     ExportTarget,
     MatchStatus,
     PhoneAlignmentOperation,
     PhoneUnit,
+    PitchEnvelopePoint,
     SaveCompositionRequest,
     TimelineSegment,
+    VolumeEnvelopePoint,
 )
 
 
@@ -114,6 +124,161 @@ def _segment() -> TimelineSegment:
     )
 
 
+def _write_audio_project_manifest(project_dir) -> None:
+    (project_dir / "project.json").write_text(
+        json.dumps(
+            {
+                "sources": [
+                    {
+                        "source_id": "source",
+                        "path": "video.mp4",
+                        "duration_ms": 1000,
+                        "audio_sample_rate": 16000,
+                        "audio_channels": 1,
+                        "video_width": 1920,
+                        "video_height": 1080,
+                        "video_fps": 30,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_simple_render_preserves_whole_candidate_audio_when_phone_units_exist(tmp_path) -> None:
+    project_dir = tmp_path / "proj"
+    audio_dir = project_dir / "audio"
+    audio_dir.mkdir(parents=True)
+    _write_audio_project_manifest(project_dir)
+    samples = np.zeros(16000, dtype=np.int16)
+    samples[1600:2400] = 8000
+    samples[2400:3200] = -8000
+    with wave.open(str(audio_dir / "source.wav"), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(samples.tobytes())
+    unit = PhoneUnit(
+        phone_unit_id="phone_0",
+        operation=PhoneAlignmentOperation.MATCH,
+        target_index=0,
+        target_phone_id="ko.vowel.a",
+        target_ipa="a",
+        source_occurrence_id="occurrence_0",
+        source_phone_id="ko.vowel.a",
+        source_ipa="a",
+        source_start_ms=100,
+        source_end_ms=150,
+        output_duration_ms=100,
+    )
+    request = SaveCompositionRequest(
+        name="whole candidate",
+        target_text="가",
+        target_pronunciation="가",
+        crossfade_ms=0,
+        segments=[replace(_segment(), phone_units=[unit])],
+    )
+
+    with wave.open(BytesIO(render_wav(project_dir, request)), "rb") as audio:
+        rendered = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
+
+    assert rendered[:800].mean() > 7000
+    assert rendered[800:].mean() < -7000
+
+
+def test_simple_crossfade_fades_fragment_edges(tmp_path) -> None:
+    project_dir = tmp_path / "proj"
+    audio_dir = project_dir / "audio"
+    audio_dir.mkdir(parents=True)
+    _write_audio_project_manifest(project_dir)
+    with wave.open(str(audio_dir / "source.wav"), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(np.full(16000, 8000, dtype=np.int16).tobytes())
+    segments = [
+        _segment(),
+        replace(
+            _segment(),
+            segment_id="segment_1",
+            timeline_start_ms=100,
+            timeline_end_ms=200,
+        ),
+    ]
+    request = SaveCompositionRequest(
+        name="contiguous",
+        target_text="가가",
+        target_pronunciation="가가",
+        crossfade_ms=20,
+        segments=segments,
+    )
+
+    with wave.open(BytesIO(render_wav(project_dir, request)), "rb") as audio:
+        rendered = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
+
+    assert rendered[0] == 0
+    assert rendered[800] > 7000
+    assert rendered[-1] < 100
+
+
+def test_professional_phone_boundaries_blend_source_context(tmp_path) -> None:
+    project_dir = tmp_path / "proj"
+    audio_dir = project_dir / "audio"
+    audio_dir.mkdir(parents=True)
+    _write_audio_project_manifest(project_dir)
+    samples = np.zeros(16000, dtype=np.int16)
+    samples[1600:2400] = 8000
+    samples[4800:5600] = -8000
+    with wave.open(str(audio_dir / "source.wav"), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(samples.tobytes())
+    units = [
+        PhoneUnit(
+            phone_unit_id="phone_0",
+            operation=PhoneAlignmentOperation.MATCH,
+            target_index=0,
+            target_phone_id="ko.vowel.a",
+            target_ipa="a",
+            source_occurrence_id="occurrence_0",
+            source_phone_id="ko.vowel.a",
+            source_ipa="a",
+            source_start_ms=100,
+            source_end_ms=150,
+            output_duration_ms=50,
+        ),
+        PhoneUnit(
+            phone_unit_id="phone_1",
+            operation=PhoneAlignmentOperation.MATCH,
+            target_index=1,
+            target_phone_id="ko.vowel.a",
+            target_ipa="a",
+            source_occurrence_id="occurrence_1",
+            source_phone_id="ko.vowel.a",
+            source_ipa="a",
+            source_start_ms=300,
+            source_end_ms=350,
+            output_duration_ms=50,
+        ),
+    ]
+    request = SaveCompositionRequest(
+        name="phone blend",
+        target_text="가가",
+        target_pronunciation="가가",
+        crossfade_ms=0,
+        mode=CompositionMode.PROFESSIONAL,
+        segments=[replace(_segment(), phone_units=units)],
+    )
+
+    with wave.open(BytesIO(render_wav(project_dir, request)), "rb") as audio:
+        rendered = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
+
+    assert 2500 < rendered[799] < 6000
+    assert -6000 < rendered[800] < -2500
+
+
 def test_preview_matches_export_with_individual_gaps(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(compositions, "DEFAULT_COLLAGES_DIR", tmp_path / "collages")
     project_dir = tmp_path / "proj"
@@ -172,7 +337,7 @@ def test_preview_matches_export_with_individual_gaps(tmp_path, monkeypatch) -> N
         "/api/projects/proj/compositions/preview",
         json=asdict(request),
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, response.json()
     assert response.headers["content-type"] == "audio/wav"
     client = TestClient(viewer.app)
     created = client.post(
@@ -249,6 +414,17 @@ def test_professional_composition_round_trip_and_phone_duration(tmp_path, monkey
         lane=0,
         phone_units=[unit],
     )
+    parent = create_composition(
+        project_dir,
+        "proj",
+        SaveCompositionRequest(
+            name="simple parent",
+            target_text="가",
+            target_pronunciation="가",
+            crossfade_ms=8,
+            segments=[_segment()],
+        ),
+    )
     request = SaveCompositionRequest(
         name="professional",
         target_text="가",
@@ -256,6 +432,8 @@ def test_professional_composition_round_trip_and_phone_duration(tmp_path, monkey
         crossfade_ms=8,
         segments=[segment],
         mode=CompositionMode.PROFESSIONAL,
+        parent_composition_id=parent.composition_id,
+        parent_composition_updated_at=parent.updated_at,
     )
 
     composition = create_composition(project_dir, "proj", request)
@@ -263,8 +441,23 @@ def test_professional_composition_round_trip_and_phone_duration(tmp_path, monkey
 
     assert loaded == composition
     assert loaded.mode == CompositionMode.PROFESSIONAL
+    assert loaded.parent_composition_id == parent.composition_id
     with wave.open(BytesIO(render_wav(project_dir, loaded)), "rb") as audio:
         assert audio.getnframes() == 250 * 16
+
+    update_composition(
+        project_dir,
+        parent.composition_id,
+        SaveCompositionRequest(
+            name="updated simple parent",
+            target_text="가",
+            target_pronunciation="가",
+            crossfade_ms=8,
+            segments=[_segment()],
+        ),
+    )
+    with pytest.raises(ValueError, match="변경"):
+        update_composition(project_dir, composition.composition_id, request)
 
 
 def test_professional_mp4_retimes_phone_video(tmp_path, monkeypatch) -> None:
@@ -317,6 +510,17 @@ def test_professional_mp4_retimes_phone_video(tmp_path, monkeypatch) -> None:
         lane=0,
         phone_units=[unit],
     )
+    parent = create_composition(
+        project_dir,
+        "proj",
+        SaveCompositionRequest(
+            name="simple parent",
+            target_text="가",
+            target_pronunciation="가",
+            crossfade_ms=8,
+            segments=[_segment()],
+        ),
+    )
     request = SaveCompositionRequest(
         name="professional video",
         target_text="가",
@@ -324,6 +528,8 @@ def test_professional_mp4_retimes_phone_video(tmp_path, monkeypatch) -> None:
         crossfade_ms=8,
         segments=[segment],
         mode=CompositionMode.PROFESSIONAL,
+        parent_composition_id=parent.composition_id,
+        parent_composition_updated_at=parent.updated_at,
     )
     composition = create_composition(project_dir, "proj", request)
 
@@ -348,6 +554,228 @@ def test_professional_video_overlap_uses_dissolve_progress() -> None:
     assert _video_overlap_alpha(current, previous, 3, 30) == 0.0
     assert _video_overlap_alpha(current, previous, 4, 30) == pytest.approx(1 / 3)
     assert _video_overlap_alpha(current, previous, 6, 30) == 1.0
+
+
+def test_professional_regions_round_trip_validate_and_preserve_contiguous_audio(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(compositions, "DEFAULT_COLLAGES_DIR", tmp_path / "collages")
+    project_dir = tmp_path / "proj"
+    audio_dir = project_dir / "audio"
+    audio_dir.mkdir(parents=True)
+    _write_audio_project_manifest(project_dir)
+    samples = np.arange(16000, dtype=np.int16)
+    with wave.open(str(audio_dir / "source.wav"), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(samples.tobytes())
+    parent = create_composition(project_dir, "proj", SaveCompositionRequest(
+        name="parent", target_text="k", target_pronunciation="k", crossfade_ms=0, segments=[_segment()]
+    ))
+    regions = [
+        EditRegion("r1", 100, 140, 40),
+        EditRegion("r2", 140, 175, 35),
+        EditRegion("r3", 175, 200, 25),
+    ]
+    segment = replace(_segment(), edit_regions=regions, user_guide_source_ms=[140], volume_envelope=[VolumeEnvelopePoint(0, 1), VolumeEnvelopePoint(1, 1)], pitch_envelope=[PitchEnvelopePoint(0, 0), PitchEnvelopePoint(.4, 0), PitchEnvelopePoint(1, 0)])
+    request = SaveCompositionRequest(
+        name="professional", target_text="k", target_pronunciation="k", crossfade_ms=0,
+        segments=[segment], mode=CompositionMode.PROFESSIONAL,
+        parent_composition_id=parent.composition_id, parent_composition_updated_at=parent.updated_at,
+        tempo_bpm=137, beats_per_bar=3, beat_division=96, grid_offset_units=72,
+    )
+    saved = create_composition(project_dir, "proj", request)
+    loaded = get_composition(project_dir, saved.composition_id)
+    stored_path = compositions._composition_path(project_dir, saved.composition_id)
+    legacy_data = json.loads(stored_path.read_text(encoding="utf-8"))
+    legacy_data.pop("grid_offset_units")
+    stored_path.write_text(json.dumps(legacy_data), encoding="utf-8")
+    assert compositions.get_composition(project_dir, saved.composition_id).grid_offset_units == 0
+    stored_path.write_text(json.dumps(saved.to_dict()), encoding="utf-8")
+    assert loaded.segments[0].edit_regions == regions
+    assert loaded.segments[0].volume_envelope == segment.volume_envelope
+    assert loaded.segments[0].pitch_envelope == segment.pitch_envelope
+    assert loaded.segments[0].user_guide_source_ms == [140]
+    assert (loaded.tempo_bpm, loaded.beats_per_bar, loaded.beat_division, loaded.grid_offset_units) == (137, 3, 96, 72)
+    compositions.validate_preview_request(project_dir, request)
+    updated = update_composition(project_dir, saved.composition_id, request)
+    assert updated.segments[0].edit_regions == regions
+    with pytest.raises(ValueError, match="subdivision"):
+        compositions._validate_request(replace(request, beat_division=12))
+    with pytest.raises(ValueError, match="subdivision"):
+        compositions._validate_request(replace(request, beat_division=24.0))
+    with pytest.raises(ValueError, match="Tempo"):
+        compositions._validate_request(replace(request, tempo_bpm=137.5))
+    with pytest.raises(ValueError, match="Grid offset"):
+        compositions._validate_request(replace(request, grid_offset_units=96.5))
+    with pytest.raises(ValueError, match="Grid offset"):
+        compositions._validate_request(replace(request, grid_offset_units=True))
+    compositions._validate_request(replace(request, grid_offset_units=-12))
+    moved_first = replace(segment, gap_before_ms=40, timeline_start_ms=40, timeline_end_ms=140)
+    compositions._validate_request(replace(request, segments=[moved_first]))
+    moved_render = replace(loaded, segments=[moved_first])
+    with wave.open(BytesIO(render_wav(project_dir, moved_render)), "rb") as audio:
+        moved_audio = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
+    assert np.count_nonzero(moved_audio[:640]) == 0
+    with pytest.raises(ValueError, match="nonnegative"):
+        compositions._validate_request(replace(request, segments=[replace(moved_first, gap_before_ms=-1, timeline_start_ms=-1, timeline_end_ms=149)]))
+    with pytest.raises(ValueError, match="Volume envelope"):
+        compositions._validate_request(replace(request, segments=[replace(segment, volume_envelope=[VolumeEnvelopePoint(0, 1), VolumeEnvelopePoint(.5, float("inf")), VolumeEnvelopePoint(1, 1)])]))
+    with pytest.raises(ValueError, match="Pitch envelope"):
+        compositions._validate_request(replace(request, segments=[replace(segment, pitch_envelope=[PitchEnvelopePoint(0, 0), PitchEnvelopePoint(.5, 1.5), PitchEnvelopePoint(1, 0)])]))
+    with wave.open(BytesIO(render_wav(project_dir, loaded)), "rb") as audio:
+        rendered = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
+    np.testing.assert_allclose(rendered, samples[1600:3200], atol=1)
+    invalid = replace(segment, edit_regions=[regions[0], replace(regions[1], source_start_ms=141), regions[2]])
+    with pytest.raises(ValueError, match="Edit regions"):
+        compositions._validate_request(replace(request, segments=[invalid]))
+    with pytest.raises(ValueError, match="User length markers"):
+        compositions._validate_request(replace(request, segments=[replace(segment, user_guide_source_ms=[150])]))
+
+
+def test_professional_volume_gain_and_crossfade_overlap_are_rendered(tmp_path) -> None:
+    project_dir = tmp_path / "proj"
+    audio_dir = project_dir / "audio"
+    audio_dir.mkdir(parents=True)
+    _write_audio_project_manifest(project_dir)
+    with wave.open(str(audio_dir / "source.wav"), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        samples = np.full(16000, 8000, dtype=np.int16)
+        samples[4800:6400] = 16000
+        audio.writeframes(samples.tobytes())
+    region = [EditRegion("r", 100, 200, 100)]
+    envelope = [VolumeEnvelopePoint(0, 0.5), VolumeEnvelopePoint(1, 0.5)]
+    left = replace(_segment(), edit_regions=region, volume_envelope=envelope)
+    right = replace(_segment(), segment_id="segment_1", timeline_start_ms=50, timeline_end_ms=150,
+                    source_start_ms=300, source_end_ms=400, gap_before_ms=-50,
+                    lane=1, crossfade_ms=50,
+                    edit_regions=[EditRegion("r2", 300, 400, 100)], volume_envelope=envelope)
+    request = SaveCompositionRequest(name="mix", target_text="kk", target_pronunciation="kk",
+                                     crossfade_ms=0, segments=[left, right], mode=CompositionMode.PROFESSIONAL)
+    with wave.open(BytesIO(render_wav(project_dir, request)), "rb") as audio:
+        output = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
+    assert 5500 <= output[1200] <= 6500
+    silent = replace(request, segments=[replace(left, volume_envelope=[VolumeEnvelopePoint(0, 0), VolumeEnvelopePoint(1, 0)])])
+    with wave.open(BytesIO(render_wav(project_dir, silent)), "rb") as audio:
+        assert not np.any(np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16))
+
+
+def test_professional_pitch_curve_changes_rendered_audio_over_time(tmp_path, monkeypatch) -> None:
+    from madnolia.types.common import PitchEnvelopePoint
+
+    samples = np.sin(2 * np.pi * 220 * np.arange(16000) / 16000)
+    path = tmp_path / "source.wav"
+    with wave.open(str(path), "wb") as audio:
+        audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(16000)
+        audio.writeframes(np.clip(samples * 32767, -32768, 32767).astype(np.int16).tobytes())
+    monkeypatch.setattr("madnolia.exporters._read_audio_clip", lambda _path, start, end: samples[round(start * 16):round(end * 16)].astype(np.float32))
+    segment = replace(_segment(), source_start_ms=0, source_end_ms=1000, timeline_start_ms=0,
+        timeline_end_ms=1000, edit_regions=[EditRegion("curve", 0, 1000, 1000)],
+        pitch_envelope=[PitchEnvelopePoint(0, 0), PitchEnvelopePoint(.5, 0), PitchEnvelopePoint(1, 1200)])
+    rendered = _render_edit_regions(path, segment)
+    start = np.argmax(np.abs(np.fft.rfft(rendered[1600:4800]))) * 16000 / 3200
+    end = np.argmax(np.abs(np.fft.rfft(rendered[11200:14400]))) * 16000 / 3200
+    assert len(rendered) == 16000
+    assert end - start > 80
+
+
+def test_professional_video_uses_piecewise_region_timing(monkeypatch) -> None:
+    from madnolia.types.common import MediaSource
+
+    segment = replace(_segment(), timeline_end_ms=150, edit_regions=[
+        EditRegion("first", 100, 150, 50), EditRegion("stretched", 150, 200, 100),
+    ])
+    source = MediaSource("source", "video.mp4", 1000, 16000, 1, 1, 1, 30)
+    monkeypatch.setattr("madnolia.exporters._decode_video_range", lambda _av, _path, start, end, *_: [
+        (float(timestamp), np.full((1, 1, 3), timestamp, dtype=np.uint8))
+        for timestamp in range(start, end + 1, 10)
+    ])
+    mapped = _professional_segment_frames(None, segment, source, 1, 1, 20)
+    assert int(mapped[0][0, 0, 0]) == 100
+    assert int(mapped[1][0, 0, 0]) == 150
+    assert int(mapped[2][0, 0, 0]) in {170, 180}
+
+
+def test_professional_regions_are_authoritative_and_require_integer_cents() -> None:
+    regions = [EditRegion("r1", 100, 150, 50), EditRegion("r2", 150, 200, 50)]
+    obsolete_guide = PhoneUnit(
+        phone_unit_id="guide", operation=PhoneAlignmentOperation.MATCH,
+        target_index=0, target_phone_id="k", target_ipa="k",
+        source_occurrence_id="occ", source_phone_id="k", source_ipa="k",
+        source_start_ms=100, source_end_ms=200, output_duration_ms=0,
+        source_f0_hz=float("nan"), target_pitch_midi=float("nan"),
+        formant_shift_semitones=float("nan"),
+    )
+    segment = replace(_segment(), edit_regions=regions, phone_units=[obsolete_guide])
+    request = SaveCompositionRequest(name="test", target_text="k", target_pronunciation="k",
+        crossfade_ms=0, segments=[segment], mode=CompositionMode.PROFESSIONAL)
+    compositions._validate_request(request)
+
+    invalid_cents = replace(segment, edit_regions=[replace(regions[0], relative_pitch_cents=0.5), regions[1]])
+    with pytest.raises(ValueError, match="integer"):
+        compositions._validate_request(replace(request, segments=[invalid_cents]))
+    duplicate_ids = replace(segment, edit_regions=[regions[0], replace(regions[1], region_id="r1")])
+    with pytest.raises(ValueError, match="unique"):
+        compositions._validate_request(replace(request, segments=[duplicate_ids]))
+    invalid_overlap = replace(segment, timeline_start_ms=-1, timeline_end_ms=99)
+    with pytest.raises(ValueError, match="nonnegative"):
+        compositions._validate_request(replace(request, segments=[invalid_overlap]))
+
+
+def test_independent_overlapping_professional_tracks_round_trip_and_mix_pcm(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(compositions, "DEFAULT_COLLAGES_DIR", tmp_path / "collages")
+    project_dir = tmp_path / "project"
+    audio_dir = project_dir / "audio"
+    audio_dir.mkdir(parents=True)
+    _write_audio_project_manifest(project_dir)
+    with wave.open(str(audio_dir / "source.wav"), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(np.full(16000, 8192, dtype=np.int16).tobytes())
+    starts = (0, 50, 100, 300)
+    lanes = (0, 1, 2, 0)
+    segments = [replace(
+        _segment(),
+        segment_id=f"segment_{index}",
+        source_start_ms=100 + index * 100,
+        source_end_ms=200 + index * 100,
+        timeline_start_ms=start,
+        timeline_end_ms=start + 300,
+        lane=lane,
+        edit_regions=[EditRegion(f"region_{index}", 100 + index * 100, 200 + index * 100, 300)],
+    ) for index, (start, lane) in enumerate(zip(starts, lanes, strict=True))]
+    request = SaveCompositionRequest(
+        name="overlap", target_text="k", target_pronunciation="k", crossfade_ms=0,
+        segments=segments, mode=CompositionMode.PROFESSIONAL,
+    )
+    compositions._validate_request(request)
+    stored = CompositionProject(
+        composition_id="comp_0123456789abcdef", corpus_project_id=project_dir.name,
+        name=request.name, target_text=request.target_text,
+        target_pronunciation=request.target_pronunciation, created_at="now", updated_at="now",
+        crossfade_ms=0, segments=request.segments, mode=CompositionMode.PROFESSIONAL,
+    )
+    path = compositions.save_composition(project_dir, stored)
+    loaded = compositions.load_composition(path)
+    assert [(segment.timeline_start_ms, segment.lane) for segment in loaded.segments] == list(zip(starts, lanes, strict=True))
+    compositions._validate_request(replace(request, segments=loaded.segments))
+    with wave.open(BytesIO(render_wav(project_dir, loaded)), "rb") as audio:
+        output = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
+    assert 23500 <= output[120 * 16] <= 25500
+    assert len(output) == 600 * 16
+
+
+def test_uniform_stretched_guide_regions_coalesce_before_dsp(monkeypatch) -> None:
+    segment = replace(_segment(), source_start_ms=100, source_end_ms=107, timeline_end_ms=11,
+        edit_regions=[EditRegion("a", 100, 103, 5, 50), EditRegion("b", 103, 107, 6, 50)])
+    calls = []
+    monkeypatch.setattr("madnolia.exporters._read_audio_clip", lambda _path, start, end: np.arange((end - start) * 16, dtype=np.float32))
+    monkeypatch.setattr("madnolia.exporters.render_relative_pitched_audio", lambda samples, length, cents: calls.append((len(samples), length, cents)) or np.zeros(length, dtype=np.float32))
+    rendered = _render_edit_regions("source.wav", segment)
+    assert calls == [(7 * 16, 11 * 16, 50)]
+    assert len(rendered) == 11 * 16
 
 
 def test_mp4_export_rejects_audio_only_source_without_server_error(tmp_path, monkeypatch) -> None:

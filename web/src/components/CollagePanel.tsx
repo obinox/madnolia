@@ -11,49 +11,69 @@ import {
   updateComposition,
 } from "../api"
 import {
+  APPROXIMATE_SEARCH_CANDIDATES_PER_PHONE,
   COLLAGE_EXPORT_TARGETS,
+  COMPOSITION_DRAFT_SCHEMA_VERSION,
+  COMPOSITION_DRAFT_STORAGE_PREFIX,
+  EXACT_SEARCH_CANDIDATES_PER_PHONE,
   MAX_STRETCH_PERCENT,
   MIN_STRETCH_PERCENT,
+  PROFESSIONAL_DEFAULT_MISSING_DURATION_MS,
+  PROFESSIONAL_TEMPO_DEFAULT_BPM,
+  PROFESSIONAL_BEATS_PER_BAR_DEFAULT,
+  PROFESSIONAL_BEAT_DIVISION_DEFAULT,
   PITCH_TRANSITION_DEFAULT_MS,
   PITCH_TRANSITION_DEFAULT_STRENGTH,
 } from "../constants"
 import type {
   CandidateSearchResult,
+  CandidateSearchTab,
   CollagePanelProps,
+  CompositionDraft,
   CompositionProject,
-  CompositionMode,
   ExportTarget,
   InputLanguage,
   PhoneUnit,
   SaveCompositionRequest,
   SearchJob,
+  SynthesisWorkspace,
   TimelineSegment,
   UnitCandidate,
 } from "../types"
+import { retimeCompositionSegments } from "../composition"
 import { formatTime } from "./Timeline"
-import { ProfessionalEditor, reorderSegments } from "./ProfessionalEditor"
 
-export function CollagePanel({ projectId, initialCompositionId, onPreview }: CollagePanelProps) {
+export function CollagePanel({
+  projectId,
+  initialCompositionId,
+  onPreview,
+  onPreparePreview,
+}: CollagePanelProps) {
   const [targetText, setTargetText] = useState("")
+  const [targetPronunciation, setTargetPronunciation] = useState("")
   const [inputLanguage, setInputLanguage] = useState<InputLanguage>("AUTO")
   const [result, setResult] = useState<CandidateSearchResult | null>(null)
+  const [approximateResult, setApproximateResult] = useState<CandidateSearchResult | null>(null)
+  const [candidateTab, setCandidateTab] = useState<CandidateSearchTab>("EXACT")
+  const [workspace, setWorkspace] = useState<SynthesisWorkspace>("SEARCH")
   const [selectedPhone, setSelectedPhone] = useState(0)
+  const [activeCandidateId, setActiveCandidateId] = useState("")
   const [segments, setSegments] = useState<TimelineSegment[]>([])
   const [compositions, setCompositions] = useState<CompositionProject[]>([])
   const [compositionId, setCompositionId] = useState("")
   const [name, setName] = useState("새 오디오 합성")
   const [crossfadeMs, setCrossfadeMs] = useState(8)
-  const [mode, setMode] = useState<CompositionMode>("SIMPLE")
-  const [selectedSegmentId, setSelectedSegmentId] = useState("")
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState("")
+  const [searchError, setSearchError] = useState("")
   const [previewUrl, setPreviewUrl] = useState("")
-  const [previewCurrentMs, setPreviewCurrentMs] = useState(0)
   const [searchProgress, setSearchProgress] = useState<SearchJob | null>(null)
+  const [draftProjectId, setDraftProjectId] = useState("")
   const previewAudioRef = useRef<HTMLAudioElement | null>(null)
   const previewController = useRef<AbortController | null>(null)
   const searchController = useRef<AbortController | null>(null)
   const searchJobId = useRef("")
+  const searchBusyRef = useRef(false)
   const projectIdRef = useRef(projectId)
   const compositionsRequestId = useRef(0)
   const appliedInitialCompositionKey = useRef("")
@@ -75,28 +95,56 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
       setBusy(false)
     }
     setPreviewUrl("")
-    setPreviewCurrentMs(0)
-  }, [projectId, segments, crossfadeMs, mode])
+  }, [projectId, segments, crossfadeMs])
 
   useEffect(() => () => {
     if (previewUrl) URL.revokeObjectURL(previewUrl)
   }, [previewUrl])
 
   useEffect(() => {
+    setDraftProjectId("")
     searchController.current?.abort()
     if (searchJobId.current) void cancelSearch(searchJobId.current).catch(() => undefined)
     searchController.current = null
     searchJobId.current = ""
+    searchBusyRef.current = false
     setSearchProgress(null)
     compositionsRequestId.current += 1
     setResult(null)
+    setTargetPronunciation("")
+    setApproximateResult(null)
+    setCandidateTab("EXACT")
+    setWorkspace("SEARCH")
+    setActiveCandidateId("")
     setSegments([])
     setCompositionId("")
-    setMode("SIMPLE")
-    setSelectedSegmentId("")
     setMessage("")
+    setSearchError("")
     setBusy(false)
     setCompositions([])
+    try {
+      const rawDraft = window.localStorage.getItem(`${COMPOSITION_DRAFT_STORAGE_PREFIX}${projectId}`)
+      if (rawDraft) {
+        const draft = JSON.parse(rawDraft) as CompositionDraft
+        if (
+          draft.schema_version === COMPOSITION_DRAFT_SCHEMA_VERSION
+          && draft.project_id === projectId
+          && Array.isArray(draft.segments)
+        ) {
+          setCompositionId(draft.composition_id)
+          setTargetText(draft.target_text)
+          setTargetPronunciation(draft.target_pronunciation)
+          setInputLanguage(draft.input_language)
+          setName(draft.name)
+          setCrossfadeMs(draft.crossfade_ms)
+          setSegments(draft.segments)
+          if (draft.segments.length) setWorkspace("ASSEMBLY")
+        }
+      }
+    } catch {
+      window.localStorage.removeItem(`${COMPOSITION_DRAFT_STORAGE_PREFIX}${projectId}`)
+    }
+    setDraftProjectId(projectId)
     void reloadProjectCompositions(projectId).catch((error: Error) => {
       if (projectIdRef.current === projectId) setMessage(error.message)
     })
@@ -105,8 +153,48 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
       searchController.current?.abort()
       if (searchJobId.current) void cancelSearch(searchJobId.current).catch(() => undefined)
       searchJobId.current = ""
+      searchBusyRef.current = false
     }
   }, [projectId])
+
+  useEffect(() => {
+    if (draftProjectId !== projectId) return
+    const storageKey = `${COMPOSITION_DRAFT_STORAGE_PREFIX}${projectId}`
+    const timer = window.setTimeout(() => {
+      if (!targetText.trim() && !segments.length && !compositionId) {
+        window.localStorage.removeItem(storageKey)
+        return
+      }
+      const draft: CompositionDraft = {
+        schema_version: COMPOSITION_DRAFT_SCHEMA_VERSION,
+        project_id: projectId,
+        composition_id: compositionId,
+        saved_at: new Date().toISOString(),
+        target_text: targetText,
+        target_pronunciation: targetPronunciation,
+        input_language: inputLanguage,
+        name,
+        crossfade_ms: crossfadeMs,
+        segments,
+      }
+      try {
+        window.localStorage.setItem(storageKey, JSON.stringify(draft))
+      } catch {
+        setMessage("브라우저 임시 저장 공간이 부족합니다. 서버 저장을 진행해 주세요.")
+      }
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [
+    compositionId,
+    crossfadeMs,
+    draftProjectId,
+    inputLanguage,
+    name,
+    projectId,
+    segments,
+    targetPronunciation,
+    targetText,
+  ])
 
   useEffect(() => {
     if (!initialCompositionId) {
@@ -123,29 +211,70 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
     setCompositionId(selected.composition_id)
     setName(selected.name)
     setTargetText(selected.target_text)
+    setTargetPronunciation(selected.target_pronunciation)
     setCrossfadeMs(selected.crossfade_ms)
     setSegments(selected.segments)
-    setMode(selected.mode)
-    setSelectedSegmentId(selected.segments[0]?.segment_id ?? "")
+    setWorkspace("ASSEMBLY")
   }, [initialCompositionId, compositions, projectId])
 
+  const activeResult = candidateTab === "EXACT" ? result : approximateResult
   const visibleCandidates = useMemo(
-    () => result?.candidates.filter(
+    () => activeResult?.candidates.filter(
       (candidate) => candidate.target_start_index === selectedPhone,
     ).slice(0, 40) ?? [],
-    [result, selectedPhone],
+    [activeResult, selectedPhone],
   )
+  const candidateCountsByStart = useMemo(() => {
+    const counts = new Map<number, number>()
+    for (const candidate of activeResult?.candidates ?? []) {
+      counts.set(candidate.target_start_index, (counts.get(candidate.target_start_index) ?? 0) + 1)
+    }
+    return counts
+  }, [activeResult])
+  const selectedTarget = result?.target_phones[selectedPhone] ?? null
+  const selectedExactCount = visibleCandidates.filter(
+    (candidate) => candidate.match_status === "EXACT",
+  ).length
+  const selectedApproximateCount = visibleCandidates.length - selectedExactCount
+  const selectedFallbackCount = visibleCandidates.filter((candidate) => candidate.fallback).length
+  const missingCandidateCount = result?.target_phones.filter((phone) => !result.candidates.some(
+    (candidate) => candidate.target_start_index === phone.target_index,
+  )).length ?? 0
 
-  const runSearch = async () => {
-    if (!targetText.trim()) return
+  const runSearch = async (searchTab: CandidateSearchTab = "EXACT") => {
+    if (!targetText.trim() || searchBusyRef.current) return
+    searchBusyRef.current = true
     searchController.current?.abort()
     const controller = new AbortController()
     searchController.current = controller
     setBusy(true)
     setSearchProgress(null)
+    if (searchTab === "EXACT") {
+      setWorkspace("SEARCH")
+      setTargetPronunciation("")
+      setResult(null)
+      setApproximateResult(null)
+      setCandidateTab("EXACT")
+      setSelectedPhone(0)
+      setActiveCandidateId("")
+    } else {
+      setApproximateResult(null)
+      setCandidateTab("APPROXIMATE")
+    }
+    setSearchError("")
     setMessage("")
     try {
-      const { job_id } = await startSearch(projectId, targetText, inputLanguage, controller.signal)
+      const { job_id } = await startSearch(
+        projectId,
+        targetText,
+        inputLanguage,
+        searchTab === "EXACT"
+          ? EXACT_SEARCH_CANDIDATES_PER_PHONE
+          : APPROXIMATE_SEARCH_CANDIDATES_PER_PHONE,
+        searchTab === "EXACT",
+        searchTab === "APPROXIMATE",
+        controller.signal,
+      )
       searchJobId.current = job_id
       if (controller.signal.aborted) {
         await cancelSearch(job_id).catch(() => undefined)
@@ -163,22 +292,32 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
         setMessage("검색이 취소됐어요")
         return
       }
-      if (job.status === "failed" || !job.result) throw new Error(job.error ?? "Search failed")
+      if (job.status === "failed" || !job.result) {
+        throw new Error(job.error ?? "검색 결과가 반환되지 않았습니다.")
+      }
       const next = job.result
-      setResult(next)
-      setSelectedPhone(0)
-      setSegments([])
-      setCompositionId("")
-      setSelectedSegmentId("")
-      setMessage(`${next.target_phones.length}개 음소 · ${next.candidates.length}개 후보`)
+      if (searchTab === "EXACT") {
+        setResult(next)
+        setTargetPronunciation(next.target_pronunciation)
+        setSelectedPhone(0)
+        setSegments([])
+        setCompositionId("")
+        setMessage(`${next.target_phones.length}개 음소 · 정확 후보 ${next.candidates.length}개`)
+      } else {
+        setApproximateResult(next)
+        setMessage(`유사 후보 ${next.candidates.length}개`)
+      }
     } catch (error) {
       if (!controller.signal.aborted && projectIdRef.current === projectId) {
-        setMessage(error instanceof Error ? error.message : String(error))
+        const detail = error instanceof Error ? error.message : String(error)
+        setSearchError(detail)
+        setMessage(detail)
       }
     } finally {
       if (searchController.current === controller) {
         searchController.current = null
         searchJobId.current = ""
+        searchBusyRef.current = false
         if (projectIdRef.current === projectId) setBusy(false)
       }
     }
@@ -189,18 +328,31 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
     searchController.current?.abort()
     if (jobId) await cancelSearch(jobId).catch(() => undefined)
     searchJobId.current = ""
+    searchBusyRef.current = false
     setBusy(false)
     setSearchProgress((current) => current ? { ...current, status: "cancelled", stage: "cancelled" } : current)
     setMessage("검색이 취소됐어요")
   }
 
+  const selectCandidateTab = (nextTab: CandidateSearchTab) => {
+    setActiveCandidateId("")
+    if (nextTab === "EXACT") {
+      setCandidateTab("EXACT")
+      return
+    }
+    if (approximateResult) {
+      setCandidateTab("APPROXIMATE")
+      return
+    }
+    void runSearch("APPROXIMATE")
+  }
+
   const addCandidate = (candidate: UnitCandidate) => {
+    setActiveCandidateId("")
     const previousEnd = segments.at(-1)?.timeline_end_ms ?? 0
     const start = Math.max(0, previousEnd - (segments.length ? crossfadeMs : 0))
-    const phoneUnits = mode === "PROFESSIONAL" ? candidateToPhoneUnits(candidate) : []
-    const duration = mode === "PROFESSIONAL"
-      ? phoneUnits.reduce((total, unit) => total + unit.output_duration_ms, 0)
-      : candidate.source_end_ms - candidate.source_start_ms
+    const phoneUnits = candidateToPhoneUnits(candidate)
+    const duration = candidate.source_end_ms - candidate.source_start_ms
     const segmentId = `seg_${crypto.randomUUID()}`
     const next = [
       ...segments,
@@ -221,10 +373,11 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
         stretch_percent: MIN_STRETCH_PERCENT,
         lane: segments.length % 2,
         phone_units: phoneUnits,
+        edit_regions: [],
+        volume_envelope: [],
       },
     ]
-    setSegments(retime(next, mode))
-    setSelectedSegmentId(segmentId)
+    setSegments(retimeCompositionSegments(next, "SIMPLE"))
     setSelectedPhone(candidate.target_end_index)
   }
 
@@ -233,35 +386,7 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
     if (destination < 0 || destination >= segments.length) return
     const reordered = [...segments]
     ;[reordered[index], reordered[destination]] = [reordered[destination], reordered[index]]
-    setSegments(retime(reordered, mode))
-  }
-
-  const convertToProfessional = () => {
-    const converted = segments.map((segment, index) => ({
-      ...segment,
-      lane: index % 2,
-      phone_units: segment.phone_units.length ? segment.phone_units : [legacyPhoneUnit(segment)],
-    }))
-    setMode("PROFESSIONAL")
-    setCompositionId("")
-    setName(`${name} (전문)`)
-    setSegments(retime(converted, "PROFESSIONAL"))
-    setSelectedSegmentId(converted[0]?.segment_id ?? "")
-    setMessage("기존 합성을 전문 합성 복사본으로 변환했습니다.")
-  }
-
-  const updatePhoneUnit = (
-    segmentId: string,
-    phoneUnitId: string,
-    updates: Partial<PhoneUnit>,
-  ) => {
-    setSegments(retime(segments.map((segment) => segment.segment_id === segmentId
-      ? {
-          ...segment,
-          phone_units: segment.phone_units.map((unit) => unit.phone_unit_id === phoneUnitId
-            ? { ...unit, ...updates } : unit),
-        }
-      : segment), mode))
+    setSegments(retimeCompositionSegments(reordered, "SIMPLE"))
   }
 
   const buildRequest = (): SaveCompositionRequest => {
@@ -269,11 +394,18 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
     return {
       name,
       target_text: result?.target_text ?? current?.target_text ?? targetText,
-      target_pronunciation: result?.target_pronunciation ?? current?.target_pronunciation ?? "",
+      target_pronunciation: result?.target_pronunciation
+        ?? current?.target_pronunciation
+        ?? targetPronunciation,
       crossfade_ms: crossfadeMs,
+      tempo_bpm: PROFESSIONAL_TEMPO_DEFAULT_BPM,
+      beats_per_bar: PROFESSIONAL_BEATS_PER_BAR_DEFAULT,
+      beat_division: PROFESSIONAL_BEAT_DIVISION_DEFAULT,
       segments,
-      mode,
+      mode: "SIMPLE",
       schema_version: 1,
+      parent_composition_id: null,
+      parent_composition_updated_at: null,
     }
   }
 
@@ -286,7 +418,6 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
     try {
       const blob = await previewComposition(projectId, buildRequest(), controller.signal)
       if (!controller.signal.aborted) {
-        setPreviewCurrentMs(0)
         setPreviewUrl(URL.createObjectURL(blob))
       }
     } catch (error) {
@@ -310,7 +441,7 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
   }
 
   const save = async () => {
-    if (!result && !compositionId) {
+    if (!targetText.trim() && !compositionId) {
       setMessage("먼저 문장을 검색하세요.")
       return
     }
@@ -334,16 +465,18 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
     if (!composition) return
     setName(composition.name)
     setTargetText(composition.target_text)
+    setTargetPronunciation(composition.target_pronunciation)
     setCrossfadeMs(composition.crossfade_ms)
     setSegments(composition.segments)
-    setMode(composition.mode)
-    setSelectedSegmentId(composition.segments[0]?.segment_id ?? "")
+    setWorkspace("ASSEMBLY")
     setResult(null)
+    setApproximateResult(null)
+    setCandidateTab("EXACT")
     setMessage(`불러옴 · ${composition.updated_at}`)
   }
 
   const runExport = async (target: ExportTarget) => {
-    if (!result && !compositionId) {
+    if (!targetText.trim() && !compositionId) {
       setMessage("먼저 문장을 검색하세요.")
       return
     }
@@ -373,32 +506,46 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
           저장된 합성
           <select value={compositionId} onChange={(event) => load(event.target.value)}>
             <option value="">새 합성</option>
-            {compositions.map((item) => (
+            {compositions.filter((item) => item.mode === "SIMPLE").map((item) => (
               <option key={item.composition_id} value={item.composition_id}>{item.name}</option>
             ))}
           </select>
         </label>
       </div>
 
-      <div className="synthesis-search">
+      <div className={`synthesis-search ${workspace === "SEARCH" ? "active-workspace" : "hidden-workspace"}`}>
+      <div className="quadrant-heading">
+        <strong>PHONEME SEARCH</strong>
+        <div className="synthesis-mode-tabs" role="tablist" aria-label="합성 작업 전환">
+          <button type="button" role="tab" aria-selected="true">후보 찾기</button>
+          <button type="button" role="tab" aria-selected="false" onClick={() => setWorkspace("ASSEMBLY")}>
+            배치 편집 <span>{segments.length}</span>
+          </button>
+        </div>
+      </div>
       <div className="search-row">
-        <select
-          aria-label="검색 입력 언어"
-          value={inputLanguage}
-          onChange={(event) => setInputLanguage(event.target.value as InputLanguage)}
-        >
-          <option value="AUTO">자동 감지</option>
-          <option value="KO">한국어</option>
-          <option value="EN">English</option>
-          <option value="JA">日本語</option>
-        </select>
-        <textarea
-          value={targetText}
-          onChange={(event) => setTargetText(event.target.value)}
-          placeholder="만들 문장을 입력하세요"
-          rows={2}
-        />
-        <button disabled={busy || !targetText.trim()} onClick={() => void runSearch()}>
+        <label className="control-field">
+          <span>입력 언어</span>
+          <select
+            value={inputLanguage}
+            onChange={(event) => setInputLanguage(event.target.value as InputLanguage)}
+          >
+            <option value="AUTO">자동 감지</option>
+            <option value="KO">한국어</option>
+            <option value="EN">English</option>
+            <option value="JA">日本語</option>
+          </select>
+        </label>
+        <label className="control-field search-text-field">
+          <span>합성할 문장</span>
+          <textarea
+            value={targetText}
+            onChange={(event) => setTargetText(event.target.value)}
+            placeholder="만들 문장을 입력하세요"
+            rows={1}
+          />
+        </label>
+        <button className="primary-action" disabled={busy || !targetText.trim()} onClick={() => void runSearch("EXACT")}>
           {busy ? "처리 중" : "후보 찾기"}
         </button>
       </div>
@@ -419,41 +566,99 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
         <button onClick={() => void stopSearch()}>취소</button>
       </div>}
 
+      {searchError && <div className="search-diagnostics search-error" role="alert">
+        <div><strong>SEARCH ERROR</strong><span>{inputLanguage === "JA" ? "日本語" : inputLanguage}</span></div>
+        <p>{searchError}</p>
+        <p>입력 문장: <code>{targetText}</code></p>
+      </div>}
+
       {result && (
         <>
+          <div className="search-result-summary">
           <div className="pronunciation">
             {({ KO: "한국어", EN: "English", JA: "日本語", AUTO: "자동" })[result.input_language]} 발음형
             <strong>{result.target_pronunciation}</strong>
           </div>
-          <div className="phone-strip">
-            {result.target_phones.map((phone) => (
-              <button
+          <div className="phone-picker" role="listbox" aria-label="검색할 음소 선택">
+            {result.target_phones.map((phone) => {
+              const count = candidateCountsByStart.get(phone.target_index) ?? 0
+              return <button
                 key={phone.target_index}
+                type="button"
+                role="option"
+                aria-selected={selectedPhone === phone.target_index}
                 className={`${selectedPhone === phone.target_index ? "selected" : ""} ${phone.exact_available ? "" : "missing"}`}
-                onClick={() => setSelectedPhone(phone.target_index)}
-                title={phone.exact_available ? phone.phone_id : `${phone.phone_id} · 정확 후보 없음`}
+                title={`${phone.target_index + 1}. ${phone.grapheme} / ${phone.ipa} · 후보 ${count}`}
+                onClick={() => { setSelectedPhone(phone.target_index); setActiveCandidateId("") }}
               >
                 <span>{phone.grapheme}</span>
                 <strong>{phone.ipa}</strong>
-                {!phone.exact_available && <small>유사</small>}
+                <small>{count}</small>
               </button>
-            ))}
+            })}
+          </div>
+
+          <div className="candidate-tabs" role="tablist" aria-label="후보 검색 방식">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={candidateTab === "EXACT"}
+              className={candidateTab === "EXACT" ? "selected" : ""}
+              onClick={() => selectCandidateTab("EXACT")}
+            >정확 후보 <span>{result.candidates.length}</span></button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={candidateTab === "APPROXIMATE"}
+              className={candidateTab === "APPROXIMATE" ? "selected" : ""}
+              disabled={busy}
+              onClick={() => selectCandidateTab("APPROXIMATE")}
+            >{busy && candidateTab === "APPROXIMATE" ? "유사 후보 검색 중" : "유사 후보"} <span>{approximateResult?.candidates.length ?? "필요할 때 검색"}</span></button>
+          </div>
+
+          <div className="search-diagnostics" role="status" aria-live="polite">
+            <div><strong>INFO</strong><span>{result.target_phones.length}개 음소 · {candidateTab === "EXACT" ? "정확" : "유사"} 후보 {activeResult?.candidates.length ?? 0}개</span></div>
+            {selectedTarget && <dl>
+              <div><dt>선택 음소</dt><dd>{selectedPhone + 1}. {selectedTarget.grapheme} / {selectedTarget.ipa}</dd></div>
+              <div><dt>내부 발음 ID</dt><dd><code>{selectedTarget.phone_id}</code></dd></div>
+              <div><dt>후보</dt><dd>정확 {selectedExactCount} · 유사 {selectedApproximateCount - selectedFallbackCount} · 대체 {selectedFallbackCount}</dd></div>
+            </dl>}
+            {selectedTarget && !visibleCandidates.length && (
+              <p>이 음소와 발음 특성이 충분히 가까운 구간이 현재 프로젝트의 분석 결과에 없습니다.</p>
+            )}
+            {selectedTarget && !selectedTarget.exact_available && visibleCandidates.length > 0 && (
+              <p>동일한 음소는 없지만 비슷하게 들리는 한국어 음소 후보를 표시하고 있습니다.</p>
+            )}
+            {selectedFallbackCount > 0 && (
+              <p className="diagnostic-warning">자연스러운 대응 후보가 없어 한국어 대체 발음을 표시합니다.</p>
+            )}
+            {missingCandidateCount > 0 && (
+              <p className="diagnostic-warning">전체 음소 중 {missingCandidateCount}개는 배치 가능한 후보가 없습니다. 빨간 음소를 선택해 확인하세요.</p>
+            )}
+          </div>
           </div>
 
           <div className="candidate-list">
             {visibleCandidates.length ? visibleCandidates.map((candidate) => (
-              <article key={candidate.candidate_id} className={`candidate ${candidate.match_status.toLowerCase()}`}>
+              <article
+                key={candidate.candidate_id}
+                className={`candidate ${candidate.match_status.toLowerCase()} ${candidate.fallback ? "fallback" : ""} ${activeCandidateId === candidate.candidate_id ? "playing" : ""}`}
+                aria-current={activeCandidateId === candidate.candidate_id ? "true" : undefined}
+                onPointerEnter={() => onPreparePreview(candidate)}
+                onFocus={() => onPreparePreview(candidate)}
+              >
+                <i className="candidate-playing-mark" aria-hidden="true">▶</i>
                 <div>
-                  <strong>{candidate.target_ipa.join(" · ")}</strong>
-                  <span className="candidate-source">{result.source_labels[candidate.source_id] ?? candidate.source_id}</span>
-                  <span>
-                    입력 {candidate.target_start_index + 1}–{candidate.target_end_index} · {candidate.unit_type}
-                  </span>
-                  <span>
-                    소스 {formatTime(candidate.source_start_ms)}–{formatTime(candidate.source_end_ms)} · {(candidate.similarity * 100).toFixed(0)}%
-                  </span>
+                  <div className="candidate-primary">
+                    <strong>{candidate.target_ipa.join(" · ")}</strong>
+                    <span>{(candidate.similarity * 100).toFixed(0)}%</span>
+                    <span>{candidate.unit_type}</span>
+                  </div>
+                  <span className="candidate-source">{activeResult?.source_labels[candidate.source_id] ?? candidate.source_id}</span>
+                  <span>입력 {candidate.target_start_index + 1}–{candidate.target_end_index} · 소스 {formatTime(candidate.source_start_ms)}–{formatTime(candidate.source_end_ms)}</span>
                   {candidate.match_status !== "EXACT" && (
                     <span className="approximation">
+                      {candidate.fallback && <b className="fallback-label">대체 발음</b>}
                       {candidate.alignments.map((alignment) => (
                         `${alignment.operation} ${alignment.target_ipa ?? "∅"}→${alignment.source_ipa ?? "∅"}`
                       )).join(" · ")}
@@ -461,7 +666,11 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
                   )}
                 </div>
                 <div className="candidate-actions">
-                  <button onClick={() => onPreview(candidate)}>듣기</button>
+                  <button onClick={() => {
+                    setActiveCandidateId(candidate.candidate_id)
+                    setSelectedPhone(candidate.target_start_index)
+                    onPreview(candidate)
+                  }}>{activeCandidateId === candidate.candidate_id ? "듣는 중" : "듣기"}</button>
                   <button onClick={() => addCandidate(candidate)}>배치</button>
                 </div>
               </article>
@@ -472,34 +681,35 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
 
       </div>
 
-      <div className="assembly">
+      <div className={`assembly ${workspace === "ASSEMBLY" ? "active-workspace" : "hidden-workspace"}`}>
+        <div className="quadrant-heading">
+          <strong>COMPOSITION</strong>
+          <div className="synthesis-mode-tabs" role="tablist" aria-label="합성 작업 전환">
+            <button type="button" role="tab" aria-selected="false" onClick={() => setWorkspace("SEARCH")}>
+              후보 찾기
+            </button>
+            <button type="button" role="tab" aria-selected="true">
+              배치 편집 <span>{segments.length}</span>
+            </button>
+          </div>
+        </div>
         <div className="assembly-toolbar">
-          <input value={name} onChange={(event) => setName(event.target.value)} aria-label="프로젝트 이름" />
-          <label>
-            불러오기
+          <div className="assembly-controls">
+          <label className="control-field composition-name-field">
+            <span>합성 이름</span>
+            <input value={name} onChange={(event) => setName(event.target.value)} />
+          </label>
+          <label className="control-field">
+            <span>불러오기</span>
             <select value={compositionId} onChange={(event) => load(event.target.value)}>
               <option value="">새 합성</option>
-              {compositions.map((item) => (
+              {compositions.filter((item) => item.mode === "SIMPLE").map((item) => (
                 <option key={item.composition_id} value={item.composition_id}>{item.name}</option>
               ))}
             </select>
           </label>
-          <label>
-            편집 모드
-            <select
-              value={mode}
-              disabled={segments.length > 0}
-              onChange={(event) => setMode(event.target.value as CompositionMode)}
-            >
-              <option value="SIMPLE">단순 합성</option>
-              <option value="PROFESSIONAL">전문 합성</option>
-            </select>
-          </label>
-          {mode === "SIMPLE" && segments.length > 0 && (
-            <button onClick={convertToProfessional}>전문 합성으로 복사</button>
-          )}
-          <label>
-            Crossfade ms
+          <label className="control-field compact-field">
+            <span>크로스페이드 (ms)</span>
             <input
               type="number"
               min={0}
@@ -508,16 +718,19 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
               onChange={(event) => {
                 const value = Math.max(0, Math.min(100, Number(event.target.value)))
                 setCrossfadeMs(value)
-                setSegments(retime(segments.map((segment, index) => ({
+                setSegments(retimeCompositionSegments(segments.map((segment, index) => ({
                   ...segment,
                   gap_before_ms: index && segment.gap_before_ms === -crossfadeMs
                     ? -value : segment.gap_before_ms,
-                })), mode))
+                })), "SIMPLE"))
               }}
             />
           </label>
-          <button disabled={busy} onClick={() => void save()}>합성 저장</button>
-          <button disabled={busy || !segments.length} onClick={() => void playPreview()}>전체 미리 듣기</button>
+          </div>
+          <div className="assembly-actions">
+            <button className="primary-action" disabled={busy} onClick={() => void save()}>합성 저장</button>
+            <button disabled={busy || !segments.length} onClick={() => void playPreview()}>전체 미리 듣기</button>
+          </div>
         </div>
         {previewUrl && <audio
           ref={previewAudioRef}
@@ -526,49 +739,8 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
           controls
           autoPlay
           aria-label="조립한 음성 미리 듣기"
-          onTimeUpdate={(event) => setPreviewCurrentMs(event.currentTarget.currentTime * 1000)}
-          onSeeked={(event) => setPreviewCurrentMs(event.currentTarget.currentTime * 1000)}
         />}
-        {mode === "PROFESSIONAL" && segments.length > 0 && (
-          <ProfessionalEditor
-            segments={segments}
-            selectedSegmentId={selectedSegmentId}
-            playheadMs={previewCurrentMs}
-            onSelectSegment={setSelectedSegmentId}
-            onPlayheadChange={(timeMs) => {
-              setPreviewCurrentMs(timeMs)
-              if (previewAudioRef.current && Number.isFinite(previewAudioRef.current.duration)) {
-                previewAudioRef.current.currentTime = Math.max(0, Math.min(
-                  previewAudioRef.current.duration,
-                  timeMs / 1000,
-                ))
-              }
-            }}
-            onUpdatePhone={updatePhoneUnit}
-            onUpdateSegment={(segmentId, updates) => setSegments(retime(segments.map((segment) => {
-              if (segment.segment_id !== segmentId) return segment
-              const phoneUnits = [...segment.phone_units]
-              if (updates.source_start_ms !== undefined && phoneUnits[0] && phoneUnits[0].source_start_ms !== null) {
-                phoneUnits[0] = { ...phoneUnits[0], source_start_ms: updates.source_start_ms }
-              }
-              if (updates.source_end_ms !== undefined && phoneUnits.length) {
-                const last = phoneUnits.length - 1
-                if (phoneUnits[last].source_end_ms !== null) {
-                  phoneUnits[last] = { ...phoneUnits[last], source_end_ms: updates.source_end_ms }
-                }
-              }
-              return { ...segment, ...updates, phone_units: phoneUnits }
-            }), mode))}
-            onReorderSegment={(sourceId, destinationId) => setSegments(retime(reorderSegments(segments, sourceId, destinationId), mode))}
-            onChangeOrder={(segmentId, offset) => changeOrder(segments.findIndex((segment) => segment.segment_id === segmentId), offset)}
-            onDeleteSegment={(segmentId) => {
-              const next = retime(segments.filter((segment) => segment.segment_id !== segmentId), mode)
-              setSegments(next)
-              setSelectedSegmentId(next[0]?.segment_id ?? "")
-            }}
-          />
-        )}
-        {mode === "SIMPLE" && <div className="assembly-track">
+        <div className="assembly-track">
           {segments.map((segment, index) => (
             <article
               key={segment.segment_id}
@@ -591,8 +763,8 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
                         previous.timeline_end_ms - previous.timeline_start_ms,
                       )
                       const value = Math.max(-maximumOverlap, Math.round(Number(event.target.value)))
-                      setSegments(retime(segments.map((item, itemIndex) => itemIndex === index
-                        ? { ...item, gap_before_ms: value } : item), mode))
+                      setSegments(retimeCompositionSegments(segments.map((item, itemIndex) => itemIndex === index
+                        ? { ...item, gap_before_ms: value } : item), "SIMPLE"))
                     }}
                   />
                   <small>음수: 겹침 · 양수: 쉼</small>
@@ -610,8 +782,8 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
                     const value = Math.max(MIN_STRETCH_PERCENT, Math.min(
                       MAX_STRETCH_PERCENT, Math.round(Number(event.target.value)),
                     ))
-                    setSegments(retime(segments.map((item, itemIndex) => itemIndex === index
-                      ? { ...item, stretch_percent: value } : item), mode))
+                    setSegments(retimeCompositionSegments(segments.map((item, itemIndex) => itemIndex === index
+                      ? { ...item, stretch_percent: value } : item), "SIMPLE"))
                   }}
                 />
               </label>
@@ -621,60 +793,29 @@ export function CollagePanel({ projectId, initialCompositionId, onPreview }: Col
                 <button onClick={() => changeOrder(index, -1)}>←</button>
                 <button onClick={() => changeOrder(index, 1)}>→</button>
                 <button onClick={() => {
-                  const next = retime(segments.filter((_, item) => item !== index), mode)
+                  const next = retimeCompositionSegments(segments.filter((_, item) => item !== index), "SIMPLE")
                   setSegments(next)
-                  setSelectedSegmentId(next[Math.min(index, next.length - 1)]?.segment_id ?? "")
                 }}>×</button>
               </div>
             </article>
           ))}
           {!segments.length && <span className="muted">후보의 배치 버튼을 눌러 타임라인을 만드세요.</span>}
-        </div>}
+        </div>
         <div className="export-row">
           {COLLAGE_EXPORT_TARGETS.map((target) => (
             <button
               key={target}
-              disabled={busy || (!result && !compositionId)}
+              disabled={busy || (!targetText.trim() && !compositionId)}
               onClick={() => void runExport(target)}
             >
               {target}
             </button>
           ))}
-          {message && <span>{message}</span>}
+          {message && <span className="assembly-message"><strong>INFO</strong>{message}</span>}
         </div>
       </div>
     </section>
   )
-}
-
-function retime(segments: TimelineSegment[], mode: CompositionMode): TimelineSegment[] {
-  let cursor = 0
-  const timelineEnds: number[] = []
-  return segments.map((segment, index) => {
-    const duration = segmentDuration(segment, mode)
-    const previousDuration = index
-      ? segmentDuration(segments[index - 1], mode) : duration
-    const gap = index ? Math.max(-Math.min(duration, previousDuration), segment.gap_before_ms) : 0
-    const previousEnd = cursor
-    const earliestStart = mode === "PROFESSIONAL" && index > 1
-      ? timelineEnds[index - 2] : 0
-    const start = Math.max(earliestStart, cursor + gap)
-    cursor = start + duration
-    timelineEnds.push(cursor)
-    return {
-      ...segment,
-      lane: index % 2,
-      gap_before_ms: index ? start - previousEnd : 0,
-      timeline_start_ms: start,
-      timeline_end_ms: cursor,
-    }
-  })
-}
-
-function segmentDuration(segment: TimelineSegment, mode: CompositionMode): number {
-  return mode === "PROFESSIONAL"
-    ? segment.phone_units.reduce((total, unit) => total + unit.output_duration_ms, 0)
-    : Math.round((segment.source_end_ms - segment.source_start_ms) * segment.stretch_percent / 100)
 }
 
 function candidateToPhoneUnits(candidate: UnitCandidate): PhoneUnit[] {
@@ -689,8 +830,10 @@ function candidateToPhoneUnits(candidate: UnitCandidate): PhoneUnit[] {
     source_ipa: alignment.source_ipa,
     source_start_ms: alignment.source_start_ms,
     source_end_ms: alignment.source_end_ms,
-    output_duration_ms: alignment.source_start_ms !== null && alignment.source_end_ms !== null
-      ? alignment.source_end_ms - alignment.source_start_ms : 0,
+    output_duration_ms: defaultPhoneDuration(
+      alignment.source_start_ms,
+      alignment.source_end_ms,
+    ),
     source_f0_hz: alignment.source_f0_hz,
     voiced_probability: alignment.voiced_probability,
     target_pitch_midi: alignment.source_f0_hz === null ? null : hzToMidi(alignment.source_f0_hz),
@@ -701,27 +844,15 @@ function candidateToPhoneUnits(candidate: UnitCandidate): PhoneUnit[] {
   }))
 }
 
-function legacyPhoneUnit(segment: TimelineSegment): PhoneUnit {
-  return {
-    phone_unit_id: `phone_${crypto.randomUUID()}`,
-    operation: segment.match_status === "EXACT" ? "MATCH" : "SUBSTITUTE",
-    target_index: segment.target_start_index,
-    target_phone_id: null,
-    target_ipa: segment.target_ipa.join(" "),
-    source_occurrence_id: null,
-    source_phone_id: null,
-    source_ipa: segment.matched_ipa.join(" "),
-    source_start_ms: segment.source_start_ms,
-    source_end_ms: segment.source_end_ms,
-    output_duration_ms: segment.timeline_end_ms - segment.timeline_start_ms,
-    source_f0_hz: null,
-    voiced_probability: 0,
-    target_pitch_midi: null,
-    formant_shift_semitones: 0,
-    transition_to_next_ms: PITCH_TRANSITION_DEFAULT_MS,
-    transition_strength_percent: PITCH_TRANSITION_DEFAULT_STRENGTH,
-    transition_center_ms: 0,
+function defaultPhoneDuration(
+  sourceStartMs: number | null,
+  sourceEndMs: number | null,
+): number {
+  if (sourceStartMs === null || sourceEndMs === null) {
+    return PROFESSIONAL_DEFAULT_MISSING_DURATION_MS
   }
+  const sourceDuration = Math.max(1, sourceEndMs - sourceStartMs)
+  return sourceDuration
 }
 
 function hzToMidi(frequencyHz: number): number {

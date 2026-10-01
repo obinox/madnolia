@@ -3,6 +3,7 @@ from time import sleep
 
 from fastapi.testclient import TestClient
 
+from madnolia import viewer
 from madnolia.viewer import app
 
 
@@ -24,9 +25,20 @@ def test_analysis_api_remains_available() -> None:
     assert "/api/alignment-test" not in paths
 
 
-def test_search_job_can_be_cancelled(monkeypatch, tmp_path) -> None:
-    from madnolia import viewer
+def test_project_audio_endpoint_serves_cached_wav(monkeypatch, tmp_path) -> None:
+    audio = tmp_path / "source.wav"
+    audio.write_bytes(b"RIFF cached audio")
+    monkeypatch.setattr(viewer, "_project_dir", lambda project_id: tmp_path)
+    monkeypatch.setattr(viewer, "audio_path", lambda directory, source_id: audio)
 
+    response = TestClient(app).get("/api/projects/project/audio/source")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/wav"
+    assert response.content == b"RIFF cached audio"
+
+
+def test_search_job_can_be_cancelled(monkeypatch, tmp_path) -> None:
     release = Event()
 
     def load_analyses(directory):
@@ -42,6 +54,11 @@ def test_search_job_can_be_cancelled(monkeypatch, tmp_path) -> None:
         json={"text": "hello", "input_language": "EN"},
     )
     assert started.status_code == 200
+    duplicate = client.post(
+        "/api/projects/test-project/search-jobs",
+        json={"text": "hello", "input_language": "EN"},
+    )
+    assert duplicate.status_code == 409
     job_id = started.json()["job_id"]
     try:
         cancelled = client.delete(f"/api/search-jobs/{job_id}")

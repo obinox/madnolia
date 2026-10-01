@@ -18,6 +18,7 @@ from madnolia.constants import (
     INITIALS,
     JAPANESE_GEMINATE,
     JAPANESE_MORAIC_NASAL,
+    JAPANESE_MORAIC_NASAL_VELAR,
     JAPANESE_ONSETS,
     JAPANESE_VOWELS,
     MEDIAL_COUNT,
@@ -131,7 +132,8 @@ class MultilingualPhonetics:
             from pykakasi import kakasi
 
             self._japanese = kakasi()
-        romanized = "".join(item["hepburn"] for item in self._japanese.convert(text)).lower()
+        converted = self._japanese.convert(text)
+        romanized, graphemes = self._japanese_romaji_units(converted, text)
         phones: list[tuple[str, str, str]] = []
         emitted: list[str] = []
         index = 0
@@ -139,19 +141,30 @@ class MultilingualPhonetics:
             if romanized[index].isspace() or romanized[index] in "'-・":
                 index += 1
                 continue
-            if romanized[index] == "n" and (
-                index + 1 == len(romanized) or romanized[index + 1] not in "aiueoyn'"
-            ):
-                phone_id, ipa = JAPANESE_MORAIC_NASAL
-                phones.append((phone_id, ipa, text))
+            grapheme = graphemes[index]
+            if grapheme == "ん":
+                following = next(
+                    (character for character in romanized[index + 1:] if character not in "-' "),
+                    "",
+                )
+                if following and following in "pbm":
+                    phone_id, ipa = JAPANESE_ONSETS["m"]
+                elif following and following in "kg":
+                    phone_id, ipa = JAPANESE_MORAIC_NASAL_VELAR
+                elif following and following in "tdnsz":
+                    phone_id, ipa = JAPANESE_ONSETS["n"]
+                else:
+                    phone_id, ipa = JAPANESE_MORAIC_NASAL
+                phones.append((phone_id, ipa, grapheme))
                 emitted.append(ipa)
                 index += 1
                 continue
             if index + 1 < len(romanized) and romanized[index] == romanized[index + 1] and romanized[index] not in "aeioun":
                 phone_id, ipa = JAPANESE_GEMINATE
-                phones.append((phone_id, ipa, text))
+                phones.append((phone_id, ipa, grapheme))
                 emitted.append(ipa)
                 index += 1
+                grapheme = graphemes[index]
             onset = next(
                 (key for key in sorted(JAPANESE_ONSETS, key=len, reverse=True)
                  if romanized.startswith(key, index)),
@@ -159,7 +172,7 @@ class MultilingualPhonetics:
             )
             if onset:
                 phone_id, ipa = JAPANESE_ONSETS[onset]
-                phones.append((phone_id, ipa, text))
+                phones.append((phone_id, ipa, grapheme))
                 emitted.append(ipa)
                 index += len(onset)
             if index < len(romanized) and romanized[index] in JAPANESE_VOWELS:
@@ -175,7 +188,7 @@ class MultilingualPhonetics:
                     index += 1
                 else:
                     phone_id, ipa = JAPANESE_VOWELS[vowel]
-                phones.append((phone_id, ipa, text))
+                phones.append((phone_id, ipa, grapheme))
                 emitted.append(ipa)
                 index += 1
             elif not onset:
@@ -183,6 +196,52 @@ class MultilingualPhonetics:
         if not phones:
             raise ValueError("일본어 발음으로 변환할 수 없습니다.")
         return " ".join(emitted), phones
+
+    def _japanese_romaji_units(
+        self, converted: list[dict[str, str]], text: str
+    ) -> tuple[str, list[str]]:
+        units: list[tuple[str, str, str, int]] = []
+        small_kana = "ぁぃぅぇぉゃゅょゎゕゖ"
+        for item_index, item in enumerate(converted):
+            moras: list[str] = []
+            for character in item["hira"]:
+                if (character in small_kana or character == "ー") and moras:
+                    moras[-1] += character
+                else:
+                    moras.append(character)
+            for mora in moras:
+                units.append((mora, mora, item["orig"], item_index))
+
+        chunks: list[tuple[str, str]] = []
+        previous_item_index = -1
+        for index, (mora, grapheme, original, item_index) in enumerate(units):
+            if previous_item_index >= 0 and item_index != previous_item_index:
+                chunks.append(("-", ""))
+            previous_item_index = item_index
+            if mora == "っ":
+                following = self._romanize_mora(units[index + 1][0]) if index + 1 < len(units) else ""
+                roman = following[0] if following and following[0] not in "aeiou" else ""
+            elif original == "は" or (text in {"こんにちは", "こんばんは", "今日は"} and index == len(units) - 1):
+                roman = "wa"
+            elif original == "へ":
+                roman = "e"
+            elif original == "を":
+                roman = "o"
+            else:
+                roman = self._romanize_mora(mora)
+            chunks.append((roman.lower(), grapheme))
+        romanized = "".join(chunk for chunk, _ in chunks)
+        graphemes = [grapheme for chunk, grapheme in chunks for _ in chunk]
+        return romanized, graphemes
+
+    def _romanize_mora(self, mora: str) -> str:
+        long = mora.endswith("ー")
+        base = mora[:-1] if long else mora
+        roman = "".join(item["hepburn"] for item in self._japanese.convert(base))
+        if long:
+            vowel = next((character for character in reversed(roman) if character in "aeiou"), "")
+            roman += vowel
+        return roman
 
 
 def _prepare_nltk_data() -> None:

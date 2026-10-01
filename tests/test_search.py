@@ -1,5 +1,14 @@
 from dataclasses import replace
 
+from madnolia.constants import (
+    JAPANESE_GEMINATE,
+    JAPANESE_MORAIC_NASAL,
+    JAPANESE_MORAIC_NASAL_VELAR,
+    JAPANESE_ONSETS,
+    JAPANESE_VOWELS,
+    SEARCH_PHONE_FALLBACK_SIMILARITIES,
+    SEARCH_PHONE_SIMILARITY_OVERRIDES,
+)
 from madnolia.search import search_candidates
 from madnolia.types.common import (
     AlignmentMethod,
@@ -24,6 +33,27 @@ def test_search_returns_overlapping_exact_spans() -> None:
     assert (0, 2) in ranges
     assert any(candidate.match_status == MatchStatus.EXACT for candidate in result.candidates)
     assert all(candidate.alignments for candidate in result.candidates)
+
+
+def test_exact_search_balances_long_and_short_spans_within_limit() -> None:
+    result = search_candidates(
+        "가",
+        [_analysis([
+            _phone("k", 0),
+            _phone("a", 40),
+            _phone("k", 80),
+            _phone("a", 120),
+        ])],
+        max_candidates_per_start=2,
+        include_approximate=False,
+    )
+
+    ranges = {
+        (candidate.target_start_index, candidate.target_end_index)
+        for candidate in result.candidates
+        if candidate.target_start_index == 0
+    }
+    assert ranges == {(0, 1), (0, 2)}
 
 
 def test_search_reports_stages_and_supports_cancellation() -> None:
@@ -112,6 +142,36 @@ def test_approximate_results_respect_requested_per_start_limit() -> None:
     assert all(count <= 1 for count in approximate_counts.values())
 
 
+def test_exact_search_can_skip_approximate_candidates() -> None:
+    result = search_candidates(
+        "가",
+        [_analysis([
+            _phone("k", 0),
+            _phone("a", 40),
+            _phone("p", 80, "ko.consonant.bilabial.plosive.lenis"),
+        ])],
+        include_approximate=False,
+    )
+
+    assert result.candidates
+    assert all(candidate.match_status == MatchStatus.EXACT for candidate in result.candidates)
+
+
+def test_approximate_search_can_skip_exact_candidates() -> None:
+    result = search_candidates(
+        "가",
+        [_analysis([
+            _phone("k", 0),
+            _phone("a", 40),
+            _phone("p", 80, "ko.consonant.bilabial.plosive.lenis"),
+        ])],
+        include_exact=False,
+    )
+
+    assert result.candidates
+    assert all(candidate.match_status == MatchStatus.APPROXIMATE for candidate in result.candidates)
+
+
 def test_search_aligns_inserted_and_deleted_phones() -> None:
     inserted = search_candidates(
         "가",
@@ -194,6 +254,136 @@ def test_japanese_vowels_can_match_korean_vowels() -> None:
     assert result.input_language == InputLanguage.JA
     assert result.target_phones[0].ipa == "a"
     assert result.candidates
+
+
+def test_japanese_ipa_match_is_exact_across_language_ids() -> None:
+    result = search_candidates(
+        "か",
+        [_analysis([
+            _phone("k", 0, "ko.consonant.velar.plosive.lenis"),
+            _phone("a", 40, "ko.vowel.a"),
+        ])],
+        input_language=InputLanguage.JA,
+    )
+
+    assert all(phone.exact_available for phone in result.target_phones)
+    assert any(candidate.match_status == MatchStatus.EXACT for candidate in result.candidates)
+
+
+def test_voiced_g_and_d_find_korean_lenis_candidates() -> None:
+    result = search_candidates(
+        "good",
+        [_analysis([
+            _phone("k", 0, "ko.consonant.velar.plosive.lenis"),
+            _phone("t", 40, "ko.consonant.alveolar.plosive.lenis"),
+        ])],
+        input_language=InputLanguage.EN,
+        include_exact=False,
+    )
+
+    similarities = [
+        alignment.similarity
+        for candidate in result.candidates
+        for alignment in candidate.alignments
+        if alignment.target_ipa in {"ɡ", "d"}
+    ]
+    assert similarities
+    assert max(similarities) >= 0.9
+
+
+def test_japanese_moraic_nasal_finds_korean_nasal_candidates() -> None:
+    result = search_candidates(
+        "ん",
+        [_analysis([
+            _phone("n", 0, "ko.consonant.alveolar.nasal"),
+            _phone("ŋ", 40, "ko.coda.velar.nasal"),
+            _phone("m", 80, "ko.coda.bilabial.nasal"),
+        ])],
+        input_language=InputLanguage.JA,
+        include_exact=False,
+    )
+
+    assert result.candidates
+    assert max(candidate.similarity for candidate in result.candidates) >= 0.9
+
+
+def test_japanese_special_sounds_use_primary_korean_pronunciation_rules() -> None:
+    cases = [
+        ("し", "ɕ", "ko.consonant.alveolopalatal.fricative.lenis", "i", "ko.vowel.i"),
+        ("つ", "tɕʰ", "ko.consonant.alveolopalatal.affricate.aspirated", "ɯ", "ko.vowel.eu"),
+        ("ふ", "h", "ko.consonant.glottal.fricative", "u", "ko.vowel.u"),
+        ("ら", "ɾ", "ko.consonant.alveolar.tap", "a", "ko.vowel.a"),
+    ]
+
+    for text, consonant_ipa, consonant_id, vowel_ipa, vowel_id in cases:
+        result = search_candidates(
+            text,
+            [_analysis([
+                _phone(consonant_ipa, 0, consonant_id),
+                _phone(vowel_ipa, 40, vowel_id),
+            ])],
+            input_language=InputLanguage.JA,
+            include_exact=False,
+        )
+        assert any(not candidate.fallback for candidate in result.candidates), text
+
+
+def test_japanese_missing_sound_uses_labeled_fallback_candidate() -> None:
+    result = search_candidates(
+        "ヴ",
+        [_analysis([
+            _phone("p", 0, "ko.consonant.bilabial.plosive.lenis"),
+            _phone("ɯ", 40, "ko.vowel.eu"),
+        ])],
+        input_language=InputLanguage.JA,
+        include_exact=False,
+    )
+
+    first_phone_candidates = [
+        candidate for candidate in result.candidates if candidate.target_start_index == 0
+    ]
+    assert first_phone_candidates
+    assert all(candidate.fallback for candidate in first_phone_candidates)
+
+
+def test_every_japanese_phone_has_an_explicit_korean_search_rule() -> None:
+    mapped_ids = {
+        phone_id
+        for pair in (
+            *SEARCH_PHONE_SIMILARITY_OVERRIDES,
+            *SEARCH_PHONE_FALLBACK_SIMILARITIES,
+        )
+        for phone_id in pair
+    }
+    japanese_ids = {
+        phone_id for phone_id, _ in (
+            *JAPANESE_VOWELS.values(),
+            *JAPANESE_ONSETS.values(),
+            JAPANESE_MORAIC_NASAL,
+            JAPANESE_MORAIC_NASAL_VELAR,
+            JAPANESE_GEMINATE,
+        )
+    }
+
+    assert japanese_ids <= mapped_ids
+
+
+def test_common_voicing_pairs_have_strong_korean_substitutions() -> None:
+    cases = (
+        ("en.consonant.velar.plosive.voiced", "ko.consonant.velar.plosive.lenis"),
+        ("en.consonant.velar.plosive.voiceless", "ko.consonant.velar.plosive.lenis"),
+        ("en.consonant.alveolar.plosive.voiced", "ko.consonant.alveolar.plosive.lenis"),
+        ("en.consonant.alveolar.plosive.voiceless", "ko.consonant.alveolar.plosive.lenis"),
+        ("en.consonant.bilabial.plosive.voiced", "ko.consonant.bilabial.plosive.lenis"),
+        ("en.consonant.bilabial.plosive.voiceless", "ko.consonant.bilabial.plosive.lenis"),
+        ("en.consonant.alveolar.fricative.voiced", "ko.consonant.alveolar.fricative.lenis"),
+        ("en.consonant.alveolar.fricative.voiceless", "ko.consonant.alveolar.fricative.lenis"),
+    )
+
+    assert all(
+        SEARCH_PHONE_SIMILARITY_OVERRIDES[frozenset(pair)] >= 0.9
+        for pair in cases
+    )
 
 
 def _phone(ipa: str, start_ms: int, phone_id: str | None = None) -> PhoneOccurrence:

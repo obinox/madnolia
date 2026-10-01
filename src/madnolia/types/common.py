@@ -14,6 +14,10 @@ from madnolia.constants import (
     DEFAULT_MODEL_NAME,
     PITCH_TRANSITION_DEFAULT_MS,
     PITCH_TRANSITION_DEFAULT_STRENGTH,
+    PROFESSIONAL_BEAT_DIVISION_DEFAULT,
+    PROFESSIONAL_BEATS_PER_BAR_DEFAULT,
+    PROFESSIONAL_GRID_OFFSET_UNITS_DEFAULT,
+    PROFESSIONAL_TEMPO_DEFAULT_BPM,
 )
 
 AnalysisProgressCallback = Callable[[str, float], None]
@@ -379,6 +383,7 @@ class UnitCandidate:
     match_status: MatchStatus
     similarity: float
     score: float
+    fallback: bool = False
     alignments: list[CandidatePhoneAlignment] = field(default_factory=list)
 
 
@@ -396,6 +401,8 @@ class SearchRequest:
     text: str
     max_candidates_per_start: int = 8
     input_language: InputLanguage = InputLanguage.AUTO
+    include_exact: bool = True
+    include_approximate: bool = True
 
 
 class SearchJobStatus(StrEnum):
@@ -457,9 +464,35 @@ class TimelineSegment:
     target_ipa: list[str]
     matched_ipa: list[str]
     gap_before_ms: int = 0
+    crossfade_ms: int | None = None
     stretch_percent: int = 100
     lane: int = 0
     phone_units: list[PhoneUnit] = field(default_factory=list)
+    edit_regions: list["EditRegion"] = field(default_factory=list)
+    volume_envelope: list["VolumeEnvelopePoint"] = field(default_factory=list)
+    pitch_envelope: list["PitchEnvelopePoint"] = field(default_factory=list)
+    user_guide_source_ms: list[int] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class EditRegion:
+    region_id: str
+    source_start_ms: int
+    source_end_ms: int
+    output_duration_ms: int
+    relative_pitch_cents: int = 0
+
+
+@dataclass(frozen=True)
+class VolumeEnvelopePoint:
+    position: float
+    gain: float
+
+
+@dataclass(frozen=True)
+class PitchEnvelopePoint:
+    position: float
+    cents: int
 
 
 @dataclass(frozen=True)
@@ -475,6 +508,12 @@ class CompositionProject:
     segments: list[TimelineSegment]
     mode: CompositionMode = CompositionMode.SIMPLE
     schema_version: int = 1
+    parent_composition_id: str | None = None
+    parent_composition_updated_at: str | None = None
+    tempo_bpm: int = PROFESSIONAL_TEMPO_DEFAULT_BPM
+    beats_per_bar: int = PROFESSIONAL_BEATS_PER_BAR_DEFAULT
+    beat_division: int = PROFESSIONAL_BEAT_DIVISION_DEFAULT
+    grid_offset_units: int = PROFESSIONAL_GRID_OFFSET_UNITS_DEFAULT
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -489,6 +528,12 @@ class SaveCompositionRequest:
     segments: list[TimelineSegment]
     mode: CompositionMode = CompositionMode.SIMPLE
     schema_version: int = 1
+    parent_composition_id: str | None = None
+    parent_composition_updated_at: str | None = None
+    tempo_bpm: int = PROFESSIONAL_TEMPO_DEFAULT_BPM
+    beats_per_bar: int = PROFESSIONAL_BEATS_PER_BAR_DEFAULT
+    beat_division: int = PROFESSIONAL_BEAT_DIVISION_DEFAULT
+    grid_offset_units: int = PROFESSIONAL_GRID_OFFSET_UNITS_DEFAULT
 
 
 @dataclass(frozen=True)

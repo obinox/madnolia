@@ -2,8 +2,13 @@ import numpy as np
 
 from madnolia.acoustic_features import _estimate_f0
 from madnolia.exporters import _pitch_context
-from madnolia.pitch_shift import hz_to_midi, render_pitched_audio
-from madnolia.types.common import PhoneAlignmentOperation, PhoneUnit
+from madnolia.pitch_shift import (
+    hz_to_midi,
+    render_pitched_audio,
+    render_relative_pitch_curve,
+    render_relative_pitched_audio,
+)
+from madnolia.types.common import PhoneAlignmentOperation, PhoneUnit, PitchEnvelopePoint
 
 
 def test_pitch_shift_changes_frequency_without_changing_length() -> None:
@@ -19,6 +24,65 @@ def test_pitch_shift_changes_frequency_without_changing_length() -> None:
     assert f0_hz is not None
     assert abs(f0_hz - 440) < 20
     assert probability > 0.7
+
+
+def test_relative_cent_pitch_shift_needs_no_source_f0_and_zero_is_exact() -> None:
+    samples = np.sin(2 * np.pi * 220 * np.arange(8000) / 16000).astype(np.float32)
+    unchanged = render_relative_pitched_audio(samples, len(samples), 0)
+    np.testing.assert_array_equal(unchanged, samples)
+    for cents in (-100, -25, 25, 100):
+        shifted = render_relative_pitched_audio(samples, len(samples), cents)
+        frequency = np.argmax(np.abs(np.fft.rfft(shifted[1000:-1000]))) * 16000 / len(shifted[1000:-1000])
+        expected = 220 * 2 ** (cents / 1200)
+        assert len(shifted) == len(samples)
+        assert abs(frequency - expected) <= 2.5
+    retimed = render_relative_pitched_audio(samples, 6400, 0)
+    assert len(retimed) == 6400
+
+
+def test_pitch_curve_changes_frequency_over_time_without_changing_duration() -> None:
+    sample_rate = 16_000
+    samples = np.sin(2 * np.pi * 220 * np.arange(sample_rate) / sample_rate).astype(np.float32)
+    points = [PitchEnvelopePoint(0.0, 0), PitchEnvelopePoint(0.5, 0), PitchEnvelopePoint(1.0, 1200)]
+    rendered = render_relative_pitch_curve(samples, points)
+    assert len(rendered) == len(samples)
+    for position in (0.2, 0.4, 0.6, 0.8):
+        center = round(position * sample_rate)
+        window = rendered[center - 1600 : center + 1600]
+        frequency = np.argmax(np.abs(np.fft.rfft(window * np.hanning(len(window))))) * sample_rate / len(window)
+        expected_cents = np.interp(position, [point.position for point in points], [point.cents for point in points])
+        expected = 220 * 2 ** (expected_cents / 1200)
+        assert abs(frequency - expected) <= 7, (position, frequency, expected)
+
+
+def test_pitch_curve_plateaus_match_cents_and_silence_stays_exact() -> None:
+    sample_rate = 16_000
+    samples = np.sin(2 * np.pi * 220 * np.arange(sample_rate) / sample_rate).astype(np.float32)
+    points = [PitchEnvelopePoint(0, 25), PitchEnvelopePoint(.25, 25), PitchEnvelopePoint(.75, 100), PitchEnvelopePoint(1, 100)]
+    rendered = render_relative_pitch_curve(samples, points)
+    assert len(rendered) == len(samples)
+    for position, cents in ((.125, 25), (.875, 100)):
+        center = round(position * sample_rate)
+        window = rendered[center - 1600 : center + 1600]
+        frequency = np.argmax(np.abs(np.fft.rfft(window * np.hanning(len(window))))) * sample_rate / len(window)
+        expected = 220 * 2 ** (cents / 1200)
+        assert abs(frequency - expected) <= 7
+    silence = np.zeros(sample_rate, dtype=np.float32)
+    assert render_relative_pitch_curve(silence, points).shape == silence.shape
+    np.testing.assert_array_equal(render_relative_pitch_curve(silence, points), silence)
+    assert np.isfinite(rendered).all()
+
+
+def test_curve_offset_adds_region_base_pitch_once() -> None:
+    sample_rate = 16_000
+    samples = np.sin(2 * np.pi * 220 * np.arange(sample_rate) / sample_rate).astype(np.float32)
+    points = [PitchEnvelopePoint(0, 100), PitchEnvelopePoint(1, 100)]
+    rendered = render_relative_pitch_curve(samples, points, np.full(len(samples), 100, dtype=np.float32))
+    window = rendered[6400:9600]
+    frequency = np.argmax(np.abs(np.fft.rfft(window * np.hanning(len(window))))) * sample_rate / len(window)
+    expected = 220 * 2 ** (200 / 1200)
+    assert len(rendered) == len(samples)
+    assert abs(frequency - expected) <= 6
 
 
 def test_pitch_transition_moves_toward_next_pitch() -> None:

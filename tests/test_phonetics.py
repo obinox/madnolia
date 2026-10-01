@@ -47,6 +47,47 @@ def test_japanese_geminate_and_long_vowel_are_preserved() -> None:
 
     assert any(phone_id == "ja.consonant.geminate" for phone_id, _, _ in result.phones)
     assert any(ipa.endswith("ː") for _, ipa, _ in result.phones)
+    assert [(ipa, grapheme) for _, ipa, grapheme in result.phones] == [
+        ("ɡ", "が"),
+        ("a", "が"),
+        ("Q", "っ"),
+        ("k", "こ"),
+        ("oː", "こ"),
+    ]
+
+
+def test_japanese_actual_pronunciation_handles_particles_and_v_sound() -> None:
+    phonetics = MultilingualPhonetics()
+
+    greeting = phonetics.transcribe("こんにちは", InputLanguage.JA)
+    vocaloid = phonetics.transcribe("ヴォーカロイド", InputLanguage.JA)
+
+    assert greeting.phones[-2][1:] == ("w", "は")
+    assert vocaloid.phones[0][1] == "v"
+    assert all(len(grapheme) <= 2 for _, _, grapheme in greeting.phones)
+
+
+def test_japanese_moraic_nasal_follows_the_next_consonant() -> None:
+    phonetics = MultilingualPhonetics()
+
+    bilabial = phonetics.transcribe("さんぽ", InputLanguage.JA)
+    velar = phonetics.transcribe("さんか", InputLanguage.JA)
+    final = phonetics.transcribe("さん", InputLanguage.JA)
+
+    assert any(ipa == "m" and grapheme == "ん" for _, ipa, grapheme in bilabial.phones)
+    assert any(ipa == "ŋ" and grapheme == "ん" for _, ipa, grapheme in velar.phones)
+    assert final.phones[-1][1] == "ɴ"
+
+
+def test_japanese_word_boundaries_do_not_create_false_long_vowels() -> None:
+    result = MultilingualPhonetics().transcribe("私は学校へ行く", InputLanguage.JA)
+
+    assert [(ipa, grapheme) for _, ipa, grapheme in result.phones[-4:]] == [
+        ("e", "へ"),
+        ("i", "い"),
+        ("k", "く"),
+        ("ɯ", "く"),
+    ]
 
 
 def test_auto_language_detection_excludes_chinese() -> None:

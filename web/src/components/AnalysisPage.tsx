@@ -174,7 +174,7 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
   }
 
   return (
-    <section className="workflow-page">
+    <section className="workflow-page analysis-page">
       <div className="page-intro">
         <p className="section-label">STEP 01 / ANALYZE</p>
         <h2>영상 분석</h2>

@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 
 from madnolia.constants import (
     FORMANT_ENVELOPE_LIFTER,
@@ -6,8 +6,10 @@ from madnolia.constants import (
     FORMANT_GAIN_MIN,
     PITCH_SHIFT_FRAME_SAMPLES,
     PITCH_SHIFT_HOP_SAMPLES,
+    PROFESSIONAL_PITCH_SHIFT_MIN_SEMITONES,
 )
 from madnolia.time_stretch import stretch_audio
+from madnolia.types.common import PitchEnvelopePoint
 
 
 def hz_to_midi(frequency_hz: float) -> float:
@@ -59,6 +61,48 @@ def render_pitched_audio(
     return output / np.maximum(weights, np.finfo(np.float32).eps)
 
 
+def render_relative_pitched_audio(samples: np.ndarray, target_length: int, cents: int) -> np.ndarray:
+    if cents == 0 and target_length == len(samples):
+        return samples.astype(np.float32, copy=True)
+    stretched = stretch_audio(samples, target_length)
+    if cents == 0 or len(stretched) < 2:
+        return stretched
+    return _shift_frame(stretched, cents / 100, 0)
+
+
+def render_relative_pitch_curve(
+    samples: np.ndarray,
+    points: list[PitchEnvelopePoint],
+    base_cents: np.ndarray | None = None,
+) -> np.ndarray:
+    if len(samples) < 2 or not points and base_cents is None:
+        return samples.astype(np.float32, copy=True)
+    if points and all(point.cents == points[0].cents for point in points) and (base_cents is None or np.all(base_cents == base_cents[0])):
+        return render_relative_pitched_audio(samples, len(samples), int(points[0].cents + (base_cents[0] if base_cents is not None else 0)))
+    if (not points or all(point.cents == 0 for point in points)) and (base_cents is None or np.all(base_cents == 0)):
+        return samples.astype(np.float32, copy=True)
+    length = len(samples)
+    positions = np.array([point.position for point in points], dtype=np.float64)
+    cents = np.array([point.cents for point in points], dtype=np.float64)
+    relative = np.linspace(0, 1, length, endpoint=True, dtype=np.float64)
+    target_cents = np.interp(relative, positions, cents) if points else np.zeros(length, dtype=np.float64)
+    if base_cents is not None:
+        target_cents += base_cents
+    if np.all(target_cents == 0):
+        return samples.astype(np.float32, copy=True)
+    ratios = np.exp2(target_cents / 1200.0)
+    cumulative = np.empty(length, dtype=np.float64)
+    cumulative[0] = 0
+    if length > 1:
+        cumulative[1:] = np.cumsum((ratios[:-1] + ratios[1:]) * 0.5)
+    mean_ratio = cumulative[-1] / (length - 1)
+    resampled_length = max(2, round((length - 1) / mean_ratio) + 1)
+    output_positions = np.linspace(0, 1, resampled_length, dtype=np.float64)
+    source_positions = np.interp(output_positions, relative, cumulative / cumulative[-1]) * (length - 1)
+    resampled = np.interp(source_positions, np.arange(length), samples).astype(np.float32)
+    return stretch_audio(resampled, length)
+
+
 def _pitch_at(
     position: int,
     length: int,
@@ -80,9 +124,9 @@ def _pitch_at(
 def _shift_frame(
     samples: np.ndarray, semitones: float, formant_shift_semitones: float
 ) -> np.ndarray:
-    if abs(semitones) < 0.01 and abs(formant_shift_semitones) < 0.01:
+    if abs(semitones) < PROFESSIONAL_PITCH_SHIFT_MIN_SEMITONES and abs(formant_shift_semitones) < PROFESSIONAL_PITCH_SHIFT_MIN_SEMITONES:
         return samples.copy()
-    if abs(semitones) < 0.01:
+    if abs(semitones) < PROFESSIONAL_PITCH_SHIFT_MIN_SEMITONES:
         shifted = samples.copy()
     else:
         ratio = 2.0 ** (semitones / 12.0)

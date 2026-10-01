@@ -17,6 +17,7 @@ from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from madnolia.compositions import (
     collage_dir,
@@ -40,6 +41,7 @@ from madnolia.constants import (
     QWEN_ASR_MODEL_REPOSITORIES,
     SUPPORTED_VIDEO_EXTENSIONS,
     VIDEO_UPLOAD_CHUNK_SIZE,
+    VIEWER_LOG_PATH,
     VIEWER_MAX_WAVEFORM_BINS,
     VIEWER_MIN_WAVEFORM_BINS,
     WINDOWS_RESERVED_FILENAME_PATTERN,
@@ -60,6 +62,7 @@ from madnolia.projects import (
     project_source_labels,
     rename_analysis,
 )
+from madnolia.runtime_logging import configure_viewer_logging, log_event
 from madnolia.search import search_candidates
 from madnolia.types.common import (
     AlignmentMode,
@@ -85,9 +88,17 @@ from madnolia.types.common import (
 )
 
 
+def _log(scope: str, message: str, *args: object) -> None:
+    log_event(scope, message, *args)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    configure_viewer_logging()
+    _log("SYSTEM", "Logging to %s", VIEWER_LOG_PATH.resolve())
+    _log("SYSTEM", "Preparing projects and compositions")
     migrate_legacy_projects()
+    _log("SYSTEM", "Madnolia Viewer is ready")
     yield
 
 
@@ -135,6 +146,7 @@ async def upload_video(request: Request, file: Annotated[UploadFile, File()]) ->
         if origin not in allowed_origins or urlsplit(origin).scheme not in {"http", "https"}:
             raise HTTPException(status_code=403, detail="영상 업로드 요청을 허용하지 않는 주소입니다.")
     filename = file.filename or ""
+    _log("UPLOAD", "Receiving video: %s", filename or "<unnamed>")
     path = Path(filename)
     if (
         not filename
@@ -168,6 +180,7 @@ async def upload_video(request: Request, file: Annotated[UploadFile, File()]) ->
                 break
             except FileExistsError:
                 candidate = DEFAULT_INPUT_DIR / f"{path.stem}_{uuid4().hex[:8]}{path.suffix}"
+        _log("UPLOAD", "Saved %s (%.1f MB)", candidate.name, candidate.stat().st_size / 1_048_576)
         return {"filename": candidate.name}
     except HTTPException:
         raise
@@ -247,6 +260,15 @@ def start_analysis(request: CreateAnalysisRequest) -> dict[str, str]:
             job_id=job_id, filename=path.name, status="running", percent=0, stage="대기 중"
         )
     Thread(target=_run_analysis, args=(job_id, path, request), daemon=True).start()
+    _log(
+        "ANALYSIS",
+        "Queued %s with %s/%s on %s (%s)",
+        path.name,
+        request.backend,
+        request.model_name,
+        request.device.upper(),
+        job_id,
+    )
     return {"job_id": job_id}
 
 
@@ -284,20 +306,30 @@ def control_analysis_job(job_id: str, action: str) -> dict[str, object]:
             raise HTTPException(status_code=409, detail="Job cannot be controlled in this state")
         job.status = target
         _analysis_lock.notify_all()
+        _log("ANALYSIS", "%s requested for %s", action.capitalize(), job_id)
         return asdict(job)
 
 
 def _run_analysis(job_id: str, path: Path, request: CreateAnalysisRequest | None = None) -> None:
     request = request or CreateAnalysisRequest(filename=path.name)
+    last_stage = ""
+    last_percent_bucket = -1
 
     def update(stage: str, percent: float) -> None:
+        nonlocal last_percent_bucket, last_stage
         _checkpoint(job_id)
         with _analysis_lock:
             job = _analysis_jobs[job_id]
             job.stage = stage
             job.percent = round(max(job.percent, min(percent, 99)), 2)
+            percent_bucket = int(job.percent // 10)
+            if stage != last_stage or percent_bucket != last_percent_bucket:
+                _log("ANALYSIS", "%s: %s (%.0f%%)", path.name, stage, job.percent)
+                last_stage = stage
+                last_percent_bucket = percent_bucket
 
     try:
+        _log("ANALYSIS", "Started %s (%s)", path.name, job_id)
         _checkpoint(job_id)
         ensure_analysis_models(
             request.model_name,
@@ -333,26 +365,32 @@ def _run_analysis(job_id: str, path: Path, request: CreateAnalysisRequest | None
             job.percent = 100
             job.stage = "분석 완료"
             job.analysis_id = output.name
+        _log("ANALYSIS", "Completed %s -> %s", path.name, output.name)
     except AnalysisCancelled:
         with _analysis_lock:
             job = _analysis_jobs[job_id]
             job.status = AnalysisJobStatus.STOPPED
             job.stage = "분석 중단"
+        _log("ANALYSIS", "Stopped %s (%s)", path.name, job_id)
     except Exception as error:  # noqa: BLE001
         with _analysis_lock:
             job = _analysis_jobs[job_id]
             job.status = "failed"
             job.stage = "분석 실패"
             job.error = str(error)
+        _log("ANALYSIS", "Failed %s: %s", path.name, error)
 
 
 def _report_download(job_id: str, name: str, percent: float) -> None:
     _checkpoint(job_id)
     with _analysis_lock:
         job = _analysis_jobs[job_id]
+        previous_percent = job.download_percent
         job.stage = "모델 다운로드" if not name.endswith("변환") else "모델 변환"
         job.download_model = name
         job.download_percent = max(0.0, min(percent, 100.0))
+        if previous_percent is None or int(previous_percent // 10) != int(job.download_percent // 10):
+            _log("ANALYSIS", "%s: %s (%.0f%%)", name, job.stage, job.download_percent)
 
 
 @app.get("/api/analysis-jobs/{job_id}")
@@ -367,7 +405,15 @@ def get_analysis_job(job_id: str) -> dict[str, object]:
 @app.post("/api/projects")
 def post_project(request: CreateProjectRequest) -> dict[str, object]:
     try:
-        return create_project(request)
+        project = create_project(request)
+        _log(
+            "PROJECT",
+            "Created %s with %d source(s): %s",
+            project["project_id"],
+            len(request.analysis_ids),
+            request.name,
+        )
+        return project
     except (ValueError, FileNotFoundError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -386,6 +432,8 @@ def search_project(project_id: str, request: SearchRequest) -> dict[str, object]
             _project_analyses(project_dir),
             request.max_candidates_per_start,
             request.input_language,
+            request.include_exact,
+            request.include_approximate,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -393,6 +441,8 @@ def search_project(project_id: str, request: SearchRequest) -> dict[str, object]
 
 
 def _run_search_job(job_id: str, project_id: str, request: SearchRequest) -> None:
+    last_stage = ""
+
     def checkpoint() -> None:
         with _search_lock:
             job = _search_jobs[job_id]
@@ -400,6 +450,7 @@ def _run_search_job(job_id: str, project_id: str, request: SearchRequest) -> Non
                 raise SearchCancelled()
 
     def report(stage: str, stage_percent: float) -> None:
+        nonlocal last_stage
         ranges = {"corpus": (0, 8), "phonetic": (8, 15), "exact": (15, 42), "approximate": (42, 90), "sorting": (90, 100)}
         start, end = ranges[stage]
         with _search_lock:
@@ -407,8 +458,21 @@ def _run_search_job(job_id: str, project_id: str, request: SearchRequest) -> Non
             if job.status == SearchJobStatus.RUNNING:
                 job.stage = stage
                 job.percent = max(job.percent, start + (end - start) * stage_percent / 100)
+                if stage != last_stage:
+                    _log("SEARCH", "%s: %s", job_id, stage)
+                    last_stage = stage
 
     try:
+        _log(
+            "SEARCH",
+            "Started %s for project %s: %r (%s, exact=%s, similar=%s)",
+            job_id,
+            project_id,
+            request.text,
+            request.input_language,
+            request.include_exact,
+            request.include_approximate,
+        )
         directory = _project_dir(project_id)
         report("corpus", 0)
         checkpoint()
@@ -419,6 +483,8 @@ def _run_search_job(job_id: str, project_id: str, request: SearchRequest) -> Non
             analyses,
             request.max_candidates_per_start,
             request.input_language,
+            request.include_exact,
+            request.include_approximate,
             progress_callback=report,
             checkpoint=checkpoint,
         )
@@ -430,30 +496,47 @@ def _run_search_job(job_id: str, project_id: str, request: SearchRequest) -> Non
                 job.stage = "complete"
                 job.percent = 100
                 job.result = payload
+        _log(
+            "SEARCH",
+            "Completed %s: %d phone(s), %d candidate(s)",
+            job_id,
+            len(result.target_phones),
+            len(result.candidates),
+        )
     except SearchCancelled:
         with _search_lock:
             job = _search_jobs[job_id]
             job.status = SearchJobStatus.CANCELLED
             job.stage = "cancelled"
+        _log("SEARCH", "Cancelled %s", job_id)
     except (ValueError, FileNotFoundError) as error:
         with _search_lock:
             job = _search_jobs[job_id]
+            failed_stage = job.stage
             job.status = SearchJobStatus.FAILED
             job.stage = "failed"
-            job.error = str(error)
+            job.error = f"{failed_stage} 단계에서 검색하지 못했습니다: {error}"
+        _log("SEARCH", "Failed %s during %s: %s", job_id, failed_stage, error)
     except Exception as error:  # noqa: BLE001
         with _search_lock:
             job = _search_jobs[job_id]
+            failed_stage = job.stage
             job.status = SearchJobStatus.FAILED
             job.stage = "failed"
-            job.error = str(error)
+            job.error = f"{failed_stage} 단계에서 오류가 발생했습니다: {error}"
+        _log("SEARCH", "Failed %s during %s: %s", job_id, failed_stage, error)
 
 
 @app.post("/api/projects/{project_id}/search-jobs")
 def start_search_job(project_id: str, request: SearchRequest) -> dict[str, object]:
     _project_dir(project_id)
-    job_id = f"search_{uuid4().hex}"
     with _search_lock:
+        if any(
+            job.project_id == project_id and job.status == SearchJobStatus.RUNNING
+            for job in _search_jobs.values()
+        ):
+            raise HTTPException(status_code=409, detail="A search is already running")
+        job_id = f"search_{uuid4().hex}"
         _search_jobs[job_id] = SearchJob(
             job_id=job_id,
             project_id=project_id,
@@ -462,6 +545,7 @@ def start_search_job(project_id: str, request: SearchRequest) -> dict[str, objec
             stage="queued",
         )
     Thread(target=_run_search_job, args=(job_id, project_id, request), daemon=True).start()
+    _log("SEARCH", "Queued %s", job_id)
     return {"job_id": job_id}
 
 
@@ -483,6 +567,7 @@ def cancel_search_job(job_id: str) -> dict[str, object]:
         if job.status == SearchJobStatus.RUNNING:
             job.status = SearchJobStatus.CANCELLED
             job.stage = "cancelled"
+            _log("SEARCH", "Cancellation requested for %s", job_id)
         return asdict(job)
 
 
@@ -500,7 +585,15 @@ def get_all_collages() -> list[dict[str, object]]:
 def post_collage(request: CreateCollageRequest) -> dict[str, object]:
     directory = _project_dir(request.project_id)
     try:
-        return asdict(create_composition(directory, request.project_id, request.composition))
+        composition = create_composition(directory, request.project_id, request.composition)
+        _log(
+            "COMPOSITION",
+            "Created %s with %d segment(s): %s",
+            composition.composition_id,
+            len(composition.segments),
+            composition.name,
+        )
+        return asdict(composition)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -520,7 +613,9 @@ def get_collage(composition_id: str) -> dict[str, object]:
 def put_collage(composition_id: str, request: SaveCompositionRequest) -> dict[str, object]:
     project_id = get_collage(composition_id)["corpus_project_id"]
     try:
-        return asdict(update_composition(_project_dir(project_id), composition_id, request))
+        composition = update_composition(_project_dir(project_id), composition_id, request)
+        _log("COMPOSITION", "Updated %s with %d segment(s)", composition_id, len(composition.segments))
+        return asdict(composition)
     except (OSError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -535,8 +630,11 @@ def export_collage(composition_id: str, target: ExportTarget) -> FileResponse:
 def preview_composition(project_id: str, request: SaveCompositionRequest) -> Response:
     project_dir = _project_dir(project_id)
     try:
+        _log("COMPOSITION", "Rendering preview with %d segment(s)", len(request.segments))
         validate_preview_request(project_dir, request)
-        return Response(content=render_wav(project_dir, request), media_type="audio/wav")
+        content = render_wav(project_dir, request)
+        _log("COMPOSITION", "Preview ready (%.1f MB)", len(content) / 1_048_576)
+        return Response(content=content, media_type="audio/wav")
     except (OSError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -562,6 +660,13 @@ def post_composition(
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    _log(
+        "COMPOSITION",
+        "Created %s with %d segment(s): %s",
+        composition.composition_id,
+        len(composition.segments),
+        composition.name,
+    )
     return asdict(composition)
 
 
@@ -581,6 +686,7 @@ def put_composition(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    _log("COMPOSITION", "Updated %s with %d segment(s)", composition_id, len(composition.segments))
     return asdict(composition)
 
 
@@ -593,11 +699,13 @@ def export_saved_composition(
     project_dir = _project_dir(project_id)
     try:
         composition = get_composition(project_dir, composition_id)
+        _log("COMPOSITION", "Exporting %s as %s", composition_id, target)
         path = export_composition(project_dir, composition, target)
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except (OSError, RuntimeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    _log("COMPOSITION", "Export ready: %s", path)
     return FileResponse(path, filename=path.name)
 
 
@@ -649,6 +757,7 @@ def get_project(project_id: str) -> dict[str, object]:
                 phone_count=len(analysis.phones),
             )
         )
+    _log("PROJECT", "Opened %s with %d source(s): %s", project_id, len(overviews), manifest["name"])
     return {"manifest": manifest, "analyses": [asdict(overview) for overview in overviews]}
 
 
@@ -714,8 +823,25 @@ def get_waveform(
     return asdict(_waveform(path, start_ms, end_ms, bins))
 
 
+@app.get("/api/projects/{project_id}/audio/{source_id}")
+def get_audio(project_id: str, source_id: str) -> FileResponse:
+    try:
+        path = audio_path(_project_dir(project_id), source_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Audio not found")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Audio not found")
+    size_bytes = path.stat().st_size
+    _log("CACHE", "Serving audio for browser cache: %s (%.1f MB)", path.name, size_bytes / 1_048_576)
+    return FileResponse(path, media_type="audio/wav", filename=path.name)
+
+
+def _media_cache_ready(filename: str, size_bytes: int) -> None:
+    _log("CACHE", "RAM copy ready: %s (%.1f MB)", filename, size_bytes / 1_048_576)
+
+
 @app.get("/api/projects/{project_id}/media/{source_id}")
-def get_media(project_id: str, source_id: str) -> FileResponse:
+def get_media(project_id: str, source_id: str, request: Request) -> Response:
     project_dir = _project_dir(project_id)
     manifest = _read_json(project_dir / "project.json")
     source = next((item for item in manifest["sources"] if item["source_id"] == source_id), None)
@@ -724,7 +850,28 @@ def get_media(project_id: str, source_id: str) -> FileResponse:
     media_path = Path(source["path"])
     if not media_path.is_file():
         raise HTTPException(status_code=404, detail="Media file not found")
-    return FileResponse(media_path)
+    if request.headers.get("range") is not None:
+        return FileResponse(media_path)
+    size_bytes = media_path.stat().st_size
+    cache_limit = request.headers.get("x-madnolia-cache-limit")
+    if cache_limit is not None:
+        try:
+            maximum_bytes = max(0, int(cache_limit))
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="Invalid media cache limit") from error
+        if size_bytes > maximum_bytes:
+            _log(
+                "CACHE",
+                "Streaming without RAM copy: %s (%.1f MB)",
+                media_path.name,
+                size_bytes / 1_048_576,
+            )
+            return Response(status_code=204, headers={"X-Madnolia-Media-Size": str(size_bytes)})
+    _log("CACHE", "Loading into browser RAM: %s (%.1f MB)", media_path.name, size_bytes / 1_048_576)
+    return FileResponse(
+        media_path,
+        background=BackgroundTask(_media_cache_ready, media_path.name, size_bytes),
+    )
 
 
 def _project_dir(project_id: str) -> Path:

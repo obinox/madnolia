@@ -137,19 +137,36 @@ export const fetchWaveform = (
   return request(`/api/projects/${encodeURIComponent(projectId)}/waveform?${params}`, signal)
 }
 
-export const mediaUrl = (projectId: string, sourceId: string): string =>
-  `/api/projects/${encodeURIComponent(projectId)}/media/${encodeURIComponent(sourceId)}`
+export const audioUrl = (projectId: string, sourceId: string): string =>
+  `/api/projects/${encodeURIComponent(projectId)}/audio/${encodeURIComponent(sourceId)}`
+
+export const fetchAudioBlob = async (
+  projectId: string,
+  sourceId: string,
+  signal?: AbortSignal,
+): Promise<Blob> => {
+  const response = await fetch(audioUrl(projectId, sourceId), { signal })
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+  return response.blob()
+}
 
 export const startSearch = (
   projectId: string,
   text: string,
   inputLanguage: InputLanguage,
+  maxCandidatesPerStart: number,
+  includeExact: boolean,
+  includeApproximate: boolean,
   signal?: AbortSignal,
 ): Promise<{ job_id: string }> => request(
   `/api/projects/${encodeURIComponent(projectId)}/search-jobs`,
   signal,
   { method: "POST", body: JSON.stringify({
-    text, max_candidates_per_start: 8, input_language: inputLanguage,
+    text,
+    max_candidates_per_start: maxCandidatesPerStart,
+    input_language: inputLanguage,
+    include_exact: includeExact,
+    include_approximate: includeApproximate,
   }) },
 )
 

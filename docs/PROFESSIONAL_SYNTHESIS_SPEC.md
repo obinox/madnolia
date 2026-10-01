@@ -1,14 +1,16 @@
 # Madnolia 전문 합성 편집기 명세
 
-- 문서 상태: 초안
-- 문서 버전: 0.1
+- 문서 상태: 구현 동작
+- 문서 버전: 1.0
 - 작성일: 2026-09-29
 
 ## 1. 목적
 
 전문 합성 편집기는 분석된 원본 영상의 발음을 재료로 사용해 새로운 문장을 만드는 보컬로이드형 영상·음성 편집기다.
 
-사용자는 문장을 음소로 변환하고, 원본에서 정확하거나 유사한 발음 구간을 찾아 타임라인에 배치한 뒤 음소별 길이와 피치를 조절한다. 모든 음성 편집은 대응하는 영상 구간에도 반영한다.
+사용자는 문장을 음소로 변환하고, 원본에서 선택한 연속 구간을 타임라인에 배치한다. 전문 편집은 원본 음성 조각을 연속으로 유지하며, 구간별 상대 음높이·길이·음량·앞 조각과의 겹침을 편집한다. WAV와 영상은 같은 구간 시간 매핑을 사용한다.
+
+> **구현 기준:** 이전 PhoneUnit 피아노롤과 2레인 동작을 설명하는 세부 항목은 레거시 합성 포맷 참고용이다. 현재 편집 동작과 완료 기준은 §23–24의 연속 조각·EditRegion 스키마를 따른다. 새 편집에는 F0 분석이 필요하지 않다.
 
 ## 2. 제품 모드
 
@@ -24,18 +26,18 @@
 
 ### 2.2 전문 합성
 
-음소 단위의 길이·피치·소스 구간과 Part 단위의 위치·페이드를 편집하는 모드다.
+연속 음성 조각과 그 안의 비파괴 편집 구간을 다루는 모드다.
+
+전문 합성은 독립 원본이 아니라 저장된 단순 합성을 부모로 참조하는 파생 편집본이다. 부모 합성 ID와 부모의 수정 시각을 저장하며, 부모가 변경되면 전문 합성을 원본에서 다시 생성하기 전까지 저장과 내보내기를 막는다.
 
 - 정확 발음과 유사 발음 통합 검색
 - 음소 삽입·누락·교체를 포함한 연속 구간 검색
-- 2레인 영상 Part 타임라인
-- 음소 블록 및 피아노롤
-- 음소별 길이와 피치 편집
-- 음소 경계 사이 피치 전환 편집
-- Part별 페이드 인·아웃 편집
+- 한 줄 조각 타임라인과 내부 구간 선택
+- 센트 단위 상대 음높이와 비율 기반 길이 편집
+- 조절 가능한 음량 봉투와 실제 타임라인 겹침
 - 오디오와 영상의 동기화된 리타이밍
 
-단순 합성은 원본을 보존한 채 전문 합성 복사본으로 변환할 수 있어야 한다. 전문 합성을 단순 합성으로 역변환하는 기능은 필수 범위에 포함하지 않는다.
+3번 합성 화면은 단순 합성만 편집한다. 4번 전문 편집 화면은 저장된 단순 합성을 불러와 전문 합성 파생본을 생성한다. 전문 합성을 단순 합성으로 역변환하는 기능은 필수 범위에 포함하지 않는다.
 
 ## 3. 핵심 용어
 
@@ -43,23 +45,24 @@
 | --- | --- |
 | Composition | 저장 가능한 합성 편집 프로젝트 |
 | Part | 하나의 연속된 원본 영상 구간을 참조하는 타임라인 조각 |
-| PhoneUnit | Part 내부에서 독립적으로 길이와 피치를 편집할 수 있는 음소 단위 |
+| EditRegion | 원본 조각을 연속으로 유지하면서 상대 음높이와 출력 길이를 기록하는 논리 구간 |
 | Target phone | 입력 문장에서 요구하는 목표 음소 |
 | Source phone | 원본 영상에서 실제로 선택된 음소 |
-| Pitch transition | 인접한 유성 PhoneUnit 사이의 피치 연결 구간 |
+| PhoneUnit | 레거시 전문 합성에서 음소별 길이·피치를 저장하는 호환 데이터 |
+| Pitch transition | 레거시 PhoneUnit 렌더링에서 사용하는 피치 연결 설정 |
 | Ripple edit | 앞 요소의 변경량만큼 뒤 요소가 연쇄적으로 이동하는 편집 방식 |
-| Source boundary | 분석 과정에서 검출된 원본 음소의 시작·종료 시점 |
+| Guide point | 원본 phone START 위치를 기본값으로 삼는 편집 구획점. 원본 오디오를 자르지 않는다 |
 
 ## 4. 기본 작업 흐름
 
-1. 사용자가 만들 문장을 입력한다.
-2. 시스템이 문장을 발음형과 목표 음소열로 변환한다.
-3. 시스템이 프로젝트에 포함된 모든 원본에서 정확·유사 후보를 검색한다.
-4. 사용자가 후보를 미리 듣고 타임라인에 배치한다.
-5. 배치된 Part의 원본 구간, 상대 위치, 페이드와 재생 길이를 편집한다.
-6. PhoneUnit의 길이와 피치를 피아노롤에서 편집한다.
+1. 3번 합성 화면에서 문장을 변환하고 후보를 검색한다.
+2. 후보를 배치한 뒤 단순 합성을 저장한다.
+3. 4번 전문 편집 화면에서 부모 단순 합성을 선택한다.
+4. 시스템이 부모의 연속 음성 조각을 전문 편집 타임라인으로 불러온다.
+5. 조각 몸통을 끌거나 숫자 경계를 입력해 내부 구간을 선택하고 안내점을 편집한다.
+6. 선택 구간의 센트 피치와 출력 길이를 바꾼다. 길이 변경은 뒤 조각을 리플 이동한다.
 7. 오디오·영상 통합 프리뷰로 결과를 확인한다.
-8. 프로젝트를 저장하거나 WAV, MP4, JSON 등으로 내보낸다.
+8. 부모 참조를 유지한 전문 합성을 저장하거나 내보낸다.
 
 ## 5. 음소 변환
 
@@ -130,21 +133,19 @@
 
 ## 7. 전문 편집 화면
 
-전문 편집 화면은 위에서 아래 순서로 다음 영역을 가진다.
+전문 편집 화면은 OpenUtau 계열의 상·하 편집 레이아웃을 사용하며 다음 영역을 가진다.
 
-1. 문장 및 후보 검색 영역
-2. 영상 Part 트랙 A/B
-3. 음소 블록 타임라인
-4. 피아노롤과 피치 표시
-5. 파형 및 페이드 편집 영역
-6. 선택 요소 속성 패널
-7. 프리뷰·저장·내보내기 영역
+1. 부모 단순 합성 및 전문 편집본 선택 영역
+2. 영상 Part 트랙 A/B와 재생 헤드
+3. 피아노롤과 음소 블록
+4. 선택 요소 속성 패널
+5. 프리뷰·저장·내보내기 영역
 
 모든 시간 기반 영역은 동일한 확대 배율, 수평 스크롤 위치와 재생 헤드를 공유한다.
 
 ## 8. 영상 Part 타임라인
 
-### 8.1 2레인 표시
+### 8.1 레거시 2레인 표시
 
 Part는 가독성을 위해 A/B 두 레인에 위·아래로 교차 배치한다. 두 레인은 별도의 믹싱 채널이 아니라 시간상 겹침을 보여주는 시각적 레인이다.
 
@@ -209,35 +210,28 @@ Part의 길이, 순서, 원본 구간 또는 앞 간격이 바뀌면 이후 모�
 
 ## 11. 피치 편집
 
-### 11.1 원본 피치 분석
+### 11.1 상대 음높이
 
-- 각 유성 PhoneUnit의 안정적인 구간에서 대표 F0를 계산한다.
-- 대표 F0를 실수형 MIDI pitch와 cent 오차로 변환한다.
-- 피아노롤에는 원본 피치 위치를 먼저 표시한다.
-- 음계 중심에서 벗어난 원본 피치를 반올림하지 않고 그대로 유지한다.
-- 피치 검출이 불안정한 경우 신뢰도를 표시한다.
+- 사용자는 정수 센트로 상대 음높이를 지정하며 100센트는 반음이다.
+- 편집과 렌더링에는 원본 F0 분석이나 절대 음높이 검출이 필요하지 않다.
+- 렌더러는 음성 구간 전체에 상대 이동을 적용한다. 0센트·기본 길이는 원본 샘플을 그대로 보존한다.
 
-### 11.2 목표 피치
+### 11.2 구간 입력
 
-- 사용자는 PhoneUnit을 세로로 드래그하거나 숫자를 입력해 목표 피치를 지정한다.
-- 목표 피치는 정수 MIDI note로 제한하지 않는다.
-- cent 단위의 미세 조절을 허용한다.
-- 기본 동작은 음계 비스냅이다.
-- 선택적 음계 스냅은 후속 기능으로 추가할 수 있다.
-- 원본 피치와 목표 피치를 동시에 확인할 수 있어야 한다.
+- 상대 음높이와 선택 범위의 시작·끝은 숫자로 입력할 수 있다.
+- 드래그 선택은 인접 구간의 출력 시간에서 원본 시간으로 조각별 선형 변환한다.
 
 ### 11.3 무성음 처리
 
 - 피치가 없는 무성 자음은 원음을 유지한다.
 - 무성 PhoneUnit에는 일반 피치 블록을 표시하지 않는다.
-- 유성 구간과 무성 구간이 섞인 음소는 유성 구간에만 피치 변환을 적용한다.
+- F0가 없는 구간을 포함해 선택한 전체 구간에 상대 피치 처리를 적용한다.
 - 무성 자음을 임의의 음계로 합성하는 기능은 초기 범위에서 제외한다.
 
 ### 11.4 포먼트
 
 - 피치 이동 시 화자의 음색을 유지하도록 포먼트 보존을 기본값으로 사용한다.
-- 포먼트 수동 조절은 전문 속성으로 제공한다.
-- 포먼트 조절값은 PhoneUnit 단위로 저장할 수 있어야 한다.
+- 기존 전문 파일의 PhoneUnit 포먼트 설정은 레거시 경로에서 보존한다. 새 구간 스키마는 이를 변환하거나 추정하지 않는다.
 
 ## 12. 피치 전환
 
@@ -494,13 +488,11 @@ Python과 TypeScript의 타입, 열거형, 제한값은 각각 지정된 공통 
 - 후보 중간의 교체·삽입·누락이 검색 결과에 포함된다.
 - 후보를 전문 타임라인에 배치할 수 있다.
 - Part의 원본 구간과 상대 배치를 편집할 수 있다.
-- Part가 두 레인에 표시되고 3중 겹침이 방지된다.
-- PhoneUnit 길이를 줄이거나 늘릴 수 있다.
-- 원본 피치가 피아노롤의 실제 위치에 표시된다.
-- PhoneUnit을 음계 사이를 포함한 임의 피치로 이동할 수 있다.
-- 피치 전환 시간·강도·중심을 수치로 조절할 수 있다.
-- 음소별 길이 변경에 영상 속도가 대응한다.
-- Part 양단의 페이드 위치와 강도를 조절할 수 있다.
+- 조각이 한 줄에 표시되고 실제 겹침은 인접 조각 두 개로 제한된다.
+- 임의 내부 범위를 선택하고 안내점을 추가·삭제할 수 있다.
+- 상대 음높이를 1센트 단위로 지정하고 출력 길이를 25%~800%로 조절한다.
+- 선택 구간 길이 변경에 뒤 조각과 영상의 시간 매핑이 대응한다.
+- 음량 점과 앞 조각과의 겹침을 조절한다.
 - 저장 후 다시 열어 동일한 편집 상태를 복원할 수 있다.
 - WAV와 MP4 결과의 오디오·영상 길이가 일치한다.
 
@@ -513,25 +505,46 @@ Python과 TypeScript의 타입, 열거형, 제한값은 각각 지정된 공통 
 
 ## 24. 구현 상태
 
-### 구현됨
+### 기존 PhoneUnit 기능 및 호환 상태
 
 - 단순/전문 합성 저장 모드와 기존 합성 복사 변환
 - MATCH, SUBSTITUTE, INSERT, DELETE 기반 유사 음소열 검색
-- 2레인 상대 배치와 3중 겹침 방지
-- 음소별 25%~800% 길이 편집과 WAV 프리뷰
-- 분석 F0 기반 원본 피치 표시
-- 실수형 MIDI 및 cent 단위 목표 피치 편집
-- 음소 경계별 피치 전환 시간·강도·중심 편집
-- 프레임 단위 피치 이동과 부드러운 전환 WAV 프리뷰
-- 스펙트럼 엔벌로프 기반 포먼트 보존
-- 음소별 -12~+12반음 포먼트 수동 이동
-- 맞닿은 Part 경계의 피치 전환 편집과 WAV 프리뷰
-- PhoneUnit별 영상 재생 속도 매핑
+- 기존 PhoneUnit 기반 렌더러는 기존 저장 파일을 위해 유지한다.
 - 느려진 영상 구간의 프레임 유지 방식 리타이밍
 - 두 Part 겹침 구간의 영상 디졸브
 - 전문 합성 MP4 출력
 
-### 남음
+## 전문 구간 편집 스키마 (2026-09-30)
 
-- Part 양단 페이드 위치·강도 편집
-- 음소 내부 피치 제어점, 비브라토와 글라이드
+Professional segments now store `edit_regions`, a contiguous partition of the fragment's original source bounds. Each region has `region_id`, `source_start_ms`, `source_end_ms`, `output_duration_ms`, and integer `relative_pitch_cents`. Region starts are guided by existing phone START timestamps; detected phone ends are not used as source cuts. Adjacent regions with the same pitch and equivalent stretch after millisecond rounding are coalesced before DSP. Stretch changes output duration and ripples subsequent fragments. The same region map drives WAV and professional MP4 timing.
+
+Segments store `volume_envelope` as normalized `{position, gain}` points. Position spans 0 to 1 and gain spans 0 to 2. Professional editing presents fragments in one horizontal sequence row. The envelope and overlap controls sit below it. Negative `gap_before_ms` creates actual adjacent-fragment timeline overlap; overlap rendering applies opposing fades and preserves user gain without mixer normalization.
+
+Relative pitch uses integer cents, limited to -2400..2400. A zero-cent, unchanged-duration region returns the source PCM unchanged. Relative pitch rendering does not require source F0 or an absolute MIDI target.
+
+새 단순 합성에서 파생본을 만들 때 phone START 위치를 안내점으로 사용하며, 부모 조각의 전체 출력 길이를 원본 구간 비율로 분배한다. Phone end 위치나 기존 음소 길이로 새 길이를 추론하지 않는다.
+
+기존 전문 합성은 로드 시 변환하지 않는다. 기존 음소별 길이·삭제 음소의 무음·포먼트 이동·전환 설정은 기존 WAV/영상 렌더링 경로에서 계속 사용하며, 저장해도 해당 필드는 유지된다. 새 구간 편집으로 전환하는 동작은 사용자가 직접 선택해야 하고, 변환 안내에는 기존 음소별 포먼트·전환·삭제 무음이 새 스키마에 보존되지 않을 수 있음을 표시한다. 원본 파일을 자동 수정하거나 마이그레이션하지 않는다.
+
+새 구간 스키마의 음소 안내 데이터는 검증 대상이 아니다. 음소 데이터가 새 구간의 길이·연속 범위·렌더링을 막지 않으며, 구간 경계 및 정수 센트·밀리초와 유한 음량 수치만 새 편집의 유효성을 결정한다.
+
+## Implemented professional editor behavior (2026-10-01)
+
+The professional editor displays each TimelineSegment as one syllable containing consecutive editable intervals. A left click selects the interval under the pointer without seeking or splitting. Right-clicking an audio interval adds a split at that source position. Right-clicking a user marker removes it; generated phone boundaries remain. Pitch and volume curve point add/delete behavior is unchanged.
+
+Every interval boundary uses the selected interval's front/rear handle rules:
+
+- NORMAL at an internal front boundary adds delta to the preceding interval and subtracts it from the selected interval. NORMAL at an internal rear boundary adds delta to the selected interval and subtracts it from the following interval. The syllable's start, end, and all other output boundaries stay fixed.
+- NORMAL at the outer front moves the syllable start by delta and subtracts delta from its first interval. NORMAL at the outer rear adds delta to its last interval. All other boundaries stay fixed.
+- CTRL at a front boundary moves the syllable start and every preceding boundary by delta, keeps preceding durations fixed, subtracts delta from the selected interval, and keeps the selected interval's rear and later boundaries fixed. CTRL at a rear boundary adds delta to the selected interval, moves that boundary and every following boundary by delta, and keeps following durations fixed.
+- SHIFT moves the whole syllable by delta while preserving all interval durations and relative envelope positions. ALT does not edit.
+
+Each pointer movement is calculated from the pointer-down snapshot, preserves fixed source bounds and region details, enforces nonnegative starts and the shared 25%–800% duration limits, and leaves other syllable start times unchanged. Pitch and gain envelope positions are warped once from the captured envelope to the new region map. Overlap lanes are recalculated automatically.
+
+An empty timeline click pauses playback and seeks the playhead, including the blank visual tail. Clicking a syllable, interval, handle, or curve point does not seek. Space toggles playback at the playhead; Shift+Space renders or reuses the current unsaved composition preview and starts from zero. A stale preview is refreshed before playback. Pending preview requests are coalesced, and an empty-timeline seek cancels pending autoplay. The playhead follows audio time updates.
+
+Pitch and volume are separate aligned lanes under the audio lane. All three use one scrollable, zoomable time axis, playhead, fragment positions, and sticky lane labels. Vertical wheel movement zooms around the cursor; horizontal wheel movement and Shift+wheel scroll horizontally. Right-click empty curve space adds a point; right-click a point removes it. Endpoint points remain fixed. Left-drag moves points, with selected pitch cents and gain available for numeric adjustment. Generated phone guides, user markers, and curve points have distinct colors.
+
+Pitch points store normalized positions and integer relative cents from -2400 to 2400. The curve is sampled over normalized output time, then its pitch ratios define one variable-rate resampling pass followed by one duration-restoring stretch, without F0 detection or mixing independent pitch renders. Existing `edit_regions.relative_pitch_cents` is added once as the base pitch, so the curve is additive and old edits are retained. Empty pitch curves continue through the legacy region renderer. The rendered curve is used by preview, WAV, and MP4 audio.
+
+Tempo defaults to 120 BPM and 4/4 for new professional projects. Integer BPM, beats per bar, display subdivisions 1/4, 1/8, 1/16, 1/24, 1/32, 1/48, 1/64, 1/96, and the signed integer grid offset in 1/96 whole-note units are saved in the composition. The ruler labels bar numbers only. Bar starts and quarter-bar divisions have separate grid colors, while the selected fine subdivision remains visible. These settings only define timeline labels and grid spacing; audio timing is not changed automatically and snapping is not applied. Missing offsets in older compositions default to zero.

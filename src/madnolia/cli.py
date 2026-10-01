@@ -70,7 +70,13 @@ def main() -> None:
     if args.command == "viewer":
         import uvicorn
 
-        uvicorn.run("madnolia.viewer:app", host=DEFAULT_VIEWER_HOST, port=args.port, reload=False)
+        uvicorn.run(
+            "madnolia.viewer:app",
+            host=DEFAULT_VIEWER_HOST,
+            port=args.port,
+            reload=False,
+            access_log=False,
+        )
         return
     if args.command == "finalize":
         try:

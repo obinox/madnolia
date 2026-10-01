@@ -14,6 +14,9 @@ from madnolia.constants import (
     SEARCH_MAX_JOIN_GAP_MS,
     SEARCH_MAX_TARGET_SPAN,
     SEARCH_MIN_SEQUENCE_SIMILARITY,
+    SEARCH_PHONE_FALLBACK_SIMILARITIES,
+    SEARCH_PHONE_SIMILARITY_OVERRIDES,
+    SEARCH_PRIMARY_APPROXIMATE_SIMILARITY,
 )
 from madnolia.phonetics import MultilingualPhonetics
 from madnolia.types.common import (
@@ -39,6 +42,8 @@ def search_candidates(
     analyses: list[AnalysisResult],
     max_candidates_per_start: int = 8,
     input_language: InputLanguage = InputLanguage.AUTO,
+    include_exact: bool = True,
+    include_approximate: bool = True,
     progress_callback: SearchProgressCallback | None = None,
     checkpoint: SearchCheckpoint | None = None,
 ) -> CandidateSearchResult:
@@ -68,40 +73,42 @@ def search_candidates(
         for feature in analysis.acoustic_features
     }
     exact_ids = {phone.phone_id for phones in sources.values() for phone in phones}
+    exact_ipas = {phone.ipa for phones in sources.values() for phone in phones}
     targets = [
         QueryPhone(
             target_index=index,
             grapheme=grapheme,
             phone_id=phone_id,
             ipa=ipa,
-            exact_available=phone_id in exact_ids,
+            exact_available=phone_id in exact_ids or ipa in exact_ipas,
         )
         for index, (phone_id, ipa, grapheme) in enumerate(raw_targets)
     ]
     exact_candidates = _exact_candidates(
         targets, sources, features, max_candidates_per_start,
         progress=lambda percent: report("exact", percent), checkpoint=check,
-    )
+    ) if include_exact else []
+    if not include_exact:
+        report("exact", 100)
     exact_candidates.sort(key=_candidate_sort_key)
-    selected_exact: list[UnitCandidate] = []
-    exact_counts: dict[int, int] = defaultdict(int)
     exact_limit = min(max_candidates_per_start, SEARCH_MAX_CANDIDATES_PER_TARGET_START)
-    for candidate in exact_candidates:
-        start = candidate.target_start_index
-        if exact_counts[start] >= exact_limit:
-            continue
-        selected_exact.append(candidate)
-        exact_counts[start] += 1
+    selected_exact = _balanced_candidates_by_span(exact_candidates, exact_limit)
 
     approximate_candidates = _approximate_sequence_candidates(
         targets, sources, features,
         progress=lambda percent: report("approximate", percent), checkpoint=check,
-    )
+    ) if include_approximate else []
+    if not include_approximate:
+        report("approximate", 100)
     report("sorting", 0)
     check()
     approximate_candidates.sort(key=_candidate_sort_key)
-    selected_approximate: list[UnitCandidate] = []
-    approximate_counts: dict[int, int] = defaultdict(int)
+    primary_starts = {
+        candidate.target_start_index
+        for candidate in approximate_candidates
+        if not candidate.fallback
+    }
+    eligible_approximate: list[UnitCandidate] = []
     seen = {candidate.candidate_id for candidate in selected_exact}
     total = max(1, len(approximate_candidates))
     for index, candidate in enumerate(approximate_candidates):
@@ -111,12 +118,15 @@ def search_candidates(
         start = candidate.target_start_index
         if (
             candidate.candidate_id in seen
-            or approximate_counts[start] >= max_candidates_per_start
+            or (candidate.fallback and start in primary_starts)
         ):
             continue
-        selected_approximate.append(candidate)
+        eligible_approximate.append(candidate)
         seen.add(candidate.candidate_id)
-        approximate_counts[start] += 1
+    selected_approximate = _balanced_candidates_by_span(
+        eligible_approximate,
+        max_candidates_per_start,
+    )
 
     selected = sorted(selected_exact + selected_approximate, key=_candidate_sort_key)
     report("sorting", 100)
@@ -127,6 +137,37 @@ def search_candidates(
         target_phones=targets,
         candidates=selected,
     )
+
+
+def _balanced_candidates_by_span(
+    candidates: list[UnitCandidate],
+    limit_per_start: int,
+) -> list[UnitCandidate]:
+    grouped: dict[int, dict[int, list[UnitCandidate]]] = defaultdict(lambda: defaultdict(list))
+    for candidate in candidates:
+        grouped[candidate.target_start_index][candidate.target_end_index].append(candidate)
+
+    selected: list[UnitCandidate] = []
+    for start in sorted(grouped):
+        spans = grouped[start]
+        ends = sorted(spans, reverse=True)
+        offsets = {end: 0 for end in ends}
+        selected_count = 0
+        while selected_count < limit_per_start:
+            added = False
+            for end in ends:
+                offset = offsets[end]
+                if offset >= len(spans[end]):
+                    continue
+                selected.append(spans[end][offset])
+                offsets[end] += 1
+                selected_count += 1
+                added = True
+                if selected_count >= limit_per_start:
+                    break
+            if not added:
+                break
+    return selected
 
 
 def _exact_candidates(
@@ -149,14 +190,18 @@ def _exact_candidates(
                 report(processed / total * 100)
             processed += 1
             for target_start, target in enumerate(targets):
-                if first.phone_id != target.phone_id:
+                if not _is_exact_phone(target.phone_id, target.ipa, first):
                     continue
                 matched: list[PhoneOccurrence] = []
                 source_index = source_start
                 target_index = target_start
                 while source_index < len(phones) and target_index < len(targets):
                     phone = phones[source_index]
-                    if phone.phone_id != targets[target_index].phone_id:
+                    if not _is_exact_phone(
+                        targets[target_index].phone_id,
+                        targets[target_index].ipa,
+                        phone,
+                    ):
                         break
                     if matched and phone.start_ms - matched[-1].end_ms > SEARCH_MAX_JOIN_GAP_MS:
                         break
@@ -227,6 +272,10 @@ def _approximate_sequence_candidates(
                             MatchStatus.APPROXIMATE,
                             similarity,
                             alignments,
+                            fallback=(
+                                similarity < SEARCH_PRIMARY_APPROXIMATE_SIMILARITY
+                                or any(_is_fallback_alignment(item) for item in alignments)
+                            ),
                         )
                         key = _candidate_sort_key(candidate)
                         heappush(ranked, (tuple(-value for value in key), sequence, candidate))
@@ -358,7 +407,7 @@ def _alignment(
     phone: PhoneOccurrence | None,
     features: dict[str, PhoneAcousticFeatures],
 ) -> CandidatePhoneAlignment:
-    similarity = (
+    similarity = 1.0 if operation == PhoneAlignmentOperation.MATCH else (
         _phone_similarity(target.phone_id, phone.phone_id)
         if target is not None and phone is not None
         else 0.0
@@ -387,10 +436,29 @@ def _is_joinable(phones: list[PhoneOccurrence]) -> bool:
     )
 
 
+def _is_fallback_alignment(alignment: CandidatePhoneAlignment) -> bool:
+    if alignment.target_phone_id is None or alignment.source_phone_id is None:
+        return False
+    return frozenset((
+        alignment.target_phone_id,
+        alignment.source_phone_id,
+    )) in SEARCH_PHONE_FALLBACK_SIMILARITIES
+
+
+def _is_exact_phone(target_id: str, target_ipa: str, candidate: PhoneOccurrence) -> bool:
+    return target_id == candidate.phone_id or target_ipa == candidate.ipa
+
+
 @lru_cache(maxsize=65536)
 def _phone_similarity(target_id: str, candidate_id: str) -> float:
     if target_id == candidate_id:
         return 1.0
+    override = SEARCH_PHONE_SIMILARITY_OVERRIDES.get(frozenset((target_id, candidate_id)))
+    if override is not None:
+        return override
+    fallback = SEARCH_PHONE_FALLBACK_SIMILARITIES.get(frozenset((target_id, candidate_id)))
+    if fallback is not None:
+        return fallback
     target = target_id.split(".")
     candidate = candidate_id.split(".")
     if len(target) < 3 or len(candidate) < 3:
@@ -413,6 +481,7 @@ def _candidate(
     status: MatchStatus,
     similarity: float,
     alignments: list[CandidatePhoneAlignment],
+    fallback: bool = False,
 ) -> UnitCandidate:
     occurrence_ids = [phone.occurrence_id for phone in phones]
     target_start = targets[0].target_index
@@ -448,6 +517,7 @@ def _candidate(
         match_status=status,
         similarity=similarity,
         score=score,
+        fallback=fallback,
         alignments=alignments,
     )
 
@@ -456,6 +526,7 @@ def _candidate_sort_key(candidate: UnitCandidate) -> tuple[float | int, ...]:
     return (
         candidate.target_start_index,
         0 if candidate.match_status == MatchStatus.EXACT else 1,
+        1 if candidate.fallback else 0,
         -(candidate.target_end_index - candidate.target_start_index),
         -candidate.score,
         candidate.source_start_ms,

@@ -1,3 +1,7 @@
+import type { PROFESSIONAL_BEAT_DIVISIONS } from "../constants"
+
+export type ProfessionalBeatDivision = typeof PROFESSIONAL_BEAT_DIVISIONS[number]
+
 export type AudioRegionType = "SPEECH" | "NON_SPEECH"
 export type AlignmentMethod = "ESTIMATED_WORD" | "CTC_FORCED"
 export type AlignmentStatus = "ESTIMATED" | "ALIGNED" | "LOW_CONFIDENCE" | "MISSING"
@@ -5,7 +9,8 @@ export type SelectionKind = "WORD" | "PHONE"
 export type MatchStatus = "EXACT" | "APPROXIMATE" | "MISSING"
 export type CompositionMode = "SIMPLE" | "PROFESSIONAL"
 export type InputLanguage = "AUTO" | "KO" | "EN" | "JA"
-export type SplitAxis = "x" | "y"
+export type CandidateSearchTab = "EXACT" | "APPROXIMATE"
+export type SynthesisWorkspace = "SEARCH" | "ASSEMBLY"
 export type PhoneAlignmentOperation = "MATCH" | "SUBSTITUTE" | "INSERT" | "DELETE"
 export type UnitType = "WORD" | "SYLLABLE" | "PHONEME" | "PHONE_SEQUENCE"
 export type ExportTarget = "JSON" | "WAV" | "MP4" | "EDL" | "FCPXML"
@@ -31,6 +36,19 @@ export interface MediaSource {
   video_width: number | null
   video_height: number | null
   video_fps: number | null
+}
+
+export interface CompositionDraft {
+  schema_version: number
+  project_id: string
+  composition_id: string
+  saved_at: string
+  target_text: string
+  target_pronunciation: string
+  input_language: InputLanguage
+  name: string
+  crossfade_ms: number
+  segments: TimelineSegment[]
 }
 
 export interface ProjectManifest {
@@ -187,6 +205,7 @@ export interface UnitCandidate {
   match_status: MatchStatus
   similarity: number
   score: number
+  fallback: boolean
   alignments: CandidatePhoneAlignment[]
 }
 
@@ -226,6 +245,48 @@ export interface PhoneUnit {
   transition_center_ms: number
 }
 
+export interface EditRegion {
+  region_id: string
+  source_start_ms: number
+  source_end_ms: number
+  output_duration_ms: number
+  relative_pitch_cents: number
+}
+
+export interface VolumeEnvelopePoint {
+  position: number
+  gain: number
+}
+
+export interface PitchEnvelopePoint {
+  position: number
+  cents: number
+}
+
+export type ProfessionalLane = "pitch" | "volume"
+
+export interface ProfessionalSelectedPoint {
+  lane: ProfessionalLane
+  segmentId: string
+  index: number
+}
+
+export interface ProfessionalSourceRange {
+  segmentId: string
+  startMs: number
+  endMs: number
+}
+
+export interface ProfessionalZoomAnchor {
+  timeAtCursor: number
+  cursorLocalX: number
+}
+
+export interface ProfessionalWaveformRequest {
+  promise: Promise<number[]>
+  controller: AbortController
+}
+
 export interface CandidateSearchResult {
   target_text: string
   target_pronunciation: string
@@ -261,9 +322,14 @@ export interface TimelineSegment {
   target_ipa: string[]
   matched_ipa: string[]
   gap_before_ms: number
+  crossfade_ms?: number
   stretch_percent: number
   lane: number
   phone_units: PhoneUnit[]
+  edit_regions: EditRegion[]
+  volume_envelope: VolumeEnvelopePoint[]
+  pitch_envelope?: PitchEnvelopePoint[]
+  user_guide_source_ms?: number[]
 }
 
 export interface CompositionProject {
@@ -275,9 +341,15 @@ export interface CompositionProject {
   created_at: string
   updated_at: string
   crossfade_ms: number
+  tempo_bpm?: number
+  beats_per_bar?: number
+  beat_division?: ProfessionalBeatDivision
+  grid_offset_units?: number
   segments: TimelineSegment[]
   mode: CompositionMode
   schema_version: number
+  parent_composition_id: string | null
+  parent_composition_updated_at: string | null
 }
 
 export interface SaveCompositionRequest {
@@ -285,28 +357,63 @@ export interface SaveCompositionRequest {
   target_text: string
   target_pronunciation: string
   crossfade_ms: number
+  tempo_bpm: number
+  beats_per_bar: number
+  beat_division: ProfessionalBeatDivision
+  grid_offset_units?: number
   segments: TimelineSegment[]
   mode: CompositionMode
   schema_version: number
+  parent_composition_id: string | null
+  parent_composition_updated_at: string | null
 }
 
 export interface CollagePanelProps {
   projectId: string
   initialCompositionId?: string
   onPreview: (candidate: UnitCandidate) => void
+  onPreparePreview: (candidate: UnitCandidate) => void
 }
 
 export interface ProfessionalEditorProps {
+  projectId: string
   segments: TimelineSegment[]
   selectedSegmentId: string
   playheadMs: number
+  tempoBpm: number
+  beatsPerBar: number
+  beatDivision: ProfessionalBeatDivision
+  gridOffsetUnits: number
+  onTempoChange: (tempo: number) => void
+  onBeatsPerBarChange: (beats: number) => void
+  onBeatDivisionChange: (division: ProfessionalBeatDivision) => void
+  onGridOffsetChange: (offset: number) => void
   onSelectSegment: (segmentId: string) => void
   onPlayheadChange: (timeMs: number) => void
   onUpdatePhone: (segmentId: string, phoneUnitId: string, updates: Partial<PhoneUnit>) => void
+  onUpdateRegion: (segmentId: string, regionId: string, updates: Partial<EditRegion>) => void
+  onApplyRange: (segmentId: string, startMs: number, endMs: number, updates: Partial<EditRegion>) => void
+  onApplyHandleDrag: (segment: TimelineSegment, nextStartMs: number, durations: number[]) => void
+  onAddGuide: (segmentId: string, sourceMs: number) => void
+  onRemoveGuide: (segmentId: string, regionId: string) => void
+  onUpdateEnvelope: (segmentId: string, points: VolumeEnvelopePoint[]) => void
+  onUpdatePitchEnvelope: (segmentId: string, points: PitchEnvelopePoint[]) => void
   onUpdateSegment: (segmentId: string, updates: Partial<TimelineSegment>) => void
   onReorderSegment: (segmentId: string, destinationId: string) => void
   onDeleteSegment: (segmentId: string) => void
   onChangeOrder: (segmentId: string, offset: number) => void
+}
+
+export interface ProfessionalPreviewIntent {
+  timeMs: number
+  autoplay: boolean
+}
+
+export type ProfessionalHandleMode = "normal" | "ctrl" | "shift"
+
+export interface ProfessionalHandleResult {
+  startMs: number
+  durations: number[]
 }
 
 export interface AnalysisSummary {
@@ -356,7 +463,12 @@ export interface ApiErrorResponse {
 
 export type AnalysisAction = "pause" | "resume" | "stop"
 
-export type WorkflowPage = "analysis" | "projects" | "collage"
+export type WorkflowPage = "analysis" | "projects" | "collage" | "professional"
+
+export interface ProfessionalSynthesisPageProps {
+  projectId: string
+  initialCompositionId?: string
+}
 
 export interface AnalysisPageProps {
   onGoToProjects: () => void

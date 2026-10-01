@@ -4,6 +4,9 @@ DEFAULT_INPUT_DIR = Path("data/input/videos")
 DEFAULT_OUTPUT_DIR = Path("data/output")
 DEFAULT_PROJECTS_DIR = Path("data/projects")
 DEFAULT_COLLAGES_DIR = Path("data/collages")
+VIEWER_LOG_PATH = Path("data/logs/madnolia-viewer.log")
+VIEWER_LOG_MAX_BYTES = 5 * 1024 * 1024
+VIEWER_LOG_BACKUP_COUNT = 3
 DEFAULT_VIEWER_HOST = "127.0.0.1"
 DEFAULT_VIEWER_PORT = 8000
 INSTALLED_MODE_MARKER = "installed.marker"
@@ -85,11 +88,122 @@ SEARCH_MAX_APPROXIMATE_ANCHORS_PER_SOURCE = 48
 SEARCH_MAX_APPROXIMATE_RANKED_POOL_PER_TARGET_START = 32
 SEARCH_INSERT_DELETE_COST = 0.72
 SEARCH_MIN_SEQUENCE_SIMILARITY = 0.42
+SEARCH_PRIMARY_APPROXIMATE_SIMILARITY = 0.68
+SEARCH_PHONE_SIMILARITY_OVERRIDES = {
+    frozenset(("ja.vowel.a", "ko.vowel.a")): 0.99,
+    frozenset(("ja.vowel.i", "ko.vowel.i")): 0.99,
+    frozenset(("ja.vowel.u", "ko.vowel.eu")): 0.97,
+    frozenset(("ja.vowel.u", "ko.vowel.u")): 0.88,
+    frozenset(("ja.vowel.e", "ko.vowel.e")): 0.99,
+    frozenset(("ja.vowel.o", "ko.vowel.o")): 0.99,
+    frozenset(("ja.consonant.velar.plosive.voiceless", "ko.consonant.velar.plosive.lenis")): 0.94,
+    frozenset((
+        "en.consonant.velar.plosive.voiced",
+        "ko.consonant.velar.plosive.lenis",
+    )): 0.92,
+    frozenset((
+        "en.consonant.velar.plosive.voiceless",
+        "ko.consonant.velar.plosive.lenis",
+    )): 0.94,
+    frozenset((
+        "ja.consonant.velar.plosive.voiced",
+        "ko.consonant.velar.plosive.lenis",
+    )): 0.92,
+    frozenset((
+        "en.consonant.alveolar.plosive.voiced",
+        "ko.consonant.alveolar.plosive.lenis",
+    )): 0.92,
+    frozenset((
+        "en.consonant.alveolar.plosive.voiceless",
+        "ko.consonant.alveolar.plosive.lenis",
+    )): 0.94,
+    frozenset((
+        "ja.consonant.alveolar.plosive.voiced",
+        "ko.consonant.alveolar.plosive.lenis",
+    )): 0.92,
+    frozenset(("ja.consonant.alveolar.plosive.voiceless", "ko.consonant.alveolar.plosive.lenis")): 0.94,
+    frozenset(("ja.consonant.alveolar.fricative.voiceless", "ko.consonant.alveolar.fricative.lenis")): 0.96,
+    frozenset(("en.consonant.alveolar.fricative.voiceless", "ko.consonant.alveolar.fricative.lenis")): 0.96,
+    frozenset(("en.consonant.alveolar.fricative.voiced", "ko.consonant.alveolar.fricative.lenis")): 0.92,
+    frozenset(("ja.consonant.alveolopalatal.fricative.voiceless", "ko.consonant.alveolopalatal.fricative.lenis")): 0.97,
+    frozenset(("ja.consonant.alveolopalatal.affricate.voiceless", "ko.consonant.alveolopalatal.affricate.aspirated")): 0.91,
+    frozenset(("ja.consonant.alveolopalatal.affricate.voiced", "ko.consonant.alveolopalatal.affricate.lenis")): 0.90,
+    frozenset(("en.consonant.postalveolar.affricate.voiceless", "ko.consonant.alveolopalatal.affricate.aspirated")): 0.91,
+    frozenset(("en.consonant.postalveolar.affricate.voiced", "ko.consonant.alveolopalatal.affricate.lenis")): 0.90,
+    frozenset(("ja.consonant.alveolar.affricate.voiceless", "ko.consonant.alveolopalatal.affricate.aspirated")): 0.82,
+    frozenset(("ja.consonant.alveolar.fricative.voiced", "ko.consonant.alveolopalatal.affricate.lenis")): 0.82,
+    frozenset(("ja.consonant.alveolar.nasal.voiced", "ko.consonant.alveolar.nasal")): 0.98,
+    frozenset(("ja.consonant.velar.nasal.voiced", "ko.coda.velar.nasal")): 0.98,
+    frozenset(("ja.consonant.glottal.fricative.voiceless", "ko.consonant.glottal.fricative")): 0.98,
+    frozenset(("ja.consonant.bilabial.plosive.voiced", "ko.consonant.bilabial.plosive.lenis")): 0.92,
+    frozenset(("ja.consonant.bilabial.plosive.voiceless", "ko.consonant.bilabial.plosive.lenis")): 0.88,
+    frozenset(("en.consonant.bilabial.plosive.voiced", "ko.consonant.bilabial.plosive.lenis")): 0.92,
+    frozenset(("en.consonant.bilabial.plosive.voiceless", "ko.consonant.bilabial.plosive.lenis")): 0.94,
+    frozenset(("ja.consonant.bilabial.nasal.voiced", "ko.consonant.bilabial.nasal")): 0.98,
+    frozenset(("ja.consonant.alveolar.tap.voiced", "ko.consonant.alveolar.tap")): 0.98,
+    frozenset(("ja.consonant.labiovelar.approximant.voiced", "ko.vowel.wa")): 0.78,
+    frozenset(("ja.consonant.palatal.approximant.voiced", "ko.vowel.ya")): 0.78,
+    frozenset(("ja.consonant.palatalized.velar.plosive.voiceless", "ko.consonant.velar.plosive.lenis")): 0.84,
+    frozenset(("ja.consonant.palatalized.velar.plosive.voiced", "ko.consonant.velar.plosive.lenis")): 0.86,
+    frozenset(("ja.consonant.palatalized.alveolar.nasal.voiced", "ko.consonant.alveolar.nasal")): 0.86,
+    frozenset(("ja.consonant.palatal.fricative.voiceless", "ko.consonant.glottal.fricative")): 0.80,
+    frozenset(("ja.consonant.bilabial.fricative.voiceless", "ko.consonant.glottal.fricative")): 0.82,
+    frozenset(("ja.consonant.palatalized.bilabial.nasal.voiced", "ko.consonant.bilabial.nasal")): 0.86,
+    frozenset(("ja.consonant.palatalized.alveolar.tap.voiced", "ko.consonant.alveolar.tap")): 0.86,
+    frozenset(("ja.consonant.palatalized.bilabial.plosive.voiced", "ko.consonant.bilabial.plosive.lenis")): 0.84,
+    frozenset(("ja.consonant.palatalized.bilabial.plosive.voiceless", "ko.consonant.bilabial.plosive.aspirated")): 0.84,
+    frozenset((
+        "ja.consonant.uvular.nasal.voiced",
+        "ko.coda.velar.nasal",
+    )): 0.95,
+    frozenset((
+        "ja.consonant.uvular.nasal.voiced",
+        "ko.consonant.alveolar.nasal",
+    )): 0.90,
+    frozenset((
+        "ja.consonant.uvular.nasal.voiced",
+        "ko.coda.bilabial.nasal",
+    )): 0.86,
+}
+SEARCH_PHONE_FALLBACK_SIMILARITIES = {
+    frozenset(("ja.consonant.labiodental.fricative.voiced", "ko.consonant.bilabial.plosive.lenis")): 0.64,
+    frozenset(("ja.consonant.geminate", "ko.consonant.velar.plosive.fortis")): 0.64,
+    frozenset(("ja.consonant.geminate", "ko.consonant.alveolar.plosive.fortis")): 0.64,
+    frozenset(("ja.consonant.geminate", "ko.consonant.bilabial.plosive.fortis")): 0.64,
+    frozenset(("ja.consonant.geminate", "ko.consonant.alveolar.fricative.fortis")): 0.62,
+    frozenset(("ja.consonant.geminate", "ko.consonant.alveolopalatal.affricate.fortis")): 0.62,
+    frozenset(("ja.consonant.palatal.approximant.voiced", "ko.vowel.yeo")): 0.62,
+    frozenset(("ja.consonant.palatal.approximant.voiced", "ko.vowel.yo")): 0.62,
+    frozenset(("ja.consonant.palatal.approximant.voiced", "ko.vowel.yu")): 0.62,
+    frozenset(("ja.consonant.labiovelar.approximant.voiced", "ko.vowel.wo")): 0.62,
+}
 DEFAULT_CROSSFADE_MS = 8
+MAX_CROSSFADE_MS = 100
 MIN_STRETCH_PERCENT = 100
 MAX_STRETCH_PERCENT = 150
 PROFESSIONAL_MIN_DURATION_PERCENT = 25
 PROFESSIONAL_MAX_DURATION_PERCENT = 800
+PROFESSIONAL_PITCH_MIN_CENTS = -2400
+PROFESSIONAL_PITCH_MAX_CENTS = 2400
+PROFESSIONAL_GAIN_MIN = 0.0
+PROFESSIONAL_GAIN_MAX = 2.0
+PROFESSIONAL_GAIN_DEFAULT = 1.0
+PROFESSIONAL_ENVELOPE_POSITION_MIN = 0.0
+PROFESSIONAL_ENVELOPE_POSITION_MAX = 1.0
+PROFESSIONAL_ENVELOPE_POSITION_EPSILON = 2.220446049250313e-16
+PROFESSIONAL_ENVELOPE_DEFAULT = ((0.0, PROFESSIONAL_GAIN_DEFAULT), (1.0, PROFESSIONAL_GAIN_DEFAULT))
+PROFESSIONAL_COMPOSITION_SCHEMA_VERSION = 3
+PROFESSIONAL_BEAT_DIVISIONS = (4, 8, 16, 24, 32, 48, 64, 96)
+PROFESSIONAL_TEMPO_DEFAULT_BPM = 120
+PROFESSIONAL_TEMPO_MIN_BPM = 20
+PROFESSIONAL_TEMPO_MAX_BPM = 400
+PROFESSIONAL_BEATS_PER_BAR_DEFAULT = 4
+PROFESSIONAL_BEATS_PER_BAR_MIN = 1
+PROFESSIONAL_BEATS_PER_BAR_MAX = 16
+PROFESSIONAL_BEAT_DIVISION_DEFAULT = 4
+PROFESSIONAL_GRID_OFFSET_UNITS_DEFAULT = 0
+PROFESSIONAL_PHONE_CONTEXT_MAX_MS = 40
+PROFESSIONAL_PHONE_BOUNDARY_BLEND_MS = 24
 PITCH_MIN_MIDI = 24.0
 PITCH_MAX_MIDI = 108.0
 FORMANT_SHIFT_MIN_SEMITONES = -12.0
@@ -104,6 +218,7 @@ PITCH_TRANSITION_CENTER_MIN_MS = -250
 PITCH_TRANSITION_CENTER_MAX_MS = 250
 PITCH_SHIFT_FRAME_SAMPLES = 640
 PITCH_SHIFT_HOP_SAMPLES = 320
+PROFESSIONAL_PITCH_SHIFT_MIN_SEMITONES = 1e-8
 STRETCH_FRAME_SAMPLES = 320
 STRETCH_SEARCH_SAMPLES = 64
 OPENVINO_MODEL_REPOSITORIES = {
@@ -294,6 +409,7 @@ JAPANESE_ONSETS = {
     "ts": ("ja.consonant.alveolar.affricate.voiceless", "ts"),
     "j": ("ja.consonant.alveolopalatal.affricate.voiced", "dʑ"),
     "f": ("ja.consonant.bilabial.fricative.voiceless", "ɸ"),
+    "v": ("ja.consonant.labiodental.fricative.voiced", "v"),
     "k": ("ja.consonant.velar.plosive.voiceless", "k"),
     "g": ("ja.consonant.velar.plosive.voiced", "ɡ"),
     "s": ("ja.consonant.alveolar.fricative.voiceless", "s"),
@@ -311,4 +427,5 @@ JAPANESE_ONSETS = {
 }
 
 JAPANESE_MORAIC_NASAL = ("ja.consonant.uvular.nasal.voiced", "ɴ")
+JAPANESE_MORAIC_NASAL_VELAR = ("ja.consonant.velar.nasal.voiced", "ŋ")
 JAPANESE_GEMINATE = ("ja.consonant.geminate", "Q")
