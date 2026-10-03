@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import { audioUrl, fetchAudioBlob, fetchCollage, fetchProject, fetchProjects, fetchTimeline, fetchWaveform } from "./api"
+import { fetchCollage, fetchProject, fetchProjects, fetchTimeline, fetchWaveform, audioUrl, fetchAudioBlob } from "./api/projects"
 import {
   PHONE_DETAIL_MAX_MS,
   PLAYBACK_LOOP_EPSILON_MS,

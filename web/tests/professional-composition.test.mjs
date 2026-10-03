@@ -11,7 +11,7 @@ registerHooks({
   },
 })
 
-const { applyProfessionalHandleDrag, changeRegionBoundary, mapWaveformToOutput, resizeProfessionalHandle, retimeCompositionSegments, splitEditRegions, updateSelectedRange, warpEnvelopeForRegionDurations } = await import("../src/composition.ts")
+const { applyProfessionalHandleDrag, changeRegionBoundary, mapWaveformToOutput, moveProfessionalTimelineSuffix, resizeProfessionalHandle, retimeCompositionSegments, splitEditRegions, updateSelectedRange, warpEnvelopeForRegionDurations } = await import("../src/composition.ts")
 
 function segment(id, start, regions) {
   const duration = regions.reduce((sum, region) => sum + region.output_duration_ms, 0)
@@ -44,6 +44,20 @@ test("selection stretch preserves all other absolute positions and region detail
   assert.deepEqual(changed[0].pitch_envelope.map((point) => point.cents), [0, 100, 200, -100, 0])
 })
 
+test("Ctrl+Shift moves the strict timeline suffix from its original snapshot without drift", () => {
+  const make = (id, start, lane) => ({ ...segment(id, start, [{ region_id: `${id}-r`, source_start_ms: start, source_end_ms: start + 100, output_duration_ms: 100, relative_pitch_cents: 20 }]), timeline_start_ms: start, timeline_end_ms: start + 100, lane, volume_envelope: [{ position: 0, gain: 0.8 }, { position: 1, gain: 1 }], pitch_envelope: [{ position: 0, cents: 0 }, { position: 1, cents: 20 }] })
+  const original = [make("later", 300, 0), make("early", 20, 0), make("grabbed", 100, 1), make("same", 100, 2), make("overlap-later", 180, 3)]
+  const moved = moveProfessionalTimelineSuffix(original, original, "grabbed", 40)
+  assert.deepEqual(Object.fromEntries(moved.map((item) => [item.segment_id, item.timeline_start_ms])), { later: 340, early: 20, grabbed: 140, same: 100, "overlap-later": 220 })
+  assert.deepEqual(moved.map((item) => item.timeline_end_ms - item.timeline_start_ms), [100, 100, 100, 100, 100])
+  const negative = moveProfessionalTimelineSuffix(original, original, "grabbed", -500)
+  assert.deepEqual(Object.fromEntries(negative.map((item) => [item.segment_id, item.timeline_start_ms])), { later: 200, early: 20, grabbed: 0, same: 100, "overlap-later": 80 })
+  assert.equal(moveProfessionalTimelineSuffix(moved, original, "grabbed", 40).find((item) => item.segment_id === "later").timeline_start_ms, 340)
+  const restored = moveProfessionalTimelineSuffix(moved, original, "grabbed", 0)
+  assert.deepEqual(restored, original)
+  assert.deepEqual(restored.map((item) => [item.timeline_start_ms, item.timeline_end_ms - item.timeline_start_ms, item.volume_envelope, item.pitch_envelope]), original.map((item) => [item.timeline_start_ms, item.timeline_end_ms - item.timeline_start_ms, item.volume_envelope, item.pitch_envelope]))
+})
+
 test("whole-fragment duration edits preserve following fragment positions", () => {
   const first = segment("a", 0, [
     { region_id: "start", source_start_ms: 0, source_end_ms: 40, output_duration_ms: 40, relative_pitch_cents: 0 },
@@ -71,11 +85,34 @@ test("waveform samples follow source mapping across stretched edit regions", () 
     { region_id: "right", source_start_ms: 50, source_end_ms: 100, output_duration_ms: 50, relative_pitch_cents: 0 },
   ])
   const path = mapWaveformToOutput(stretched, [0.1, 0.2, 0.6, 0.8]).split(" ").map((point) => point.split(",").map(Number))
-  assert.equal(path[0][0], 0)
-  assert.equal(path.at(-1)[0], 1000)
-  const seam = path.find(([x]) => x === 800)
-  assert.ok(seam)
-  assert.equal(seam[1], 50 - 0.6 * 44)
+  const upper = path.slice(0, path.length / 2)
+  const lower = path.slice(path.length / 2).reverse()
+  assert.equal(upper[0][0], 0)
+  assert.equal(upper.at(-1)[0], 1000)
+  assert.equal(lower[0][0], 0)
+  assert.deepEqual(lower.map(([x]) => x), upper.map(([x]) => x))
+  assert.ok(upper.some(([, y]) => y === 50 - 0.8 * 44), "peak envelope retains the source transient")
+  const seam = upper.filter(([x]) => x === 800).map(([, y]) => y)
+  assert.deepEqual(seam, [50 - 0.2 * 44, 50 - 0.6 * 44])
+  assert.deepEqual(lower.map(([, y], index) => y), upper.map(([, y]) => 100 - y))
+})
+
+test("waveform retains peaks inside a compressed internal edit region", () => {
+  const compressed = segment("a", 0, [
+    { region_id: "left", source_start_ms: 0, source_end_ms: 40, output_duration_ms: 1596, relative_pitch_cents: 0 },
+    { region_id: "middle", source_start_ms: 40, source_end_ms: 60, output_duration_ms: 1, relative_pitch_cents: 0 },
+    { region_id: "right", source_start_ms: 60, source_end_ms: 100, output_duration_ms: 1603, relative_pitch_cents: 0 },
+  ])
+  for (const peakIndex of [40, 41, 49, 58, 59]) {
+    const path = mapWaveformToOutput(compressed, Array.from({ length: 100 }, (_, index) => index === peakIndex ? 1 : 0)).split(" ").map((point) => point.split(",").map(Number))
+    const upper = path.slice(0, path.length / 2)
+    const lower = path.slice(path.length / 2).reverse()
+    assert.ok(upper.some(([, y]) => y === 6), `compressed-region peak at source bin ${peakIndex} remains visible`)
+    assert.equal(upper[0][0], 0)
+    assert.equal(upper.at(-1)[0], 1000)
+    assert.deepEqual(lower.map(([x]) => x), upper.map(([x]) => x))
+    assert.deepEqual(lower.map(([, y]) => y), upper.map(([, y]) => 100 - y))
+  }
 })
 
 test("moving an internal source guide preserves neighboring absolute positions", () => {
@@ -166,13 +203,21 @@ test("multi-guide range allocates one requested duration across pieces and rejec
   assert.equal(clipped.edit_regions.reduce((sum, item) => sum + item.output_duration_ms, 0), 100)
 })
 
-test("guide splits preserve feasible 25 percent durations and leave infeasible cuts untouched", () => {
-  const low = segment("a", 100, [{ region_id: "low", source_start_ms: 100, source_end_ms: 200, output_duration_ms: 25, relative_pitch_cents: 0 }]).edit_regions
+test("professional duration editing clamps integer milliseconds to 1 through 3200 percent", () => {
+  const source = segment("a", 0, [{ region_id: "r", source_start_ms: 0, source_end_ms: 100, output_duration_ms: 100, relative_pitch_cents: 0 }])
+  assert.equal(updateSelectedRange([source], "a", 0, 100, { output_duration_ms: 0 })[0].edit_regions[0].output_duration_ms, 1)
+  assert.equal(updateSelectedRange([source], "a", 0, 100, { output_duration_ms: 5000 })[0].edit_regions[0].output_duration_ms, 3200)
+  assert.deepEqual(resizeProfessionalHandle(source, 0, 1, "ctrl", -500), { startMs: 0, durations: [1] })
+  assert.deepEqual(resizeProfessionalHandle(source, 0, 1, "ctrl", 5000), { startMs: 0, durations: [3200] })
+})
+
+test("guide splits preserve feasible 1 percent durations and leave infeasible cuts untouched", () => {
+  const low = segment("a", 100, [{ region_id: "low", source_start_ms: 100, source_end_ms: 200, output_duration_ms: 1, relative_pitch_cents: 0 }]).edit_regions
   assert.equal(splitEditRegions(low, 101, 101).length, 1)
-  const feasible = splitEditRegions(low, 104, 104)
+  const feasible = splitEditRegions(segment("b", 100, [{ region_id: "split", source_start_ms: 100, source_end_ms: 200, output_duration_ms: 2, relative_pitch_cents: 0 }]).edit_regions, 104, 104)
   assert.equal(feasible.length, 2)
-  assert.deepEqual(feasible.map((item) => item.output_duration_ms), [1, 24])
-  assert.ok(feasible.every((item) => item.output_duration_ms >= Math.ceil((item.source_end_ms - item.source_start_ms) * 0.25)))
+  assert.deepEqual(feasible.map((item) => item.output_duration_ms), [1, 1])
+  assert.ok(feasible.every((item) => item.output_duration_ms >= Math.max(1, Math.ceil((item.source_end_ms - item.source_start_ms) * 0.01))))
 })
 
 test("professional handles resize adjacent intervals from the captured segment", () => {
@@ -191,9 +236,9 @@ test("professional handles resize adjacent intervals from the captured segment",
   assert.deepEqual(result(1, 2, "shift", 40), { startMs: 140, durations: [200, 300, 400] })
   assert.deepEqual(result(0, 0, "normal", 40), { startMs: 140, durations: [160, 300, 400] })
   assert.deepEqual(result(2, 3, "normal", 40), { startMs: 100, durations: [200, 300, 440] })
-  assert.deepEqual(result(1, 2, "normal", -1000), { startMs: 100, durations: [200, 25, 675] })
+  assert.deepEqual(result(1, 2, "normal", -1000), { startMs: 100, durations: [200, 1, 699] })
   assert.deepEqual(result(0, 0, "normal", -500), { startMs: 0, durations: [300, 300, 400] })
-  assert.deepEqual(result(1, 1, "normal", 1000), { startMs: 100, durations: [475, 25, 400] })
+  assert.deepEqual(result(1, 1, "normal", 1000), { startMs: 100, durations: [499, 1, 400] })
   const twice = result(1, 1, "normal", 40)
   const later = { ...segment("later", 0, [{ region_id: "later", source_start_ms: 300, source_end_ms: 400, output_duration_ms: 100, relative_pitch_cents: 0 }]), timeline_start_ms: 1200, timeline_end_ms: 1300 }
   const firstApply = applyProfessionalHandleDrag([source, later], source, twice.startMs, twice.durations)

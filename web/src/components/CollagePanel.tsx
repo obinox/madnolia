@@ -1,15 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import {
-  createComposition,
-  cancelSearch,
-  exportComposition,
-  fetchCompositions,
-  getSearchJob,
-  previewComposition,
-  startSearch,
-  updateComposition,
-} from "../api"
+import { cancelSearch, getSearchJob, startSearch } from "../api/search"
+import { createComposition, exportComposition, fetchCompositions, previewComposition, updateComposition } from "../api/compositions"
 import {
   APPROXIMATE_SEARCH_CANDIDATES_PER_PHONE,
   COLLAGE_EXPORT_TARGETS,

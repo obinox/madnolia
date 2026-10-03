@@ -2,7 +2,6 @@ import json
 import os
 import re
 import tempfile
-import wave
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from functools import lru_cache
@@ -12,7 +11,6 @@ from typing import Annotated
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-import numpy as np
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
@@ -64,6 +62,7 @@ from madnolia.projects import (
 )
 from madnolia.runtime_logging import configure_viewer_logging, log_event
 from madnolia.search import search_candidates
+from madnolia.services.media_waveform import _waveform
 from madnolia.types.common import (
     AlignmentMode,
     AnalysisCancelled,
@@ -84,7 +83,6 @@ from madnolia.types.common import (
     SearchJobStatus,
     SearchRequest,
     TimelineSlice,
-    WaveformData,
 )
 
 
@@ -907,28 +905,6 @@ def _read_json(path: Path) -> dict[str, object]:
 def _read_json_cached(path: str, modified_ns: int) -> dict[str, object]:
     del modified_ns
     return json.loads(Path(path).read_text(encoding="utf-8"))
-
-
-@lru_cache(maxsize=64)
-def _waveform(audio_path: Path, start_ms: int, end_ms: int, bins: int) -> WaveformData:
-    with wave.open(str(audio_path), "rb") as audio:
-        sample_rate = audio.getframerate()
-        total_frames = audio.getnframes()
-        start_frame = min(total_frames, round(start_ms * sample_rate / 1000))
-        end_frame = min(total_frames, round(end_ms * sample_rate / 1000))
-        frame_count = max(0, end_frame - start_frame)
-        audio.setpos(start_frame)
-        peaks: list[float] = []
-        previous_boundary = 0
-        for index in range(1, bins + 1):
-            boundary = round(frame_count * index / bins)
-            raw = audio.readframes(boundary - previous_boundary)
-            samples = np.frombuffer(raw, dtype=np.int16)
-            peak = float(np.max(np.abs(samples.astype(np.int32))) / 32768) if samples.size else 0.0
-            peaks.append(peak)
-            previous_boundary = boundary
-    return WaveformData(start_ms=start_ms, end_ms=end_ms, peaks=peaks)
-
 
 web_dist = web_directory()
 if web_dist.is_dir():

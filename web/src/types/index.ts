@@ -2,6 +2,18 @@ import type { PROFESSIONAL_BEAT_DIVISIONS } from "../constants"
 
 export type ProfessionalBeatDivision = typeof PROFESSIONAL_BEAT_DIVISIONS[number]
 
+export interface EnvelopeConstraintPoint {
+  position: number
+}
+
+export interface JobIdResponse {
+  job_id: string
+}
+
+export interface ProjectIdResponse {
+  project_id: string
+}
+
 export type AudioRegionType = "SPEECH" | "NON_SPEECH"
 export type AlignmentMethod = "ESTIMATED_WORD" | "CTC_FORCED"
 export type AlignmentStatus = "ESTIMATED" | "ALIGNED" | "LOW_CONFIDENCE" | "MISSING"
@@ -269,6 +281,7 @@ export interface ProfessionalSelectedPoint {
   lane: ProfessionalLane
   segmentId: string
   index: number
+  position?: number
 }
 
 export interface ProfessionalSourceRange {
@@ -394,6 +407,9 @@ export interface ProfessionalEditorProps {
   onUpdateRegion: (segmentId: string, regionId: string, updates: Partial<EditRegion>) => void
   onApplyRange: (segmentId: string, startMs: number, endMs: number, updates: Partial<EditRegion>) => void
   onApplyHandleDrag: (segment: TimelineSegment, nextStartMs: number, durations: number[]) => void
+  onMoveTimelineSuffix: (segments: TimelineSegment[], segmentId: string, deltaMs: number) => void
+  onBeginGesture: () => void
+  onEndGesture: () => void
   onAddGuide: (segmentId: string, sourceMs: number) => void
   onRemoveGuide: (segmentId: string, regionId: string) => void
   onUpdateEnvelope: (segmentId: string, points: VolumeEnvelopePoint[]) => void
@@ -410,6 +426,31 @@ export interface ProfessionalPreviewIntent {
 }
 
 export type ProfessionalHandleMode = "normal" | "ctrl" | "shift"
+
+export interface ProfessionalEditableState {
+  name: string
+  segments: TimelineSegment[]
+  crossfadeMs: number
+  tempoBpm: number
+  beatsPerBar: number
+  beatDivision: ProfessionalBeatDivision
+  gridOffsetUnits: number
+}
+
+export interface ProfessionalHistoryState {
+  present: ProfessionalEditableState
+  past: ProfessionalEditableState[]
+  future: ProfessionalEditableState[]
+  gestureBaseline: ProfessionalEditableState | null
+}
+
+export type ProfessionalHistoryAction =
+  | { type: "edit"; next: ProfessionalEditableState }
+  | { type: "begin-gesture" }
+  | { type: "end-gesture" }
+  | { type: "undo" }
+  | { type: "redo" }
+  | { type: "reset"; next: ProfessionalEditableState }
 
 export interface ProfessionalHandleResult {
   startMs: number

@@ -204,7 +204,7 @@ Part의 길이, 순서, 원본 구간 또는 앞 간격이 바뀌면 이후 모�
 - 음소 길이 변경은 해당 Part 이후의 모든 Part 위치에 리플 반영한다.
 - 오디오와 영상은 동일한 시간 매핑을 사용한다.
 
-초기 권장 범위는 원본 음소 길이 대비 25%~800%다. 실제 제한값은 공통 설정으로 관리한다.
+초기 권장 범위는 원본 음소 길이 대비 1%~3200%다. 실제 제한값은 공통 설정으로 관리한다.
 
 극단적인 단축·연장에서는 품질 저하 가능성을 표시하되 편집 자체를 즉시 차단하지 않는다.
 
@@ -490,7 +490,7 @@ Python과 TypeScript의 타입, 열거형, 제한값은 각각 지정된 공통 
 - Part의 원본 구간과 상대 배치를 편집할 수 있다.
 - 조각이 한 줄에 표시되고 실제 겹침은 인접 조각 두 개로 제한된다.
 - 임의 내부 범위를 선택하고 안내점을 추가·삭제할 수 있다.
-- 상대 음높이를 1센트 단위로 지정하고 출력 길이를 25%~800%로 조절한다.
+- 상대 음높이를 1센트 단위로 지정하고 출력 길이를 1%~3200%로 조절한다.
 - 선택 구간 길이 변경에 뒤 조각과 영상의 시간 매핑이 대응한다.
 - 음량 점과 앞 조각과의 겹침을 조절한다.
 - 저장 후 다시 열어 동일한 편집 상태를 복원할 수 있다.
@@ -539,11 +539,13 @@ Every interval boundary uses the selected interval's front/rear handle rules:
 - CTRL at a front boundary moves the syllable start and every preceding boundary by delta, keeps preceding durations fixed, subtracts delta from the selected interval, and keeps the selected interval's rear and later boundaries fixed. CTRL at a rear boundary adds delta to the selected interval, moves that boundary and every following boundary by delta, and keeps following durations fixed.
 - SHIFT moves the whole syllable by delta while preserving all interval durations and relative envelope positions. ALT does not edit.
 
-Each pointer movement is calculated from the pointer-down snapshot, preserves fixed source bounds and region details, enforces nonnegative starts and the shared 25%–800% duration limits, and leaves other syllable start times unchanged. Pitch and gain envelope positions are warped once from the captured envelope to the new region map. Overlap lanes are recalculated automatically.
+Each pointer movement is calculated from the pointer-down snapshot, preserves fixed source bounds and region details, enforces nonnegative starts and the shared 1%–3200% duration limits, and leaves other syllable start times unchanged. Pitch and gain envelope positions are warped once from the captured envelope to the new region map. Overlap lanes are recalculated automatically.
+
+Ctrl+Shift-dragging an audio syllable, its label, or a boundary handle moves that syllable and every syllable whose pointer-down `timeline_start_ms` is strictly later. Equal-start peers and earlier syllables stay fixed, including peers in other overlap lanes. The group uses one shared delta clamped at zero; durations, source splits, envelopes, and crossfades stay intact. Ctrl+Z undoes and Ctrl+Y redoes composition edits. Each completed drag is one history entry; selection and transport do not create entries. Loading a composition resets history, and new edits discard redo.
 
 An empty timeline click pauses playback and seeks the playhead, including the blank visual tail. Clicking a syllable, interval, handle, or curve point does not seek. Space toggles playback at the playhead; Shift+Space renders or reuses the current unsaved composition preview and starts from zero. A stale preview is refreshed before playback. Pending preview requests are coalesced, and an empty-timeline seek cancels pending autoplay. The playhead follows audio time updates.
 
-Pitch and volume are separate aligned lanes under the audio lane. All three use one scrollable, zoomable time axis, playhead, fragment positions, and sticky lane labels. Vertical wheel movement zooms around the cursor; horizontal wheel movement and Shift+wheel scroll horizontally. Right-click empty curve space adds a point; right-click a point removes it. Endpoint points remain fixed. Left-drag moves points, with selected pitch cents and gain available for numeric adjustment. Generated phone guides, user markers, and curve points have distinct colors.
+Pitch and volume are separate aligned lanes under the audio lane. All three use one scrollable, zoomable time axis, playhead, fragment positions, and sticky lane labels. Ctrl+vertical wheel zooms around the cursor; plain vertical wheel scrolls vertically; horizontal wheel movement and Shift+wheel scroll horizontally. Right-click empty curve space adds a point; right-click a point removes it. Endpoint points remain fixed. Left-drag moves points, with selected pitch cents and gain available for numeric adjustment. Generated phone guides, user markers, and curve points have distinct colors.
 
 Pitch points store normalized positions and integer relative cents from -2400 to 2400. The curve is sampled over normalized output time, then its pitch ratios define one variable-rate resampling pass followed by one duration-restoring stretch, without F0 detection or mixing independent pitch renders. Existing `edit_regions.relative_pitch_cents` is added once as the base pitch, so the curve is additive and old edits are retained. Empty pitch curves continue through the legacy region renderer. The rendered curve is used by preview, WAV, and MP4 audio.
 

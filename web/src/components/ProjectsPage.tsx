@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 
-import { createProject, fetchAnalyses, fetchCollages, renameAnalysis } from "../api"
+import { fetchAnalyses, renameAnalysis } from "../api/analysis"
+import { createProject, fetchCollages } from "../api/projects"
 import { ANALYSIS_NICKNAME_MAX_LENGTH } from "../constants"
 import type { AnalysisSummary, CompositionProject, ProjectsPageProps } from "../types"
 

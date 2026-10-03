@@ -597,6 +597,14 @@ def test_professional_regions_round_trip_validate_and_preserve_contiguous_audio(
     assert loaded.segments[0].user_guide_source_ms == [140]
     assert (loaded.tempo_bpm, loaded.beats_per_bar, loaded.beat_division, loaded.grid_offset_units) == (137, 3, 96, 72)
     compositions.validate_preview_request(project_dir, request)
+    minimum_region = replace(segment, timeline_end_ms=1, user_guide_source_ms=[], edit_regions=[EditRegion("min", 100, 200, 1)])
+    maximum_region = replace(segment, timeline_end_ms=3200, user_guide_source_ms=[], edit_regions=[EditRegion("max", 100, 200, 3200)])
+    compositions._validate_request(replace(request, segments=[minimum_region]))
+    compositions._validate_request(replace(request, segments=[maximum_region]))
+    with pytest.raises(ValueError, match="outside the allowed range"):
+        compositions._validate_request(replace(request, segments=[replace(minimum_region, edit_regions=[EditRegion("below", 100, 200, 0)])]))
+    with pytest.raises(ValueError, match="outside the allowed range"):
+        compositions._validate_request(replace(request, segments=[replace(maximum_region, edit_regions=[EditRegion("above", 100, 200, 3201)])]))
     updated = update_composition(project_dir, saved.composition_id, request)
     assert updated.segments[0].edit_regions == regions
     with pytest.raises(ValueError, match="subdivision"):

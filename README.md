@@ -4,7 +4,7 @@
 
 서버의 `data/input/videos/`에 영상을 넣고 뷰어를 실행하면 **영상 분석 생성 → 완료된 분석 여러 개 선택 후 프로젝트 생성 → 프로젝트와 연결된 합성 생성** 순서로 작업할 수 있습니다. 웹 분석은 기본 OpenVINO GPU `large-v3` 모델, CTC 정렬, HuBERT 음향 단위 분석으로 실행됩니다. 분석 화면에서 모델·실행 방식·장치·정렬·추가 전사 모델·음향 단위 분석을 선택하고 작업을 일시정지·계속·중단할 수 있습니다. 필요한 모델이 없으면 다운로드 진행률을 표시하고 자동으로 준비합니다. 분석은 프로젝트와 별개이며, 완료된 분석을 선택해 프로젝트를 직접 만듭니다. 서버 시작 시에는 프로젝트를 자동 생성하지 않고 기존 분석 오디오 경로와 실제 프로젝트의 레거시 합성만 마이그레이션합니다. 프로젝트 메타데이터는 `data/projects/`, 합성과 내보내기 파일은 `data/collages/`에 독립적으로 저장됩니다.
 
-웹 화면은 `#/analysis`, `#/projects`, `#/collage/<project-id>`로 구분됩니다. 분석 화면에서 단계별 진행률과 오디오 추출·전사가 처리한 영상 구간의 비율을 볼 수 있습니다. 
+웹 화면은 `#/analysis`, `#/projects`, `#/collage/<project-id>`, `#/professional/<project-id>`로 구분됩니다. 분석 화면에서 단계별 진행률과 오디오 추출·전사가 처리한 영상 구간의 비율을 볼 수 있습니다. 전문 편집 화면은 합성의 소스 구간을 나눠 시간·피치·볼륨 곡선을 조정하고 undo/redo를 지원합니다.
 구현 파일과 데이터 흐름은 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)에 정리되어 있습니다.
 전문 합성의 기능 범위와 단계별 계획은 [전문 합성 편집기 명세](docs/PROFESSIONAL_SYNTHESIS_SPEC.md)에 정리되어 있습니다.
 
@@ -32,6 +32,20 @@ npm run build
 cd ..
 madnolia viewer
 ```
+
+## 개발 검증
+
+저장소 루트에서 Python 검사와 Ruff를 실행하고, 웹 프로젝트에서 Node 테스트 및 TypeScript/Vite 빌드를 실행합니다.
+
+```powershell
+py -3.11 -m pytest
+.venv/Scripts/ruff.exe check src tests installer scripts
+cd web
+npm test
+npm run build -- --configLoader native
+```
+
+브라우저 통합 스모크는 Python 3.11과 Chrome이 있는 환경에서 `py -3.11 web/tests/professional-browser-smoke.py`로 실행합니다. 전체 프로젝트 경계와 개발 흐름은 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)를 참고하세요.
 
 브라우저에서 `http://127.0.0.1:8000`을 엽니다. 영상과 waveform, 발화·비발화 구간, 단어, IPA phone을 동기화해서 확인할 수 있습니다.
 

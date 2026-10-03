@@ -1,0 +1,66 @@
+
+.collage { margin-top: 16px; padding: 18px; }
+.collage-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+.collage h2 { margin: 0; font-size: 22px; }
+.search-row { display: grid; grid-template-columns: minmax(110px, 150px) minmax(180px, 1fr) auto; align-items: end; gap: 10px; margin-top: 18px; }
+.search-row textarea, .search-row select, .assembly input, .assembly select { border: 1px solid #293542; border-radius: 8px; color: #dfe8f1; background: #0d131a; padding: 10px 12px; resize: vertical; }
+.search-row button, .candidate-actions button, .assembly button, .export-row button { border: 1px solid #2e4050; border-radius: 7px; color: #dfe8f1; background: #17222c; padding: 8px 11px; }
+button:disabled { cursor: not-allowed; opacity: .45; }
+.pronunciation { margin: 15px 0 9px; color: #8292a2; }
+.pronunciation strong { margin-left: 8px; color: #dfe8f1; }
+.phone-strip { display: flex; gap: 5px; overflow-x: auto; padding: 3px 0 11px; }
+.phone-strip button { display: grid; min-width: 47px; gap: 2px; padding: 7px; border: 1px solid #283744; border-radius: 7px; color: #aab9c7; background: #10171e; }
+.phone-strip button strong { color: #f8c267; font: 13px ui-monospace, monospace; }
+.phone-strip button small { color: #ff8ba0; }
+.phone-strip button.selected { border-color: #65a9ff; background: #16283a; }
+.phone-strip button.missing { border-color: #713346; background: #28131a; }
+.phone-picker { display: flex; min-width: 0; max-height: 70px; flex-wrap: wrap; align-content: flex-start; gap: 3px; overflow-y: auto; }
+.phone-picker button { display: grid; grid-template-columns: auto auto auto; align-items: baseline; gap: 4px; padding: 3px 6px; border-color: #283744; border-radius: 5px; color: #aab9c7; background: #10171e; }
+.phone-picker button span { max-width: 54px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.phone-picker button strong { color: #f8c267; font: 700 11px ui-monospace, monospace; }
+.phone-picker button small { color: #7f91a2; font: 9px ui-monospace, monospace; }
+.phone-picker button.selected { border-color: #65a9ff; color: #e5f2ff; background: #16283a; }
+.phone-picker button.missing { border-color: #713346; background: #28131a; }
+.candidate-tabs { display: flex; gap: 6px; min-width: 0; }
+.candidate-tabs button { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 6px 10px; border: 1px solid #293542; border-radius: 7px; color: #9aa9b7; background: #101820; }
+.candidate-tabs button.selected { border-color: #65a9ff; color: #e5f2ff; background: #16283a; }
+.candidate-tabs button span { overflow: hidden; color: #7f91a2; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.candidate-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 8px; max-height: 360px; overflow: auto; }
+.candidate { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 6px 7px; border: 1px solid #25313c; border-radius: 7px; background: #0c1218; }
+.candidate > div:first-child { display: grid; min-width: 0; gap: 4px; padding-left: 8px; }
+.candidate span { color: #8292a2; font-size: 11px; }
+.candidate .candidate-source { color: #bad9f5; overflow-wrap: anywhere; font-size: 12px; }
+.candidate-primary { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.candidate-primary strong { overflow: hidden; color: #f0f5fa; text-overflow: ellipsis; white-space: nowrap; font: 700 11px ui-monospace, monospace; }
+.candidate-primary span { flex: 0 0 auto; padding: 1px 4px; border-radius: 3px; background: #18232d; font: 9px ui-monospace, monospace; }
+.candidate.approximate { border-color: #713346; }
+.candidate.fallback { border-color: #8a6531; background: #221a0f; }
+.candidate.playing { border-color: #65a9ff; background: #14283a; box-shadow: inset 3px 0 #65a9ff, 0 0 0 1px #65a9ff55; }
+.candidate-playing-mark { position: absolute; top: 3px; left: 4px; display: none; color: #65a9ff; font-size: 8px; font-style: normal; }
+.candidate.playing .candidate-playing-mark { display: block; }
+.candidate .approximation { color: #ff91a5; }
+.candidate .fallback-label { display: inline-block; margin-right: 6px; padding: 2px 5px; border: 1px solid #9b7135; border-radius: 4px; color: #ffd18a; background: #38250d; font-size: 9px; }
+.candidate-actions { display: flex; flex-shrink: 0; gap: 5px; }
+.assembly { margin-top: 20px; padding-top: 16px; border-top: 1px solid #202b35; }
+.assembly-toolbar { display: grid; gap: 8px; }
+.assembly-controls { display: grid; grid-template-columns: minmax(150px, 1.5fr) repeat(2, minmax(118px, 1fr)) minmax(92px, .65fr); gap: 8px; min-width: 0; }
+.assembly-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.control-field { display: grid; min-width: 0; align-content: end; gap: 4px; }
+.control-field > span { overflow: hidden; color: #8091a3; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.control-field input, .control-field select, .control-field textarea { width: 100%; min-width: 0; padding: 7px 9px; }
+.primary-action { border-color: #356994; color: #eef8ff; background: #174068; }
+.primary-action:hover:not(:disabled) { border-color: #65a9ff; background: #20547f; }
+.assembly-preview { display: block; width: min(100%, 480px); margin-top: 12px; }
+.assembly-track .segment-gap { display: grid; gap: 4px; color: #aebcc9; font-size: 11px; }
+.assembly-track .segment-gap input { width: 95px; padding: 4px 6px; }
+.assembly-track .segment-stretch { display: grid; gap: 4px; color: #aebcc9; font-size: 11px; }
+.assembly-track .segment-stretch input { width: 95px; padding: 4px 6px; }
+.assembly-track { display: flex; gap: 5px; min-height: 96px; margin-top: 12px; padding: 10px; overflow-x: auto; border: 1px solid #202b35; border-radius: 8px; background: #090e13; }
+.assembly-track article { display: grid; flex: 0 0 auto; align-content: center; min-width: 150px; gap: 4px; padding: 9px; border: 1px solid #32644f; border-radius: 7px; background: #10231c; }
+.assembly-track article.approximate { border-color: #713346; background: #28131a; }
+.assembly-track article span { color: #8292a2; font-size: 10px; }
+.assembly-track article div { display: flex; gap: 4px; margin-top: 3px; }
+.assembly-track article button { padding: 3px 8px; }
+.assembly-track article.hidden { display: none; }
+.export-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 10px; }
+.export-row span { margin-left: auto; color: #8fa0af; font-size: 12px; }

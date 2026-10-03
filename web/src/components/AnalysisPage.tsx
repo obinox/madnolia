@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 
-import { controlAnalysisJob, fetchAnalysisHardware, fetchAnalysisJob, fetchVideos, startAnalysis, uploadVideo } from "../api"
+import { controlAnalysisJob, fetchAnalysisHardware, fetchAnalysisJob, fetchVideos, startAnalysis, uploadVideo } from "../api/analysis"
 import {
   VIDEO_UPLOAD_ACCEPT,
   ANALYSIS_MODEL_OPTIONS,

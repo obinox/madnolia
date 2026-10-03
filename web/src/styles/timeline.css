@@ -1,0 +1,22 @@
+
+.timeline-panel { margin-top: 16px; padding: 13px; }
+.timeline-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 0 2px 11px; }
+.waveform-status { flex: 0 0 auto; color: #657789; font: 10px ui-monospace, monospace; }
+.waveform-status.loading { color: #65a9ff; }
+.legend, .zoom-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.legend span { display: flex; align-items: center; gap: 5px; color: #9aa9b7; font-size: 11px; }
+.legend i { width: 8px; height: 8px; border-radius: 2px; }
+.legend .speech { background: #27c499; }
+.legend .non-speech { background: #303943; }
+.legend .word { background: #a78bfa; }
+.legend .phone { background: #f59e63; }
+.zoom-controls { gap: 6px; }
+.zoom-controls button { padding: 5px 9px; font-size: 12px; }
+.timeline-shell { overflow: hidden; overscroll-behavior: contain; border: 1px solid #202b35; border-radius: 8px; background: #0d1117; }
+.timeline-shell canvas { display: block; touch-action: none; cursor: crosshair; }
+.timeline-hint { display: flex; justify-content: space-between; padding: 8px 2px 0; color: #667789; font: 11px ui-monospace, monospace; }
+
+.transcript { margin-top: 16px; padding: 18px; }
+.transcript p:last-child { max-height: 180px; margin: 0; overflow: auto; color: #b9c5cf; line-height: 1.8; white-space: pre-wrap; }
+.empty, .error { padding: 24px; }
+.error { margin-bottom: 16px; border: 1px solid #713346; border-radius: 9px; color: #ff91a5; background: #28131a; }

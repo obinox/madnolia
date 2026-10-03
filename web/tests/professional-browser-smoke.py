@@ -102,7 +102,7 @@ async def run_smoke() -> None:
         chrome_log = temp_root / "chrome.log"
         with chrome_log.open("wb") as log:
             chrome = subprocess.Popen([str(CHROME), "--headless=new", "--no-sandbox", "--disable-gpu",
-                "--window-size=1440,1000", f"--remote-debugging-port={debug_port}",
+                "--window-size=1440,760", f"--remote-debugging-port={debug_port}",
                 f"--user-data-dir={temp_root / 'chrome-profile'}", "--remote-allow-origins=*",
                 "--no-first-run", "--disable-extensions", "--disable-background-networking", "about:blank"], stdout=log, stderr=subprocess.STDOUT)
         version = None
@@ -175,34 +175,46 @@ async def run_smoke() -> None:
                 raise AssertionError(f"Timed out: {expression}; state={diagnostic}; requests={request_log}; console={runtime_errors}")
 
             try:
-                await command("Fetch.enable", {"patterns": [{"urlPattern": "*://127.0.0.1:*/api/*"}]})
+                await command("Fetch.enable", {"patterns": [{"urlPattern": f"http://127.0.0.1:{port}/api/*"}]})
                 await command("Page.enable"); await command("Runtime.enable")
                 await command("Page.navigate", {"url": f"http://127.0.0.1:{port}/#/professional/smoke"})
                 await wait_for("document.querySelectorAll('.professional-audio-fragment').length===12")
                 await wait_for("document.querySelectorAll('.professional-curve-lane.pitch ellipse').length===24 && document.querySelectorAll('.professional-curve-lane.volume ellipse').length===24 && document.querySelectorAll('.professional-curve ellipse').length===48")
                 first_pitch_curve = ".professional-curve-lane.pitch .professional-curve-fragment:first-of-type .professional-curve"
                 await wait_for(f"document.querySelector('{first_pitch_curve}').querySelectorAll('ellipse').length===2")
+                await wait_for("document.querySelector('.professional-waveform polygon')?.getAttribute('points').trim().split(/\\s+/).length>800")
                 await evaluate("window.__wheelDiagnostics=[];document.addEventListener('wheel',e=>{const n=document.querySelector('.professional-timeline-scroll');const r=n.getBoundingClientRect();window.__wheelDiagnostics.push({shiftKey:e.shiftKey,deltaX:e.deltaX,deltaY:e.deltaY,target:e.target?.className?.baseVal||e.target?.className||e.target?.tagName,scrollWidth:n.scrollWidth,clientWidth:n.clientWidth,scrollLeft:n.scrollLeft,bounds:{left:r.left,top:r.top,width:r.width,height:r.height}})},{capture:true,passive:true})")
-                initial = await evaluate("(() => {const e=document.querySelector('.professional-timeline-scroll');return {width:e.scrollWidth,client:e.clientWidth}})()")
+                initial = await evaluate("(() => {const e=document.querySelector('.professional-timeline-scroll');e.style.height='180px';e.style.flex='0 0 180px';return {width:e.scrollWidth,client:e.clientWidth,scrollHeight:e.scrollHeight,clientHeight:e.clientHeight}})()")
                 widths = await evaluate("[...document.querySelectorAll('.professional-audio-fragment')].map(e=>[Number(e.style.width.replace('px','')),Number(e.style.left.replace('px',''))])")
                 timeline_origin = await evaluate("parseFloat(document.querySelector('.professional-time-ruler').style.left)")
                 assert all(abs(width - 0.12 * 1000) < 1 for width, _ in widths), f"Fragments have an unexpected artificial width: {widths}"
+                label_layout = await evaluate("(() => {const e=document.querySelector('.professional-fragment-label'),s=getComputedStyle(e),r=e.getBoundingClientRect(),f=e.parentElement,b=f.querySelector('.professional-fragment-body').getBoundingClientRect(),w=f.querySelector('.professional-waveform'),p=w.querySelector('polygon'),h=f.querySelector('.professional-edge-handle.right').getBoundingClientRect();return {height:r.height,lineHeight:s.lineHeight,color:s.color,background:s.backgroundColor,bodyTop:b.top,bodyHeight:b.height,guidesTop:f.querySelector('.professional-guides i').getBoundingClientRect().top,polygonPoints:p.getAttribute('points').trim().split(/\\s+/).length,handleHeight:h.height}})()")
+                assert label_layout["height"] >= 22 and float(label_layout["lineHeight"].replace("px", "")) >= 16 and label_layout["color"] != "rgba(0, 0, 0, 0)", f"IPA label can clip or fade glyphs: {label_layout}"
+                assert label_layout["guidesTop"] >= label_layout["bodyTop"] - 1, f"Fragment guides overlap the IPA label: {label_layout}"
+                assert label_layout["bodyHeight"] >= 44 and label_layout["polygonPoints"] > 800 and label_layout["handleHeight"] >= 30, f"Waveform, label, or edge handle geometry is too small: {label_layout}"
                 wheel = await evaluate("(() => {const n=document.querySelector('.professional-timeline-scroll'),c=document.querySelector('.professional-timeline-content'),r=n.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,selector:'.professional-timeline-content'}})()")
                 await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":wheel["x"],"y":wheel["y"]})
                 await wait_for("document.elementFromPoint("+str(wheel["x"])+","+str(wheel["y"])+").closest('.professional-timeline-content')!==null")
+                before_plain_wheel = await evaluate("(() => {const e=document.querySelector('.professional-timeline-scroll');return {top:e.scrollTop,width:parseFloat(document.querySelector('.professional-audio-fragment').style.width)}})()")
+                await command("Input.dispatchMouseEvent", {"type":"mouseWheel","x":wheel["x"],"y":wheel["y"],"deltaY":120})
+                await wait_for("document.querySelector('.professional-timeline-scroll').scrollTop>"+str(before_plain_wheel["top"]))
+                plain_wheel = await evaluate("(() => ({top:document.querySelector('.professional-timeline-scroll').scrollTop,width:parseFloat(document.querySelector('.professional-audio-fragment').style.width)}))()")
+                assert plain_wheel["width"] == before_plain_wheel["width"], f"Plain vertical wheel changed zoom: {before_plain_wheel} to {plain_wheel}"
+                await evaluate("(() => {const e=document.querySelector('.professional-timeline-scroll');e.scrollTop=0})()")
                 before_zoom = widths[0][0]
-                await command("Input.dispatchMouseEvent", {"type": "mouseWheel", "x": wheel["x"], "y": wheel["y"], "deltaY": -700})
+                await command("Input.dispatchMouseEvent", {"type": "mouseWheel", "x": wheel["x"], "y": wheel["y"], "deltaY": -700, "modifiers": 2})
                 await wait_for("parseFloat(document.querySelector('.professional-audio-fragment').style.width)>"+str(before_zoom))
                 await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
                 anchor = await evaluate("(() => {const e=document.querySelector('.professional-timeline-scroll');const r=e.getBoundingClientRect();const scale=parseFloat(document.querySelector('.professional-audio-fragment').style.width)/1000;const x="+str(wheel["x"])+";return {x,y:r.top+8,time:(e.scrollLeft+x-r.left-"+str(timeline_origin)+")/scale}})()")
                 await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":anchor["x"],"y":anchor["y"]})
                 await wait_for("document.elementFromPoint("+str(anchor["x"])+","+str(anchor["y"])+").closest('.professional-timeline-content')!==null")
                 zoomed_width = await evaluate("parseFloat(document.querySelector('.professional-audio-fragment').style.width)")
-                await command("Input.dispatchMouseEvent", {"type":"mouseWheel","x":anchor["x"],"y":anchor["y"],"deltaY":250})
+                await command("Input.dispatchMouseEvent", {"type":"mouseWheel","x":anchor["x"],"y":anchor["y"],"deltaY":250,"modifiers":2})
                 await wait_for("parseFloat(document.querySelector('.professional-audio-fragment').style.width)<"+str(zoomed_width))
                 await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
-                anchored = await evaluate("(() => {const e=document.querySelector('.professional-timeline-scroll');const r=e.getBoundingClientRect();const scale=parseFloat(document.querySelector('.professional-audio-fragment').style.width)/1000;return (e.scrollLeft+"+str(anchor["x"])+"-r.left-"+str(timeline_origin)+")/scale})()")
-                assert abs(anchored-anchor["time"])<2, f"Zoom cursor anchor moved: {anchor['time']} to {anchored}"
+                anchored = await evaluate("(() => {const e=document.querySelector('.professional-timeline-scroll');const r=e.getBoundingClientRect();const scale=parseFloat(document.querySelector('.professional-audio-fragment').style.width)/1000;return {time:(e.scrollLeft+"+str(anchor["x"])+"-r.left-"+str(timeline_origin)+")/scale,scale,scrollLeft:e.scrollLeft}})()")
+                anchor_error_px = abs(anchored["time"]-anchor["time"]) * anchored["scale"]
+                assert anchor_error_px <= 0.6, f"Zoom cursor anchor moved {anchor_error_px:.3f}px (limit 0.6px): time {anchor['time']} -> {anchored['time']}ms, final scale {anchored['scale']}px/ms, scrollLeft {anchored['scrollLeft']}px"
                 await evaluate("(() => {const e=document.querySelector('.professional-timeline-scroll');e.scrollLeft=0})()")
                 wheel = await evaluate("(() => {const r=document.querySelector('.professional-timeline-scroll').getBoundingClientRect();return {x:r.left+r.width*.5,y:r.top+r.height*.5}})()")
                 await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":wheel["x"],"y":wheel["y"]})
@@ -224,11 +236,10 @@ async def run_smoke() -> None:
                 joined_handles = await evaluate("(() => {const a=document.querySelectorAll('.professional-audio-fragment')[2],b=document.querySelectorAll('.professional-audio-fragment')[3],rear=a.querySelector('.professional-edge-handle.right').getBoundingClientRect(),front=b.querySelector('.professional-edge-handle.left').getBoundingClientRect();return {rear:{x:rear.left+rear.width/2,y:rear.top+rear.height/2},front:{x:front.left+front.width/2,y:front.top+front.height/2}}})()")
                 hit_targets = await evaluate("(() => {const a=document.elementFromPoint("+str(joined_handles["rear"]["x"])+","+str(joined_handles["rear"]["y"])+"),b=document.elementFromPoint("+str(joined_handles["front"]["x"])+","+str(joined_handles["front"]["y"])+");return {rear:a?.classList.contains('right'),front:b?.classList.contains('left')}})()")
                 assert hit_targets == {"rear": True, "front": True}, f"Joined fragment handles mask each other: {joined_handles} {hit_targets}"
-                lane_alignment = await evaluate("(() => {const a=[...document.querySelectorAll('.professional-audio-fragment')].slice(0,2);const c=[...document.querySelectorAll('.professional-curve-fragment')].slice(0,2);const ruler=document.querySelector('.professional-time-ruler');return {audio:a.map(x=>[x.getBoundingClientRect().left,x.dataset.lane]),curve:c.map(x=>[x.getBoundingClientRect().left,x.dataset.lane]),ruler:ruler.getBoundingClientRect().left,grid:getComputedStyle(document.querySelector('.professional-timeline-content')).backgroundPositionX,labels:[...ruler.children].map(x=>x.getBoundingClientRect().left)}})()")
+                lane_alignment = await evaluate("(() => {const a=[...document.querySelectorAll('.professional-audio-fragment')].slice(0,2);const c=[...document.querySelectorAll('.professional-curve-fragment')].slice(0,2);const ruler=document.querySelector('.professional-time-ruler'),grid=document.querySelector('.professional-grid-layer');return {audio:a.map(x=>[x.getBoundingClientRect().left,x.dataset.lane]),curve:c.map(x=>[x.getBoundingClientRect().left,x.dataset.lane]),ruler:ruler.getBoundingClientRect().left,gridLeft:grid.getBoundingClientRect().left,gridPosition:getComputedStyle(grid).backgroundPositionX,labels:[...ruler.children].map(x=>x.getBoundingClientRect().left)}})()")
                 assert lane_alignment["audio"] == lane_alignment["curve"], f"Audio and curve lane positions differ: {lane_alignment}"
-                grid_origin = float(lane_alignment["grid"].split(",", 1)[0].removesuffix("px"))
                 ruler_origin = await evaluate("(() => {const r=document.querySelector('.professional-time-ruler');return r.parentElement.getBoundingClientRect().left+parseFloat(r.style.left)})()")
-                assert abs(grid_origin-timeline_origin)<1 and abs(lane_alignment["labels"][0]-ruler_origin)<1, f"Grid or ruler origin is obscured: {lane_alignment}"
+                assert abs(lane_alignment["gridLeft"]-ruler_origin)<1 and abs(lane_alignment["labels"][0]-ruler_origin)<1, f"Grid or ruler origin is obscured: {lane_alignment}"
                 marker = await evaluate("(() => {const r=document.querySelector('.professional-guides i').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()")
                 await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":marker["x"],"y":marker["y"],"button":"right"})
                 await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":marker["x"],"y":marker["y"],"button":"right"})
@@ -301,6 +312,47 @@ async def run_smoke() -> None:
                 shift_after = await evaluate("(() => {const f=document.querySelector('.professional-audio-fragment');return {left:parseFloat(f.style.left),width:parseFloat(f.style.width),next:document.querySelectorAll('.professional-audio-fragment')[1].style.left}})()")
                 assert shift_after["left"] > shift_before["left"] and shift_after["width"] == shift_before["width"] and shift_after["next"] == shift_before["next"], f"SHIFT did not move the syllable as a unit: selected={shift_selection['selected']} {shift_before} {shift_after}"
 
+                await scroll_to_fragment('.professional-audio-fragment:first-of-type')
+                suffix_before = await evaluate("[...document.querySelectorAll('.professional-audio-fragment')].map(e=>[parseFloat(e.style.left),parseFloat(e.style.width)])")
+                grabbedIndex = 1
+                suffix_drag = await evaluate("(() => {const e=document.querySelectorAll('.professional-fragment-body')[1],r=e.getBoundingClientRect();return {x:r.left+r.width*.35,y:r.top+r.height/2}})()")
+                await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":suffix_drag["x"],"y":suffix_drag["y"],"button":"left","modifiers":10})
+                await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":suffix_drag["x"]+15,"y":suffix_drag["y"],"button":"left","buttons":1,"modifiers":10})
+                await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":suffix_drag["x"]+30,"y":suffix_drag["y"],"button":"left","buttons":1,"modifiers":10})
+                await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":suffix_drag["x"]+30,"y":suffix_drag["y"],"button":"left","modifiers":10})
+                await wait_for("parseFloat(document.querySelectorAll('.professional-audio-fragment')[1].style.left)>"+str(suffix_before[grabbedIndex][0]))
+                suffix_after = await evaluate("[...document.querySelectorAll('.professional-audio-fragment')].map(e=>[parseFloat(e.style.left),parseFloat(e.style.width)])")
+                moved_delta = suffix_after[grabbedIndex][0]-suffix_before[grabbedIndex][0]
+                assert all(abs((after[0]-before[0])-moved_delta)<1 for before,after in zip(suffix_before,suffix_after) if before[0]>suffix_before[grabbedIndex][0]), f"Ctrl+Shift did not move the strict suffix equally: {suffix_before} {suffix_after}"
+                assert all(abs(after[0]-before[0])<1 for index,(before,after) in enumerate(zip(suffix_before,suffix_after)) if index != grabbedIndex and before[0]<=suffix_before[grabbedIndex][0]), f"Ctrl+Shift moved an earlier or same-start syllable: {suffix_before} {suffix_after}"
+                assert abs(moved_delta)>0, f"Ctrl+Shift did not move the grabbed syllable: {suffix_before} {suffix_after}"
+                assert [width for _,width in suffix_after] == [width for _,width in suffix_before], f"Ctrl+Shift changed syllable durations: {suffix_before} {suffix_after}"
+                await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"z","code":"KeyZ","modifiers":2})
+                await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"z","code":"KeyZ","modifiers":2})
+                await wait_for("[...document.querySelectorAll('.professional-audio-fragment')].every((e,i)=>Math.abs(parseFloat(e.style.left)-"+str([start for start,_ in suffix_before])+"[i])<1)")
+                suffix_undo = await evaluate("[...document.querySelectorAll('.professional-audio-fragment')].map(e=>[parseFloat(e.style.left),parseFloat(e.style.width)])")
+                assert [start for start,_ in suffix_undo] == [start for start,_ in suffix_before], "Ctrl+Z did not undo all pointer moves as one gesture"
+                assert [width for _,width in suffix_undo] == [width for _,width in suffix_before], "Ctrl+Z changed syllable durations"
+                await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"y","code":"KeyY","modifiers":2})
+                await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"y","code":"KeyY","modifiers":2})
+                await wait_for("[...document.querySelectorAll('.professional-audio-fragment')].every((e,i)=>Math.abs(parseFloat(e.style.left)-"+str([start for start,_ in suffix_after])+"[i])<1)")
+                suffix_redo = await evaluate("[...document.querySelectorAll('.professional-audio-fragment')].map(e=>[parseFloat(e.style.left),parseFloat(e.style.width)])")
+                assert [start for start,_ in suffix_redo] == [start for start,_ in suffix_after], "Ctrl+Y did not redo all pointer moves"
+                assert [width for _,width in suffix_redo] == [width for _,width in suffix_before], "Ctrl+Y changed syllable durations"
+                await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"z","code":"KeyZ","modifiers":2})
+                await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"z","code":"KeyZ","modifiers":2})
+                await wait_for("[...document.querySelectorAll('.professional-audio-fragment')].every((e,i)=>Math.abs(parseFloat(e.style.left)-"+str([start for start,_ in suffix_before])+"[i])<1)")
+                await evaluate("(() => {const e=document.querySelector('[aria-label=\"BPM\"]'),setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(e,'137');e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));e.blur()})()")
+                await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"y","code":"KeyY","modifiers":2})
+                await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"y","code":"KeyY","modifiers":2})
+                assert await evaluate("document.querySelector('[aria-label=\"BPM\"]').value==='137'")
+                assert await evaluate("[...document.querySelectorAll('.professional-audio-fragment')].map(e=>parseFloat(e.style.left))") == [start for start,_ in suffix_before], "A new tempo edit did not invalidate redo"
+                await evaluate("document.querySelector('[aria-label=\"BPM\"]').focus()")
+                await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"z","code":"KeyZ","modifiers":2})
+                await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"z","code":"KeyZ","modifiers":2})
+                assert await evaluate("parseFloat(document.querySelector('.professional-audio-fragment').style.left)") == suffix_before[0][0], "Ctrl+Z in a number input changed the composition"
+                await evaluate("document.activeElement.blur()")
+
                 await scroll_to_fragment('.professional-audio-fragment:last-of-type')
                 await evaluate("(() => {const e=document.querySelector('.professional-timeline-scroll');e.scrollLeft=Math.min(e.scrollWidth-e.clientWidth,e.scrollLeft+100)})()")
                 await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":" ","code":"Space"})
@@ -330,6 +382,18 @@ async def run_smoke() -> None:
                 await evaluate("(() => {const e=document.querySelector('[aria-label=\\\"마디 오프셋 (1/96)\\\"]');const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(e,'12');e.dispatchEvent(new Event('input',{bubbles:true}))})()")
                 await wait_for("document.querySelector('.professional-timeline-tools select').value==='24'")
                 assert await evaluate("[...document.querySelectorAll('.professional-audio-fragment')].map(e=>e.style.left)") == audio_positions_before_offset, "Grid offset moved audio fragments"
+                await evaluate("(() => {const e=document.querySelectorAll('.professional-timeline-tools input[type=number]')[2];const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(e,'192');e.dispatchEvent(new Event('input',{bubbles:true}))})()")
+                await wait_for("document.querySelectorAll('.professional-timeline-tools input[type=number]')[2].value==='192'")
+                positive_grid = await evaluate("(() => {const e=document.querySelector('.professional-grid-layer'),r=e.getBoundingClientRect(),o=document.querySelector('.professional-timeline-content'),origin=parseFloat(document.querySelector('.professional-time-ruler').style.left),scale=parseFloat(document.querySelector('.professional-audio-fragment').style.width)/1000,offset=Number(document.querySelectorAll('.professional-timeline-tools input[type=number]')[2].value)*(60000/Number(document.querySelector('[aria-label=\"BPM\"]').value))/24;const bars=[...document.querySelectorAll('.professional-time-ruler span')];return {gridLeft:parseFloat(e.style.left)-origin,gridWidth:r.width,gridPosition:getComputedStyle(e).backgroundPositionX,offsetPx:offset*scale,labels:bars.map(x=>({text:x.textContent,left:x.style.left}))}})()")
+                assert positive_grid["gridWidth"] > 0 and abs(positive_grid["gridLeft"]-positive_grid["offsetPx"]) < 1 and all(value.strip().startswith("0px") for value in positive_grid["gridPosition"].split(",")) and all(float(label["left"].replace("px", "")) >= positive_grid["offsetPx"] for label in positive_grid["labels"]), f"Positive offset drew grid or ruler marks before its origin: {positive_grid}"
+                assert positive_grid["labels"] and positive_grid["labels"][0]["text"] == "1", f"Positive offset did not start ruler numbering at bar 1: {positive_grid}"
+                await evaluate("(() => {const e=document.querySelectorAll('.professional-timeline-tools input[type=number]')[2];const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(e,'-12');e.dispatchEvent(new Event('input',{bubbles:true}))})()")
+                await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
+                negative_grid = await evaluate("(() => {const e=document.querySelector('.professional-grid-layer'),s=getComputedStyle(e),offset=Number(document.querySelectorAll('.professional-timeline-tools input[type=number]')[2].value),bpm=Number(document.querySelector('[aria-label=\"BPM\"]').value),scale=parseFloat(document.querySelector('.professional-audio-fragment').style.width)/1000,offsetMs=offset*(60000/bpm)/24,origin=parseFloat(document.querySelector('.professional-time-ruler').style.left);return {left:parseFloat(e.style.left),origin,position:s.backgroundPositionX,phase:parseFloat(s.backgroundPositionX.split(',')[0]),expectedPhase:Math.min(0,offsetMs)*scale,offset,bpm,scale,audio:[...document.querySelectorAll('.professional-audio-fragment')].map(x=>x.style.left)}})()")
+                assert negative_grid["offset"] == -12 and abs(negative_grid["phase"]-negative_grid["expectedPhase"]) < 1 and abs(negative_grid["left"]-negative_grid["origin"]) < 1, f"Negative grid phase or origin is incorrect: {negative_grid}"
+                assert negative_grid["audio"] == audio_positions_before_offset, f"Grid offset moved audio fragments: {negative_grid}"
+                await evaluate("(() => {const e=document.querySelectorAll('.professional-timeline-tools input[type=number]')[2];const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(e,'12');e.dispatchEvent(new Event('input',{bubbles:true}))})()")
+                await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
                 await scroll_to_fragment('.professional-curve-lane.pitch .professional-curve-fragment:first-of-type .professional-curve')
                 pitch = await evaluate("(() => {const e=document.querySelector('.professional-curve.pitch');const r=e.getBoundingClientRect();return {x:r.left+r.width*.5,y:r.top+r.height*.3}})()")
                 await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":pitch["x"],"y":pitch["y"],"button":"right"})
