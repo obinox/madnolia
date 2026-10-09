@@ -1,11 +1,14 @@
-import type { ApiErrorResponse } from "../types"
+import type { ApiError, ApiErrorResponse } from "../types"
 
-const responseError = async (response: Response): Promise<string> => {
+export const responseError = async (response: Response): Promise<ApiError> => {
+  let message = `${response.status} ${response.statusText}`
   try {
     const body = await response.json() as ApiErrorResponse
-    if (typeof body.detail === "string") return body.detail
+    if (typeof body.detail === "string") message = body.detail
   } catch { }
-  return `${response.status} ${response.statusText}`
+  const error = new Error(message) as ApiError
+  error.status = response.status
+  return error
 }
 
 export const request = async <T>(
@@ -18,6 +21,6 @@ export const request = async <T>(
     signal,
     headers: init?.body ? { "Content-Type": "application/json", ...init.headers } : init?.headers,
   })
-  if (!response.ok) throw new Error(await responseError(response))
+  if (!response.ok) throw await responseError(response)
   return response.json() as Promise<T>
 }

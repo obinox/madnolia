@@ -25,13 +25,113 @@ from madnolia.constants import (
     PROFESSIONAL_PITCH_MIN_CENTS,
     PROFESSIONAL_TEMPO_MAX_BPM,
     PROFESSIONAL_TEMPO_MIN_BPM,
+    PROFESSIONAL_VIBRATO_DEPTH_MAX_CENTS,
+    PROFESSIONAL_VIBRATO_RATE_MAX_HZ,
+    PIANO_ROLL_NOTE_MIN_DURATION_MS,
 )
 from madnolia.types.common import (
     CompositionMode,
     PhoneAlignmentOperation,
+    PhonePitchOwnerRef,
+    PhoneUnit,
     SaveCompositionRequest,
     TimelineSegment,
 )
+
+
+def _validate_pitch_owner_refs(segments: list[TimelineSegment]) -> None:
+    segments_by_id = {segment.segment_id: segment for segment in segments}
+    units = {
+        (segment.segment_id, unit.phone_unit_id): unit
+        for segment in segments
+        for unit in segment.phone_units
+    }
+    for segment in segments:
+        for unit in segment.phone_units:
+            reference = unit.pitch_owner_ref
+            if reference is None:
+                continue
+            key = (reference.segment_id, reference.phone_unit_id)
+            owner = units.get(key)
+            if owner is None:
+                raise ValueError("Phone pitch owner does not exist in the composition.")
+            if key == (segment.segment_id, unit.phone_unit_id):
+                continue
+            owner_segment = segments_by_id[reference.segment_id]
+            if owner_segment.lane != segment.lane or owner_segment.segment_id != segment.segment_id and not (
+                segment.timeline_end_ms == owner_segment.timeline_start_ms
+                or owner_segment.timeline_end_ms == segment.timeline_start_ms
+            ):
+                raise ValueError("Cross-segment phone pitch owners require contiguous segments on the same lane.")
+            owner_reference = owner.pitch_owner_ref
+            if owner_reference not in (
+                None,
+                PhonePitchOwnerRef(reference.segment_id, reference.phone_unit_id),
+            ):
+                raise ValueError("Phone pitch owners cannot be chained or cyclic.")
+            if not owner.pitch_points:
+                raise ValueError("Attached phones require an owner pitch curve.")
+            if unit.pitch_points:
+                raise ValueError("Attached phones use their owner's pitch points.")
+
+
+def _validate_phone_pitch_settings(unit: PhoneUnit, duration_ms: int) -> None:
+    if (
+        not isinstance(unit.target_pitch_strength_percent, int)
+        or isinstance(unit.target_pitch_strength_percent, bool)
+        or not 0 <= unit.target_pitch_strength_percent <= 100
+    ):
+        raise ValueError("Phone pitch strength must be an integer from 0 to 100.")
+    if (
+        not isinstance(unit.vibrato_depth_cents, int)
+        or isinstance(unit.vibrato_depth_cents, bool)
+        or not 0 <= unit.vibrato_depth_cents <= PROFESSIONAL_VIBRATO_DEPTH_MAX_CENTS
+    ):
+        raise ValueError("Vibrato depth must be a nonnegative number of cents.")
+    if (
+        isinstance(unit.vibrato_rate_hz, bool)
+        or not isinstance(unit.vibrato_rate_hz, (int, float))
+        or not math.isfinite(unit.vibrato_rate_hz)
+        or not 0 <= unit.vibrato_rate_hz <= PROFESSIONAL_VIBRATO_RATE_MAX_HZ
+    ):
+        raise ValueError("Vibrato rate must be between 0 and 20 Hz.")
+    if (
+        not isinstance(unit.vibrato_start_ms, int)
+        or isinstance(unit.vibrato_start_ms, bool)
+        or not 0 <= unit.vibrato_start_ms <= duration_ms
+    ):
+        raise ValueError("Vibrato start must be within the phone duration.")
+    points = unit.pitch_points
+    if points:
+        if len(points) < 2 or points[0].position != 0 or points[-1].position != 1:
+            raise ValueError("Phone pitch points must start at 0 and end at 1.")
+        if any(
+            isinstance(point.position, bool)
+            or not isinstance(point.position, (int, float))
+            or not math.isfinite(point.position)
+            or not 0 <= point.position <= 1
+            or isinstance(point.midi, bool)
+            or not isinstance(point.midi, (int, float))
+            or not math.isfinite(point.midi)
+            or not PITCH_MIN_MIDI <= point.midi <= PITCH_MAX_MIDI
+            for point in points
+        ):
+            raise ValueError("Phone pitch point values are outside the allowed range.")
+        if any(left.position >= right.position for left, right in pairwise(points)):
+            raise ValueError("Phone pitch point positions must increase.")
+        if unit.pitch_owner_ref is None:
+            raise ValueError("Phone pitch points require a pitch owner.")
+
+
+def _source_to_output_ms(segment: TimelineSegment, source_ms: int) -> float:
+    output_offset = 0.0
+    for region in segment.edit_regions:
+        if source_ms <= region.source_end_ms:
+            source_duration = max(1, region.source_end_ms - region.source_start_ms)
+            local = min(source_duration, max(0, source_ms - region.source_start_ms))
+            return output_offset + local * region.output_duration_ms / source_duration
+        output_offset += region.output_duration_ms
+    return output_offset
 
 
 def _validate_request(request: SaveCompositionRequest) -> None:
@@ -54,6 +154,32 @@ def _validate_request(request: SaveCompositionRequest) -> None:
         raise ValueError("Unsupported beat subdivision.")
     if not isinstance(request.grid_offset_units, int) or isinstance(request.grid_offset_units, bool):
         raise ValueError("Grid offset must be an integer number of 1/96 whole-note units.")  # noqa: TRY004
+    if request.pitch_notes and (request.mode != CompositionMode.PROFESSIONAL or any(not segment.edit_regions for segment in request.segments)):
+        raise ValueError("Pitch notes require professional segments with edit regions.")
+    note_ids: set[str] = set()
+    for note in request.pitch_notes:
+        if not note.note_id or note.note_id in note_ids:
+            raise ValueError("Pitch note IDs must be nonempty and unique.")
+        note_ids.add(note.note_id)
+        if any(not isinstance(value, int) or isinstance(value, bool) for value in (note.start_ms, note.end_ms)):
+            raise ValueError("Pitch note bounds must be integer milliseconds.")
+        if note.start_ms < 0 or note.end_ms - note.start_ms < PIANO_ROLL_NOTE_MIN_DURATION_MS:
+            raise ValueError("Pitch notes must be at least 20 milliseconds long and start at or after zero.")
+        points = note.pitch_points
+        if len(points) < 2 or points[0].position != 0 or points[-1].position != 1:
+            raise ValueError("Pitch note curves must start at 0 and end at 1.")
+        if any(
+            isinstance(point.position, bool)
+            or not isinstance(point.position, (int, float))
+            or not math.isfinite(point.position)
+            or not 0 <= point.position <= 1
+            or isinstance(point.midi, bool)
+            or not isinstance(point.midi, (int, float))
+            or not math.isfinite(point.midi)
+            or not PITCH_MIN_MIDI <= point.midi <= PITCH_MAX_MIDI
+            for point in points
+        ) or any(left.position >= right.position for left, right in pairwise(points)):
+            raise ValueError("Pitch note curve points are invalid.")
     previous: TimelineSegment | None = None
     two_back: TimelineSegment | None = None
     segment_ids: set[str] = set()
@@ -89,6 +215,7 @@ def _validate_request(request: SaveCompositionRequest) -> None:
         if segment.timeline_end_ms - segment.timeline_start_ms != expected_ms:
             raise ValueError("합성 조각의 출력 길이가 타임라인 길이와 다릅니다.")
         two_back, previous = previous, segment
+    _validate_pitch_owner_refs(request.segments)
     if new_professional_schema:
         lane_ends: list[int] = []
         for segment in sorted(request.segments, key=lambda item: (item.timeline_start_ms, item.segment_id)):
@@ -152,6 +279,31 @@ def _validate_professional_segment(
                 raise ValueError("Edit region duration is outside the allowed range.")
             if not PROFESSIONAL_PITCH_MIN_CENTS <= region.relative_pitch_cents <= PROFESSIONAL_PITCH_MAX_CENTS:
                 raise ValueError("Relative pitch cents is outside the allowed range.")
+            if region.source_f0_hz is not None and (
+                isinstance(region.source_f0_hz, bool)
+                or not isinstance(region.source_f0_hz, (int, float))
+                or not math.isfinite(region.source_f0_hz)
+                or region.source_f0_hz <= 0
+            ):
+                raise ValueError("Region source F0 must be finite and positive.")
+            points = region.pitch_points
+            if points:
+                if len(points) < 2 or points[0].position != 0 or points[-1].position != 1:
+                    raise ValueError("Region pitch points must start at 0 and end at 1.")
+                if any(
+                    isinstance(point.position, bool)
+                    or not isinstance(point.position, (int, float))
+                    or not math.isfinite(point.position)
+                    or not 0 <= point.position <= 1
+                    or isinstance(point.midi, bool)
+                    or not isinstance(point.midi, (int, float))
+                    or not math.isfinite(point.midi)
+                    or not PITCH_MIN_MIDI <= point.midi <= PITCH_MAX_MIDI
+                    for point in points
+                ):
+                    raise ValueError("Region pitch point values are outside the allowed range.")
+                if any(left.position >= right.position for left, right in pairwise(points)):
+                    raise ValueError("Region pitch point positions must increase.")
             cursor = region.source_end_ms
         if cursor != segment.source_end_ms:
             raise ValueError("Edit regions must cover the whole source fragment.")
@@ -177,7 +329,20 @@ def _validate_professional_segment(
             raise ValueError("Pitch envelope values are outside the allowed range.")
         if any(left.position >= right.position for left, right in pairwise(points)):
             raise ValueError("Pitch envelope positions must increase.")
-    for unit in (() if segment.edit_regions else segment.phone_units):
+    phone_unit_ids: set[str] = set()
+    for unit in segment.phone_units:
+        if not unit.phone_unit_id.strip() or unit.phone_unit_id in phone_unit_ids:
+            raise ValueError("Phone unit IDs must be nonempty and unique within a segment.")
+        phone_unit_ids.add(unit.phone_unit_id)
+    for unit in segment.phone_units:
+        mapped_duration = unit.output_duration_ms
+        if segment.edit_regions and unit.source_start_ms is not None and unit.source_end_ms is not None:
+            mapped_duration = round(
+                _source_to_output_ms(segment, unit.source_end_ms)
+                - _source_to_output_ms(segment, unit.source_start_ms)
+            )
+        _validate_phone_pitch_settings(unit, mapped_duration)
+    for unit in segment.phone_units:
         if unit.output_duration_ms < 0:
             raise ValueError("음소 출력 길이는 음수가 될 수 없습니다.")
         if unit.source_f0_hz is not None and unit.source_f0_hz <= 0:
@@ -186,7 +351,7 @@ def _validate_professional_segment(
             PITCH_MIN_MIDI <= unit.target_pitch_midi <= PITCH_MAX_MIDI
         ):
             raise ValueError("목표 피치가 허용 범위를 벗어났습니다.")
-        if not (
+        if not segment.edit_regions and not (
             FORMANT_SHIFT_MIN_SEMITONES
             <= unit.formant_shift_semitones
             <= FORMANT_SHIFT_MAX_SEMITONES
@@ -203,6 +368,8 @@ def _validate_professional_segment(
         ):
             raise ValueError("피치 전환 중심이 허용 범위를 벗어났습니다.")
         has_source = unit.source_start_ms is not None and unit.source_end_ms is not None
+        if (unit.source_start_ms is None) != (unit.source_end_ms is None):
+            raise ValueError("Phone source bounds must both be present or both be absent.")
         if has_source:
             if unit.source_end_ms <= unit.source_start_ms:
                 raise ValueError("음소 원본 구간이 잘못됐습니다.")
@@ -214,7 +381,7 @@ def _validate_professional_segment(
             source_duration = unit.source_end_ms - unit.source_start_ms
             minimum = max(1, math.ceil(source_duration * PROFESSIONAL_MIN_DURATION_PERCENT / 100))
             maximum = math.floor(source_duration * PROFESSIONAL_MAX_DURATION_PERCENT / 100)
-            if not minimum <= unit.output_duration_ms <= maximum:
+            if not segment.edit_regions and not minimum <= unit.output_duration_ms <= maximum:
                 raise ValueError("음소 출력 길이가 허용 범위를 벗어났습니다.")
         elif unit.operation != PhoneAlignmentOperation.DELETE:
             raise ValueError("원본 음소가 없는 편집 단위는 누락 연산이어야 합니다.")

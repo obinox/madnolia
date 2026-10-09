@@ -1,6 +1,7 @@
 import type { PROFESSIONAL_BEAT_DIVISIONS } from "../constants"
 
 export type ProfessionalBeatDivision = typeof PROFESSIONAL_BEAT_DIVISIONS[number]
+export type SavedDetailLoadState = "idle" | "loading" | "error"
 
 export interface EnvelopeConstraintPoint {
   position: number
@@ -26,6 +27,29 @@ export type SynthesisWorkspace = "SEARCH" | "ASSEMBLY"
 export type PhoneAlignmentOperation = "MATCH" | "SUBSTITUTE" | "INSERT" | "DELETE"
 export type UnitType = "WORD" | "SYLLABLE" | "PHONEME" | "PHONE_SEQUENCE"
 export type ExportTarget = "JSON" | "WAV" | "MP4" | "EDL" | "FCPXML"
+export type ExportJobStatus = "running" | "complete" | "failed"
+
+export interface ExportJob {
+  job_id: string
+  target: ExportTarget
+  status: ExportJobStatus
+  percent: number
+  stage: string
+  filename: string
+  error: string | null
+}
+
+export interface RemoteJobShape {
+  job_id: string
+  status: string
+  stage: string
+  percent: number
+  error?: string | null
+}
+
+export interface ExportProgressProps {
+  job: ExportJob
+}
 
 export interface ProjectSummary {
   project_id: string
@@ -237,7 +261,7 @@ export interface CandidatePhoneAlignment {
 }
 
 export interface PhoneUnit {
-  phone_unit_id: string
+    phone_unit_id: string
   operation: PhoneAlignmentOperation
   target_index: number | null
   target_phone_id: string | null
@@ -251,10 +275,16 @@ export interface PhoneUnit {
   source_f0_hz: number | null
   voiced_probability: number
   target_pitch_midi: number | null
+  target_pitch_strength_percent: number
   formant_shift_semitones: number
+  vibrato_depth_cents: number
+  vibrato_rate_hz: number
+  vibrato_start_ms: number
   transition_to_next_ms: number
   transition_strength_percent: number
   transition_center_ms: number
+  pitch_points?: PhonePitchPoint[]
+  pitch_owner_ref?: PhonePitchOwnerRef | null
 }
 
 export interface EditRegion {
@@ -263,6 +293,8 @@ export interface EditRegion {
   source_end_ms: number
   output_duration_ms: number
   relative_pitch_cents: number
+  pitch_points?: PhonePitchPoint[]
+  source_f0_hz?: number | null
 }
 
 export interface VolumeEnvelopePoint {
@@ -275,7 +307,193 @@ export interface PitchEnvelopePoint {
   cents: number
 }
 
+export interface PhonePitchPoint {
+  position: number
+  midi: number
+}
+
+export interface PhonePitchOwnerRef {
+  segment_id: string
+  phone_unit_id: string
+}
+
+export interface PitchAnalysisPoint {
+  position: number
+  hz: number | null
+}
+
+export interface PianoRollPitchNote {
+  note_id: string
+  start_ms: number
+  end_ms: number
+  pitch_points: PhonePitchPoint[]
+}
+
+export interface PitchAnalysisPhone {
+  phone_unit_id: string
+  source_start_ms: number
+  source_end_ms: number
+  output_start_ms: number
+  output_end_ms: number
+  original: PitchAnalysisPoint[]
+  corrected: PitchAnalysisPoint[]
+}
+
+export interface PitchAnalysisRegion {
+  region_id: string
+  source_start_ms: number
+  source_end_ms: number
+  output_start_ms: number
+  output_end_ms: number
+  original: PitchAnalysisPoint[]
+  corrected: PitchAnalysisPoint[]
+}
+
+export interface PitchAnalysisSegment {
+  segment_id: string
+  phones: PitchAnalysisPhone[]
+  regions?: PitchAnalysisRegion[]
+}
+
+export interface PitchAnalysisResponse {
+  segments: PitchAnalysisSegment[]
+}
+
+export type PianoRollAuditionMode = "corrected" | "original"
+
+export interface PianoRollLoopRange {
+  startMs: number
+  endMs: number
+}
+
+export interface PianoRollPhoneRef {
+  segmentId: string
+  phoneUnitId: string
+}
+
+export interface PianoRollInterval {
+  start: number
+  end: number
+}
+
+export interface PianoRollSyllableRange {
+  segmentId: string
+  startMs: number
+  endMs: number
+}
+
+export interface PianoRollRegionView {
+  segmentId: string
+  regionId: string
+  sourceStartMs: number
+  sourceEndMs: number
+  pitchPoints?: PhonePitchPoint[]
+}
+
+export interface PianoRollDragPitchBadge {
+  midi: number
+  x: number
+  y: number
+}
+
+export interface PianoRollSyllablePhone {
+  segmentId: string
+  phoneUnitId: string
+  sourceStartMs: number
+  sourceEndMs: number
+  phoneId: string
+  lane: number
+  ipa: string
+}
+
+export interface PianoRollSyllableGroup {
+  key: string
+  label: string
+  nucleus: PianoRollPhoneRef
+  phones: PianoRollPhoneRef[]
+  ranges: PianoRollSyllableRange[]
+}
+
+export interface PianoRollRegionRef {
+  segmentId: string
+  regionId: string
+}
+
+export interface PianoRollPointSelection {
+  segmentId: string
+  regionId: string
+  index: number
+}
+
+export interface PianoRollEditorProps {
+  visible: boolean
+  analysisHold: boolean
+  projectId: string
+  request: SaveCompositionRequest
+  segments: TimelineSegment[]
+  pitchNotes: PianoRollPitchNote[]
+  tempoBpm: number
+  beatsPerBar: number
+  beatDivision: ProfessionalBeatDivision
+  gridOffsetUnits: number
+  selectedSegmentId: string
+  playheadMs: number
+  isPlaying: boolean
+  loopEnabled: boolean
+  auditionMode: PianoRollAuditionMode
+  onPlayheadChange: (timeMs: number) => void
+  onSelectSegment: (segmentId: string) => void
+  onTogglePlayback: () => void
+  onToggleLoop: () => void
+  onAuditionModeChange: (mode: PianoRollAuditionMode) => void
+  onLoopRangeChange: (range: PianoRollLoopRange | null) => void
+  onTempoChange: (tempo: number) => void
+  onBeatsPerBarChange: (beats: number) => void
+  onBeatDivisionChange: (division: ProfessionalBeatDivision) => void
+  onGridOffsetChange: (offset: number) => void
+  onUpdatePitchNotes: (notes: PianoRollPitchNote[]) => void
+  onUpdatePhones: (phones: PianoRollPhoneRef[], updates: Partial<PhoneUnit>) => void
+  onUpdatePhoneDurations: (phones: PianoRollPhoneRef[], durationMs: number) => void
+  onUpdateEnvelope: (segmentId: string, points: VolumeEnvelopePoint[]) => void
+  onUpdateRegionPitchPoints: (segmentId: string, regionId: string, points: PhonePitchPoint[]) => void
+  onUpdateRegionRangePitchPoints: (view: PianoRollRegionView, points: PhonePitchPoint[]) => boolean
+  onUpdateSyllablePitch: (group: PianoRollSyllableGroup, midi: number | null) => boolean
+  onBeginGesture: () => void
+  onEndGesture: () => void
+}
+
+export interface PianoRollZoomAnchor {
+  axis: "pitch" | "time"
+  cursorLocalX: number
+  cursorLocalY: number
+  timeAtCursor: number
+  midiAtCursor: number
+}
+
+export interface ProfessionalAutotuneSettings {
+  strength_percent: number
+  speed_ms: number
+}
+
+export interface ProfessionalAutotuneRequest {
+  composition: SaveCompositionRequest
+  strength_percent: number
+  speed_ms: number
+}
+
+export interface ProfessionalAutotuneSegmentResult {
+  segment_id: string
+  phone_units: PhoneUnit[]
+  edit_regions: EditRegion[]
+}
+
+export interface ProfessionalAutotuneResponse {
+  segments: ProfessionalAutotuneSegmentResult[]
+}
+
 export type ProfessionalLane = "pitch" | "volume"
+export type ProfessionalPitchDisplayRange = 50 | 100 | 200 | 500 | 1000 | 2400
+export type ProfessionalSynthesisStep = "timing" | "correction"
 
 export interface ProfessionalSelectedPoint {
   lane: ProfessionalLane
@@ -309,7 +527,7 @@ export interface CandidateSearchResult {
   source_labels: Record<string, string>
 }
 
-export type SearchJobStatus = "running" | "complete" | "cancelled" | "failed"
+export type SearchJobStatus = "running" | "cancelling" | "complete" | "cancelled" | "failed"
 
 export interface SearchJob {
   job_id: string
@@ -358,6 +576,7 @@ export interface CompositionProject {
   beats_per_bar?: number
   beat_division?: ProfessionalBeatDivision
   grid_offset_units?: number
+  pitch_notes?: PianoRollPitchNote[]
   segments: TimelineSegment[]
   mode: CompositionMode
   schema_version: number
@@ -374,6 +593,7 @@ export interface SaveCompositionRequest {
   beats_per_bar: number
   beat_division: ProfessionalBeatDivision
   grid_offset_units?: number
+  pitch_notes?: PianoRollPitchNote[]
   segments: TimelineSegment[]
   mode: CompositionMode
   schema_version: number
@@ -389,6 +609,8 @@ export interface CollagePanelProps {
 }
 
 export interface ProfessionalEditorProps {
+  visible: boolean
+  step: ProfessionalSynthesisStep
   projectId: string
   segments: TimelineSegment[]
   selectedSegmentId: string
@@ -435,6 +657,21 @@ export interface ProfessionalEditableState {
   beatsPerBar: number
   beatDivision: ProfessionalBeatDivision
   gridOffsetUnits: number
+  pitchNotes: PianoRollPitchNote[]
+}
+
+export interface ProfessionalCompositionDraft {
+  version: number
+  project_id: string
+  document_key: string
+  composition_id: string
+  parent_composition_id: string
+  parent_composition_updated_at: string
+  schema_version: number
+  legacy_mode: boolean
+  state: ProfessionalEditableState
+  history?: ProfessionalHistoryState
+  saved_at: string
 }
 
 export interface ProfessionalHistoryState {
@@ -451,6 +688,7 @@ export type ProfessionalHistoryAction =
   | { type: "undo" }
   | { type: "redo" }
   | { type: "reset"; next: ProfessionalEditableState }
+  | { type: "restore"; history: ProfessionalHistoryState }
 
 export interface ProfessionalHandleResult {
   startMs: number
@@ -506,6 +744,81 @@ export type AnalysisAction = "pause" | "resume" | "stop"
 
 export type WorkflowPage = "analysis" | "projects" | "collage" | "professional"
 
+export interface GlobalTaskInput {
+  label: string
+  stage?: string
+  percent?: number | null
+  cancel?: () => void | Promise<void>
+  cancelLabel?: string
+  actions?: GlobalTaskAction[]
+}
+
+export interface GlobalTaskAction {
+  id: string
+  label: string
+  disabled?: boolean
+  pending?: boolean
+  onAction: () => void | Promise<void>
+}
+
+export type RemoteTaskKind = "search" | "export"
+
+export interface RemoteTaskDescriptor {
+  version: number
+  job_id: string
+  kind: RemoteTaskKind
+  project_id: string
+  composition_id?: string
+  target?: ExportTarget
+  label: string
+  stage?: string
+  percent?: number | null
+  search?: {
+    text: string
+    input_language: InputLanguage
+    tab: CandidateSearchTab
+    pronunciation: string
+    exact_result?: CandidateSearchResult
+  }
+}
+
+export interface RemoteSearchResult {
+  descriptor: RemoteTaskDescriptor
+  result: CandidateSearchResult
+}
+
+export interface ApiError extends Error {
+  status: number
+}
+
+export interface GlobalTask extends GlobalTaskInput {
+  id: string
+}
+
+export interface GlobalTaskContextValue {
+  task: GlobalTask | null
+  beginTask: (input: GlobalTaskInput) => string | null
+  updateTask: (id: string, patch: Partial<GlobalTaskInput>) => void
+  finishTask: (id: string) => void
+  isTaskActive: () => boolean
+}
+
+export interface GlobalTaskOverlayProps {
+  task: GlobalTask | null
+}
+
+export class RemoteTaskProtocolError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "RemoteTaskProtocolError"
+  }
+}
+
+export interface RestoredGlobalTaskState {
+  descriptor: RemoteTaskDescriptor | null
+  task: GlobalTask | null
+}
+
 export interface ProfessionalSynthesisPageProps {
   projectId: string
   initialCompositionId?: string
@@ -519,5 +832,6 @@ export interface ProjectsPageProps {
   projects: ProjectSummary[]
   onOpenProject: (projectId: string) => void
   onOpenCollage: (collageId: string) => void
-  onProjectCreated: () => Promise<void>
+  onProjectCreated: (projectId: string) => Promise<void>
 }
+export type ListLoadState = "loading" | "loaded" | "error"

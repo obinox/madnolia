@@ -3,6 +3,7 @@
 .timeline-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 0 2px 11px; }
 .waveform-status { flex: 0 0 auto; color: #657789; font: 10px ui-monospace, monospace; }
 .waveform-status.loading { color: #65a9ff; }
+.waveform-status.error { color: #ff9d9d; overflow-wrap: anywhere; }
 .legend, .zoom-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .legend span { display: flex; align-items: center; gap: 5px; color: #9aa9b7; font-size: 11px; }
 .legend i { width: 8px; height: 8px; border-radius: 2px; }

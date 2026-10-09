@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
+from madnolia.autotune import analyze_composition_pitch, generate_autotune_envelopes
 from madnolia.compositions import (
     collage_dir,
     create_composition,
@@ -31,10 +32,16 @@ from madnolia.constants import (
     ANALYSIS_MODEL_OPTIONS,
     ANALYSIS_NICKNAME_MAX_LENGTH,
     APPLICATION_ID,
+    AUTOTUNE_MAX_STRENGTH_PERCENT,
+    AUTOTUNE_MIN_SPEED_MS,
+    AUTOTUNE_MIN_STRENGTH_PERCENT,
     CUDA_DEVICE,
     DEFAULT_INPUT_DIR,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PROJECTS_DIR,
+    EXPORT_JOB_STAGE_COMPLETE,
+    EXPORT_JOB_STAGE_FAILED,
+    EXPORT_JOB_STAGE_QUEUED,
     OPENVINO_MODEL_REPOSITORIES,
     QWEN_ASR_MODEL_REPOSITORIES,
     SUPPORTED_VIDEO_EXTENSIONS,
@@ -69,10 +76,16 @@ from madnolia.types.common import (
     AnalysisJob,
     AnalysisJobStatus,
     AnalysisOverview,
+    AutotuneRequest,
+    AutotuneResponse,
+    CompositionMode,
+    CompositionPitchAnalysis,
     CreateAnalysisRequest,
     CreateCollageRequest,
     CreateProjectRequest,
     DetectedAnalysisHardware,
+    ExportJob,
+    ExportJobStatus,
     ExportTarget,
     InferenceBackend,
     ProjectSummary,
@@ -113,6 +126,10 @@ _analysis_jobs: dict[str, AnalysisJob] = {}
 _analysis_lock = Condition()
 _search_jobs: dict[str, SearchJob] = {}
 _search_lock = Lock()
+_search_threads: dict[str, Thread] = {}
+_export_jobs: dict[str, ExportJob] = {}
+_export_threads: dict[str, Thread] = {}
+_export_lock = Lock()
 _WINDOWS_RESERVED_FILENAME = re.compile(WINDOWS_RESERVED_FILENAME_PATTERN, re.IGNORECASE)
 
 
@@ -444,7 +461,7 @@ def _run_search_job(job_id: str, project_id: str, request: SearchRequest) -> Non
     def checkpoint() -> None:
         with _search_lock:
             job = _search_jobs[job_id]
-            if job.status == SearchJobStatus.CANCELLED:
+            if job.status == SearchJobStatus.CANCELLING:
                 raise SearchCancelled()
 
     def report(stage: str, stage_percent: float) -> None:
@@ -502,14 +519,12 @@ def _run_search_job(job_id: str, project_id: str, request: SearchRequest) -> Non
             len(result.candidates),
         )
     except SearchCancelled:
-        with _search_lock:
-            job = _search_jobs[job_id]
-            job.status = SearchJobStatus.CANCELLED
-            job.stage = "cancelled"
-        _log("SEARCH", "Cancelled %s", job_id)
+        pass
     except (ValueError, FileNotFoundError) as error:
         with _search_lock:
             job = _search_jobs[job_id]
+            if job.status == SearchJobStatus.CANCELLING:
+                return
             failed_stage = job.stage
             job.status = SearchJobStatus.FAILED
             job.stage = "failed"
@@ -518,11 +533,20 @@ def _run_search_job(job_id: str, project_id: str, request: SearchRequest) -> Non
     except Exception as error:  # noqa: BLE001
         with _search_lock:
             job = _search_jobs[job_id]
+            if job.status == SearchJobStatus.CANCELLING:
+                return
             failed_stage = job.stage
             job.status = SearchJobStatus.FAILED
             job.stage = "failed"
             job.error = f"{failed_stage} 단계에서 오류가 발생했습니다: {error}"
         _log("SEARCH", "Failed %s during %s: %s", job_id, failed_stage, error)
+    finally:
+        with _search_lock:
+            job = _search_jobs[job_id]
+            if job.status == SearchJobStatus.CANCELLING:
+                job.status = SearchJobStatus.CANCELLED
+                job.stage = "cancelled"
+                job.percent = 100
 
 
 @app.post("/api/projects/{project_id}/search-jobs")
@@ -530,7 +554,10 @@ def start_search_job(project_id: str, request: SearchRequest) -> dict[str, objec
     _project_dir(project_id)
     with _search_lock:
         if any(
-            job.project_id == project_id and job.status == SearchJobStatus.RUNNING
+            job.project_id == project_id and (
+                job.status in {SearchJobStatus.RUNNING, SearchJobStatus.CANCELLING}
+                or (_search_threads.get(job.job_id) is not None and _search_threads[job.job_id].is_alive())
+            )
             for job in _search_jobs.values()
         ):
             raise HTTPException(status_code=409, detail="A search is already running")
@@ -542,9 +569,28 @@ def start_search_job(project_id: str, request: SearchRequest) -> dict[str, objec
             percent=0,
             stage="queued",
         )
-    Thread(target=_run_search_job, args=(job_id, project_id, request), daemon=True).start()
+        worker = Thread(target=_run_search_job, args=(job_id, project_id, request), daemon=True)
+        _search_threads[job_id] = worker
+    worker.start()
     _log("SEARCH", "Queued %s", job_id)
     return {"job_id": job_id}
+
+
+def _search_job_payload_locked(job: SearchJob) -> dict[str, object]:
+    payload = asdict(job)
+    worker = _search_threads.get(job.job_id)
+    if worker is not None and worker.is_alive() and job.status in {
+        SearchJobStatus.COMPLETE,
+        SearchJobStatus.CANCELLED,
+        SearchJobStatus.FAILED,
+    }:
+        if job.status == SearchJobStatus.CANCELLED:
+            payload["status"] = SearchJobStatus.CANCELLING
+            payload["stage"] = "중단 마무리 중"
+        else:
+            payload["status"] = SearchJobStatus.RUNNING
+            payload["stage"] = "작업 마무리 중"
+    return payload
 
 
 @app.get("/api/search-jobs/{job_id}")
@@ -553,7 +599,7 @@ def get_search_job(job_id: str) -> dict[str, object]:
         job = _search_jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Search job not found")
-        return asdict(job)
+        return _search_job_payload_locked(job)
 
 
 @app.delete("/api/search-jobs/{job_id}")
@@ -563,10 +609,10 @@ def cancel_search_job(job_id: str) -> dict[str, object]:
         if job is None:
             raise HTTPException(status_code=404, detail="Search job not found")
         if job.status == SearchJobStatus.RUNNING:
-            job.status = SearchJobStatus.CANCELLED
-            job.stage = "cancelled"
+            job.status = SearchJobStatus.CANCELLING
+            job.stage = "cancelling"
             _log("SEARCH", "Cancellation requested for %s", job_id)
-        return asdict(job)
+        return _search_job_payload_locked(job)
 
 
 @app.get("/api/projects/{project_id}/compositions")
@@ -624,6 +670,113 @@ def export_collage(composition_id: str, target: ExportTarget) -> FileResponse:
     return export_saved_composition(project_id, composition_id, target)
 
 
+@app.post("/api/collages/{composition_id}/export-jobs/{target}")
+def start_export_job(composition_id: str, target: ExportTarget) -> dict[str, str]:
+    collage = get_collage(composition_id)
+    project_id = str(collage["corpus_project_id"])
+    with _export_lock:
+        if any(
+            job.composition_id == composition_id
+            and job.target == target
+            and (
+                job.status == ExportJobStatus.RUNNING
+                or (_export_threads.get(job.job_id) is not None and _export_threads[job.job_id].is_alive())
+            )
+            for job in _export_jobs.values()
+        ):
+            raise HTTPException(status_code=409, detail="This export is already running")
+        job_id = f"export_{uuid4().hex}"
+        filename = f"{composition_id}.{target.value.lower()}"
+        _export_jobs[job_id] = ExportJob(
+            job_id=job_id,
+            composition_id=composition_id,
+            target=target,
+            status=ExportJobStatus.RUNNING,
+            percent=0,
+            stage=EXPORT_JOB_STAGE_QUEUED,
+            filename=filename,
+        )
+        worker = Thread(
+            target=_run_export_job,
+            args=(job_id, project_id, composition_id),
+            daemon=True,
+        )
+        _export_threads[job_id] = worker
+    worker.start()
+    _log("COMPOSITION", "Queued export %s as %s", job_id, target)
+    return {"job_id": job_id}
+
+
+def _run_export_job(job_id: str, project_id: str, composition_id: str) -> None:
+    try:
+        directory = _project_dir(project_id)
+        composition = get_composition(directory, composition_id)
+
+        def report(stage: str, percent: float) -> None:
+            with _export_lock:
+                job = _export_jobs[job_id]
+                if job.status == ExportJobStatus.RUNNING:
+                    job.stage = stage
+                    job.percent = min(99, max(job.percent, percent))
+
+        with _export_lock:
+            target = _export_jobs[job_id].target
+        path = export_composition(directory, composition, target, progress_callback=report)
+        with _export_lock:
+            job = _export_jobs[job_id]
+            job.filename = path.name
+            job.status = ExportJobStatus.COMPLETE
+            job.percent = 100
+            job.stage = EXPORT_JOB_STAGE_COMPLETE
+        _log("COMPOSITION", "Export job complete: %s", job_id)
+    except Exception as error:  # noqa: BLE001
+        with _export_lock:
+            job = _export_jobs[job_id]
+            job.status = ExportJobStatus.FAILED
+            job.stage = EXPORT_JOB_STAGE_FAILED
+            job.error = str(error)
+        _log("COMPOSITION", "Export job failed %s: %s", job_id, error)
+
+
+def _export_job_payload_locked(job: ExportJob) -> dict[str, object]:
+    payload = asdict(job)
+    worker = _export_threads.get(job.job_id)
+    if worker is not None and worker.is_alive() and job.status in {
+        ExportJobStatus.COMPLETE,
+        ExportJobStatus.FAILED,
+    }:
+        payload["status"] = ExportJobStatus.RUNNING
+        payload["stage"] = "작업 마무리 중"
+    return payload
+
+
+@app.get("/api/export-jobs/{job_id}")
+def get_export_job(job_id: str) -> dict[str, object]:
+    with _export_lock:
+        job = _export_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Export job not found")
+        return _export_job_payload_locked(job)
+
+
+@app.get("/api/export-jobs/{job_id}/download")
+def download_export_job(job_id: str) -> FileResponse:
+    with _export_lock:
+        job = _export_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Export job not found")
+        worker = _export_threads.get(job_id)
+        if job.status == ExportJobStatus.RUNNING or (worker is not None and worker.is_alive()):
+            raise HTTPException(status_code=409, detail="Export is still running")
+        if job.status == ExportJobStatus.FAILED:
+            raise HTTPException(status_code=400, detail=job.error or "Export failed")
+        path = collage_dir(job.composition_id) / "exports" / job.filename
+        filename = job.filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Export file not found")
+    return FileResponse(path, filename=filename)
+
+
 @app.post("/api/projects/{project_id}/compositions/preview")
 def preview_composition(project_id: str, request: SaveCompositionRequest) -> Response:
     project_dir = _project_dir(project_id)
@@ -637,12 +790,57 @@ def preview_composition(project_id: str, request: SaveCompositionRequest) -> Res
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
+@app.post("/api/projects/{project_id}/compositions/autotune")
+def autotune_composition(project_id: str, request: AutotuneRequest) -> AutotuneResponse:
+    project_dir = _project_dir(project_id)
+    if not AUTOTUNE_MIN_STRENGTH_PERCENT <= request.strength_percent <= AUTOTUNE_MAX_STRENGTH_PERCENT:
+        raise HTTPException(status_code=400, detail="strength_percent must be between 0 and 100")
+    if request.speed_ms < AUTOTUNE_MIN_SPEED_MS:
+        raise HTTPException(status_code=400, detail="speed_ms must be nonnegative")
+    if request.composition.mode != CompositionMode.PROFESSIONAL or any(
+        not segment.edit_regions for segment in request.composition.segments
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Autotune requires professional composition segments with edit regions",
+        )
+    try:
+        validate_preview_request(project_dir, request.composition)
+        segments = generate_autotune_envelopes(
+            project_dir,
+            request.composition.segments,
+            request.strength_percent,
+            request.speed_ms,
+        )
+    except (OSError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return AutotuneResponse(
+        segments=[
+            segment
+            for segment in segments
+        ]
+    )
+
+
 @app.get("/api/projects/{project_id}/compositions/{composition_id}")
 def get_saved_composition(project_id: str, composition_id: str) -> dict[str, object]:
     try:
         return asdict(get_composition(_project_dir(project_id), composition_id))
     except (FileNotFoundError, ValueError) as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.post("/api/projects/{project_id}/compositions/pitch-analysis")
+def analyze_composition_pitch_route(
+    project_id: str,
+    request: SaveCompositionRequest,
+) -> CompositionPitchAnalysis:
+    directory = _project_dir(project_id)
+    try:
+        validate_preview_request(directory, request)
+        return analyze_composition_pitch(directory, request.segments, request.pitch_notes)
+    except (OSError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.post("/api/projects/{project_id}/compositions")

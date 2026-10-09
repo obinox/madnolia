@@ -3,36 +3,106 @@ import { useEffect, useState } from "react"
 import { fetchAnalyses, renameAnalysis } from "../api/analysis"
 import { createProject, fetchCollages } from "../api/projects"
 import { ANALYSIS_NICKNAME_MAX_LENGTH } from "../constants"
-import type { AnalysisSummary, CompositionProject, ProjectsPageProps } from "../types"
+import type { AnalysisSummary, CompositionProject, ListLoadState, ProjectsPageProps } from "../types"
+import { useGlobalTask } from "../globalTask"
 
 export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProjectCreated }: ProjectsPageProps) {
+  const { beginTask, finishTask, isTaskActive } = useGlobalTask()
   const [analyses, setAnalyses] = useState<AnalysisSummary[]>([])
   const [collages, setCollages] = useState<CompositionProject[]>([])
+  const [analysisListState, setAnalysisListState] = useState<ListLoadState>("loading")
+  const [analysisListError, setAnalysisListError] = useState("")
+  const [collageListState, setCollageListState] = useState<ListLoadState>("loading")
+  const [collageListError, setCollageListError] = useState("")
   const [selected, setSelected] = useState<string[]>([])
   const [name, setName] = useState("")
   const [message, setMessage] = useState("")
   const [busy, setBusy] = useState(false)
   const [editingId, setEditingId] = useState("")
   const [draftNickname, setDraftNickname] = useState("")
+  const [createdProjectId, setCreatedProjectId] = useState("")
+  const [creationRecoveryPending, setCreationRecoveryPending] = useState(false)
+
+  const loadAnalyses = async () => {
+    setAnalysisListState("loading")
+    setAnalysisListError("")
+    try {
+      setAnalyses(await fetchAnalyses())
+      setAnalysisListState("loaded")
+    } catch (error) {
+      setAnalysisListError(error instanceof Error ? error.message : String(error))
+      setAnalysisListState("error")
+    }
+  }
+
+  const loadCollages = async () => {
+    setCollageListState("loading")
+    setCollageListError("")
+    try {
+      setCollages(await fetchCollages())
+      setCollageListState("loaded")
+    } catch (error) {
+      setCollageListError(error instanceof Error ? error.message : String(error))
+      setCollageListState("error")
+    }
+  }
 
   useEffect(() => {
-    fetchAnalyses().then(setAnalyses).catch((error: Error) => setMessage(error.message))
-    fetchCollages().then(setCollages).catch((error: Error) => setMessage(error.message))
+    void loadAnalyses()
+    void loadCollages()
   }, [])
 
   const makeProject = async () => {
+    if (isTaskActive()) return
+    const taskId = beginTask({ label: "프로젝트 생성", stage: "저장 중", percent: null })
+    if (!taskId) return
     setBusy(true)
     setMessage("")
     try {
       const created = await createProject(name, selected)
-      await onProjectCreated()
-      onOpenProject(created.project_id)
+      setCreatedProjectId(created.project_id)
+      setName("")
+      setSelected([])
+      try {
+        await onProjectCreated(created.project_id)
+        setCreationRecoveryPending(false)
+        finishTask(taskId)
+        onOpenProject(created.project_id)
+      } catch (error) {
+        setCreationRecoveryPending(true)
+        setMessage(`프로젝트 ${created.project_id} 생성 성공, 목록 새로고침 실패: ${error instanceof Error ? error.message : String(error)}`)
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
-    } finally { setBusy(false) }
+    } finally {
+      finishTask(taskId)
+      setBusy(false)
+    }
+  }
+
+  const retryCreatedProjectList = async () => {
+    if (!createdProjectId || busy || isTaskActive()) return
+    const taskId = beginTask({ label: "프로젝트 목록 새로고침", stage: "목록 불러오는 중" })
+    if (!taskId) return
+    setBusy(true)
+    try {
+      await onProjectCreated(createdProjectId)
+      setCreationRecoveryPending(false)
+      setMessage("")
+      finishTask(taskId)
+      onOpenProject(createdProjectId)
+    } catch (error) {
+      setMessage(`프로젝트 ${createdProjectId} 생성 성공, 목록 새로고침 실패: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      finishTask(taskId)
+      setBusy(false)
+    }
   }
 
   const saveNickname = async () => {
+    if (isTaskActive()) return
+    const taskId = beginTask({ label: "분석 별명 저장", stage: "저장 중", percent: null })
+    if (!taskId) return
     setBusy(true)
     setMessage("")
     try {
@@ -41,7 +111,10 @@ export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProject
       setEditingId("")
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
-    } finally { setBusy(false) }
+    } finally {
+      finishTask(taskId)
+      setBusy(false)
+    }
   }
 
   return (
@@ -54,10 +127,12 @@ export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProject
       <div className="panel workflow-card">
         <h3>분석 선택 <span className="selected-count">{selected.length}개 선택</span></h3>
         <div className="analysis-list">
+          {analysisListState === "loading" && <p>분석 목록을 불러오는 중입니다.</p>}
+          {analysisListState === "error" && <div role="alert"><p>{analysisListError}</p><button disabled={busy} onClick={() => void loadAnalyses()}>분석 목록 다시 불러오기</button></div>}
           {analyses.map((analysis) => (
             <div key={analysis.analysis_id} className="analysis-item">
               <label className="analysis-select">
-                <input type="checkbox" checked={selected.includes(analysis.analysis_id)}
+                <input type="checkbox" disabled={creationRecoveryPending} checked={selected.includes(analysis.analysis_id)}
                   onChange={(event) => setSelected(event.target.checked
                     ? [...selected, analysis.analysis_id]
                     : selected.filter((id) => id !== analysis.analysis_id))} />
@@ -81,12 +156,12 @@ export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProject
               )}
             </div>
           ))}
-          {!analyses.length && <p>완료된 분석이 없습니다. 영상 분석부터 시작하세요.</p>}
+          {analysisListState === "loaded" && !analyses.length && <p>완료된 분석이 없습니다. 영상 분석부터 시작하세요.</p>}
         </div>
         <label htmlFor="project-name">프로젝트 이름</label>
-        <input id="project-name" placeholder="새 프로젝트" value={name}
+        <input id="project-name" disabled={creationRecoveryPending} placeholder="새 프로젝트" value={name}
           onChange={(event) => setName(event.target.value)} />
-        <button disabled={!selected.length || !name.trim() || busy} onClick={() => void makeProject()}>
+        <button disabled={!selected.length || !name.trim() || busy || creationRecoveryPending} onClick={() => void makeProject()}>
           선택한 분석으로 프로젝트 생성
         </button>
       </div>
@@ -104,15 +179,21 @@ export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProject
       <div className="panel workflow-card">
         <h3>저장된 합성</h3>
         <div className="project-list">
+          {collageListState === "loading" && <p>합성 목록을 불러오는 중입니다.</p>}
+          {collageListState === "error" && <div role="alert"><p>{collageListError}</p><button disabled={busy} onClick={() => void loadCollages()}>합성 목록 다시 불러오기</button></div>}
           {collages.map((collage) => (
             <button key={collage.composition_id} onClick={() => onOpenCollage(collage.composition_id)}>
               <strong>{collage.name}</strong><span>연결 프로젝트: {projects.find((item) => item.project_id === collage.corpus_project_id)?.name ?? collage.corpus_project_id} →</span>
             </button>
           ))}
-          {!collages.length && <p>저장된 합성이 없습니다.</p>}
+          {collageListState === "loaded" && !collages.length && <p>저장된 합성이 없습니다.</p>}
         </div>
       </div>
       {message && <p className="error" role="alert">{message}</p>}
+      {createdProjectId && message.includes("목록 새로고침 실패") && <div className="project-created-recovery">
+        <button disabled={busy} onClick={() => onOpenProject(createdProjectId)}>생성한 프로젝트 열기</button>
+        <button disabled={busy} onClick={() => void retryCreatedProjectList()}>목록만 다시 불러오기</button>
+      </div>}
     </section>
   )
 }

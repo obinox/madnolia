@@ -46,13 +46,17 @@ select { padding: 10px 34px 10px 12px; border: 1px solid #293542; border-radius:
 .analysis-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .analysis-settings .analysis-checkbox { display: flex; align-items: center; gap: 10px; }
 .analysis-controls { display: flex; flex-wrap: wrap; gap: 10px; }
-.workflow-card select, .workflow-card input:not([type="checkbox"]) { width: 100%; padding: 11px 13px; border: 1px solid #35485b; border-radius: 8px; color: #dfe8f1; background: #111820; }
+.workflow-card select, .workflow-card input:not([type="checkbox"]):not(.visually-hidden) { width: 100%; padding: 11px 13px; border: 1px solid #35485b; border-radius: 8px; color: #dfe8f1; background: #111820; }
+.workflow-card input.visually-hidden { width: 1px; padding: 0; border: 0; }
 .workflow-card button, .progress-card button { justify-self: start; padding: 10px 16px; border: 1px solid #537ea4; border-radius: 8px; color: #e5f3ff; background: #174068; }
 .workflow-card button:disabled { opacity: .5; cursor: default; }
 .workflow-card p, .progress-card p { margin: 0; color: #8fa0af; font-size: 13px; }
 .progress-heading { display: flex; justify-content: space-between; gap: 20px; align-items: center; }
 .progress-heading div { display: grid; gap: 6px; min-width: 0; }
-.progress-heading span { overflow: hidden; color: #9aa9b7; text-overflow: ellipsis; white-space: nowrap; }
+.progress-heading > div { min-width: 0; max-width: 100%; }
+.progress-heading > div > strong { min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+.progress-heading span { display: block; min-width: 0; color: #9aa9b7; overflow-wrap: anywhere; }
+.progress-card > .error { min-width: 0; overflow-wrap: anywhere; }
 .progress-value { color: #65a9ff; font: 700 28px ui-monospace, monospace; }
 .progress-track { width: 100%; height: 17px; overflow: hidden; border-radius: 99px; background: #233240; }
 .progress-fill { position: relative; display: block; height: 100%; overflow: hidden; border-radius: inherit; background: #65a9ff; }
@@ -75,7 +79,7 @@ select { padding: 10px 34px 10px 12px; border: 1px solid #293542; border-radius:
 .workspace-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; }
 .source-audio-card { overflow: hidden; }
 .source-audio-pool { display: grid; align-content: center; min-height: 0; padding: 12px; }
-.source-audio-pool audio { display: none; width: 100%; height: 36px; }
+.source-audio-pool audio { display: none; width: 100%; min-height: 44px; height: 44px; }
 .source-audio-pool audio.active { display: block; }
 .transport-readout { display: flex; justify-content: space-between; padding: 9px 13px; color: #8292a2; font: 12px ui-monospace, monospace; border-top: 1px solid #202b35; }
 

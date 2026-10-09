@@ -1,20 +1,31 @@
 import json
 import shutil
 import wave
+from collections.abc import Callable
+from dataclasses import replace
 from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
+from uuid import uuid4
 from xml.etree import ElementTree
 
 import numpy as np
 
+from madnolia.autotune import _estimate_f0, build_phone_pitch_groups, build_segment_pitch_curve
 from madnolia.compositions import collage_dir, save_composition
 from madnolia.constants import (
+    AUTOTUNE_WINDOW_MS,
+    EXPORT_JOB_STAGE_AUDIO,
+    EXPORT_JOB_STAGE_FINALIZE,
+    EXPORT_JOB_STAGE_PREPARING,
+    EXPORT_JOB_STAGE_VIDEO,
     MAX_CROSSFADE_MS,
     PROFESSIONAL_PHONE_BOUNDARY_BLEND_MS,
     PROFESSIONAL_PHONE_CONTEXT_MAX_MS,
 )
 from madnolia.pitch_shift import (
+    hz_to_midi,
+    render_local_pitch_curve,
     render_pitched_audio,
     render_relative_pitch_curve,
     render_relative_pitched_audio,
@@ -23,15 +34,19 @@ from madnolia.projects import audio_path
 from madnolia.services import export_formats
 from madnolia.services.export_formats import _edl, _fcpxml, _timeline_key
 from madnolia.time_stretch import stretch_audio
+from madnolia.world_pitch import render_world_regions
 from madnolia.types.common import (
     CompositionMode,
     CompositionProject,
+    ExportProgressCallback,
     ExportTarget,
     MediaSource,
+    PhonePitchPoint,
     PhoneUnit,
     SaveCompositionRequest,
     TimelineSegment,
 )
+from madnolia.world_pitch import render_world_regions
 
 _timecode = export_formats._timecode
 
@@ -40,41 +55,71 @@ def export_composition(
     project_dir: Path,
     composition: CompositionProject,
     target: ExportTarget,
+    progress_callback: ExportProgressCallback | None = None,
 ) -> Path:
     if composition.corpus_project_id != project_dir.name:
         raise ValueError("합성이 연결된 프로젝트와 다릅니다.")
     export_dir = collage_dir(composition.composition_id) / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
+    suffix = "." + target.value.lower()
+    destination = export_dir / f"{composition.composition_id}{suffix}"
+    temporary = export_dir / f".{composition.composition_id}.{uuid4().hex}.partial{suffix}"
+    report = progress_callback or (lambda _stage, _percent: None)
+    report(EXPORT_JOB_STAGE_PREPARING, 1)
+    try:
+        _write_export(project_dir, composition, target, temporary, report)
+        temporary.replace(destination)
+        report(EXPORT_JOB_STAGE_FINALIZE, 99)
+        return destination
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _write_export(
+    project_dir: Path,
+    composition: CompositionProject,
+    target: ExportTarget,
+    destination: Path,
+    progress_callback: ExportProgressCallback,
+) -> Path:
     if target == ExportTarget.JSON:
         source = save_composition(project_dir, composition)
-        destination = export_dir / f"{composition.composition_id}.json"
         shutil.copy2(source, destination)
         return destination
     manifest = json.loads((project_dir / "project.json").read_text(encoding="utf-8"))
     sources = {item["source_id"]: MediaSource(**item) for item in manifest["sources"]}
     if target == ExportTarget.WAV:
-        destination = export_dir / f"{composition.composition_id}.wav"
-        _export_wav(project_dir, composition, destination)
+        _export_wav(project_dir, composition, destination, progress_callback)
         return destination
     if target == ExportTarget.EDL:
-        destination = export_dir / f"{composition.composition_id}.edl"
         destination.write_text(_edl(composition, sources), encoding="utf-8")
         return destination
     if target == ExportTarget.FCPXML:
-        destination = export_dir / f"{composition.composition_id}.fcpxml"
         ElementTree.ElementTree(_fcpxml(composition, sources)).write(
             destination,
             encoding="utf-8",
             xml_declaration=True,
         )
         return destination
-    destination = export_dir / f"{composition.composition_id}.mp4"
-    _export_mp4(project_dir, composition, sources, destination)
+    _export_mp4(project_dir, composition, sources, destination, progress_callback)
     return destination
 
 
-def _export_wav(project_dir: Path, composition: CompositionProject, destination: Path) -> None:
-    destination.write_bytes(render_wav(project_dir, composition))
+def _export_wav(
+    project_dir: Path,
+    composition: CompositionProject,
+    destination: Path,
+    progress_callback: ExportProgressCallback | None = None,
+) -> None:
+    samples = _compose_audio(project_dir, composition, progress_callback, (0, 85))
+    buffer = BytesIO()
+    with wave.open(buffer, "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(16000)
+        output.writeframes(np.clip(samples * 32767, -32768, 32767).astype(np.int16).tobytes())
+    destination.write_bytes(buffer.getvalue())
 
 
 def render_wav(
@@ -93,6 +138,8 @@ def render_wav(
 def _compose_audio(
     project_dir: Path,
     composition: CompositionProject | SaveCompositionRequest,
+    progress_callback: ExportProgressCallback | None = None,
+    progress_range: tuple[float, float] = (0, 100),
 ) -> np.ndarray:
     if not composition.segments:
         return np.zeros(0, dtype=np.float32)
@@ -107,6 +154,10 @@ def _compose_audio(
     )
     weights = np.zeros(len(output), dtype=np.float32) if legacy_mix else None
     fade_samples = round(composition.crossfade_ms * 16) if legacy_mix else 0
+    report = progress_callback or (lambda _stage, _percent: None)
+    progress_start, progress_end = progress_range
+    pitch_groups = _build_pitch_groups(segments)
+    pitch_notes = getattr(composition, "pitch_notes", [])
     for segment_index, segment in enumerate(segments):
         expected = round((segment.timeline_end_ms - segment.timeline_start_ms) * 16)
         previous_segment = segments[segment_index - 1] if segment_index else None
@@ -136,7 +187,9 @@ def _compose_audio(
             expected,
             previous_unit,
             next_unit,
+            pitch_groups,
         )
+        clip = _apply_pitch_notes(project_dir, segment, clip, pitch_notes)
         clip = _apply_volume_envelope(clip, segment)
         envelope = np.ones(len(clip), dtype=np.float32)
         if fade_samples:
@@ -166,10 +219,33 @@ def _compose_audio(
         output[start:end] += clip[: end - start] * active
         if weights is not None:
             weights[start:end] += active
+        report(
+            EXPORT_JOB_STAGE_AUDIO,
+            progress_start + (progress_end - progress_start) * (segment_index + 1) / len(segments),
+        )
     if weights is not None:
         active = weights > 1
         output[active] /= weights[active]
     return np.clip(output, -1, 1)
+
+
+def _apply_pitch_notes(project_dir: Path, segment: TimelineSegment, samples: np.ndarray, notes) -> np.ndarray:
+    active_notes = [note for note in notes if note.start_ms < segment.timeline_end_ms and note.end_ms > segment.timeline_start_ms]
+    if not active_notes or not segment.edit_regions or len(samples) < 2:
+        return samples
+    world = render_world_regions(audio_path(project_dir, segment.source_id), segment, pitch_notes=active_notes)
+    output = samples.astype(np.float32, copy=True)
+    expected = min(len(output), len(world))
+    for note in active_notes:
+        start_ms = max(segment.timeline_start_ms, note.start_ms) - segment.timeline_start_ms
+        end_ms = min(segment.timeline_end_ms, note.end_ms) - segment.timeline_start_ms
+        if end_ms <= start_ms:
+            continue
+        start = max(0, round(start_ms * 16))
+        end = min(expected, round(end_ms * 16))
+        if end > start:
+            output[start:end] = world[start:end]
+    return output
 
 
 def _render_segment_audio(
@@ -179,6 +255,7 @@ def _render_segment_audio(
     expected: int,
     previous_unit: PhoneUnit | None = None,
     next_unit: PhoneUnit | None = None,
+    pitch_groups: dict[tuple[str, str], tuple[list[PhonePitchPoint], float, float]] | None = None,
 ) -> np.ndarray:
     path = audio_path(project_dir, segment.source_id)
     if mode == CompositionMode.SIMPLE or (not segment.phone_units and not segment.edit_regions):
@@ -186,21 +263,107 @@ def _render_segment_audio(
             _read_audio_clip(path, segment.source_start_ms, segment.source_end_ms), expected
         )
     elif segment.edit_regions:
-        clip = _render_edit_regions(path, segment)
+        clip = _render_edit_regions(path, segment, project_dir, previous_unit, next_unit, pitch_groups)
     else:
+        if pitch_groups is None:
+            pitch_groups = _build_pitch_groups([segment])
         clip = _render_professional_phone_audio(
             path,
             segment.phone_units,
             expected,
             previous_unit,
             next_unit,
+            segment,
+            pitch_groups,
         )
     if len(clip) < expected:
         return np.pad(clip, (0, expected - len(clip)))
     return clip[:expected]
 
 
-def _render_edit_regions(path: Path, segment: TimelineSegment) -> np.ndarray:
+def _render_edit_regions(
+    path: Path,
+    segment: TimelineSegment,
+    project_dir: Path | None = None,
+    previous_unit: PhoneUnit | None = None,
+    next_unit: PhoneUnit | None = None,
+    pitch_groups: dict[tuple[str, str], tuple[list[PhonePitchPoint], float, float]] | None = None,
+) -> np.ndarray:
+    if any(region.pitch_points for region in segment.edit_regions):
+        base_segment = replace(
+            segment,
+            edit_regions=[replace(region, pitch_points=[]) for region in segment.edit_regions],
+        )
+        base = _render_edit_regions(
+            path,
+            base_segment,
+            project_dir,
+            previous_unit,
+            next_unit,
+            pitch_groups,
+        )
+        expected = round(sum(region.output_duration_ms for region in segment.edit_regions) * 16)
+        if len(base) < expected:
+            base = np.pad(base, (0, expected - len(base)))
+        else:
+            base = base[:expected].copy()
+        world = render_world_regions(path, segment)
+        if len(world) < expected:
+            world = np.pad(world, (0, expected - len(world)))
+        output_offset_ms = 0
+        for region in segment.edit_regions:
+            start = round(output_offset_ms * 16)
+            output_offset_ms += region.output_duration_ms
+            end = min(expected, round(output_offset_ms * 16))
+            if region.pitch_points and end > start:
+                base[start:end] = world[start:end]
+        return base
+    if any(unit.pitch_points or unit.pitch_owner_ref for unit in segment.phone_units):
+        base_pieces = []
+        base_cents = []
+        for region in segment.edit_regions:
+            count = max(1, region.output_duration_ms * 16)
+            source = _read_audio_clip(path, region.source_start_ms, region.source_end_ms)
+            base_pieces.append(stretch_audio(source, count))
+            base_cents.extend([region.relative_pitch_cents] * count)
+        clip = np.concatenate(base_pieces) if base_pieces else np.zeros(0, dtype=np.float32)
+        if pitch_groups is None:
+            pitch_groups = _build_pitch_groups([segment])
+        return _apply_segment_phone_pitch_curves(path, segment, clip, np.asarray(base_cents), pitch_groups)
+    target_active = any(
+        unit.target_pitch_midi is not None and unit.target_pitch_strength_percent > 0
+        or unit.vibrato_depth_cents > 0
+        for unit in segment.phone_units
+    )
+    if target_active:
+        base_pieces = []
+        base_cents = []
+        for region in segment.edit_regions:
+            count = max(1, region.output_duration_ms * 16)
+            source = _read_audio_clip(path, region.source_start_ms, region.source_end_ms)
+            base_pieces.append(stretch_audio(source, count))
+            base_cents.extend([region.relative_pitch_cents] * count)
+        clip = np.concatenate(base_pieces) if base_pieces else np.zeros(0, dtype=np.float32)
+        if segment.pitch_envelope and len(clip):
+            positions = np.linspace(0, 1, len(clip), endpoint=False, dtype=np.float32)
+            base_cents = np.asarray(base_cents, dtype=np.float32) + np.interp(
+                positions,
+                [point.position for point in segment.pitch_envelope],
+                [point.cents for point in segment.pitch_envelope],
+            ).astype(np.float32)
+        if project_dir is None:
+            project_dir = path.parent.parent
+        pitch_curve = build_segment_pitch_curve(
+            project_dir,
+            segment,
+            previous_unit,
+            next_unit,
+        )
+        return render_relative_pitch_curve(
+            clip,
+            pitch_curve,
+            np.asarray(base_cents, dtype=np.float32),
+        )
     if not segment.pitch_envelope:
         merged: list[list[int]] = []
         for region in segment.edit_regions:
@@ -227,6 +390,183 @@ def _render_edit_regions(path: Path, segment: TimelineSegment) -> np.ndarray:
     return render_relative_pitch_curve(clip, curve, np.asarray(base_cents, dtype=np.float32) if segment.pitch_envelope else None)
 
 
+def _render_region_pitch_points(samples, region, segment, output_offset, total_duration):
+    frequencies, voiced, frame_times = _estimate_f0(samples, 16000)
+    if not region.pitch_points:
+        sample_times = np.arange(len(samples), dtype=np.float64) * 1000 / 16000
+        cents = np.full(len(samples), region.relative_pitch_cents, dtype=np.float32)
+        if segment.pitch_envelope:
+            cents += np.interp(
+                (output_offset + sample_times) / total_duration,
+                [point.position for point in segment.pitch_envelope],
+                [point.cents for point in segment.pitch_envelope],
+            ).astype(np.float32)
+        source_times = region.source_start_ms + sample_times * (
+            region.source_end_ms - region.source_start_ms
+        ) / max(1e-9, len(samples) / 16)
+        for unit in segment.phone_units:
+            if unit.source_start_ms is None or unit.source_end_ms is None or unit.vibrato_depth_cents <= 0 or unit.vibrato_rate_hz <= 0:
+                continue
+            active = (source_times >= unit.source_start_ms) & (source_times <= unit.source_end_ms)
+            elapsed = output_offset + sample_times - _segment_source_to_output_ms(segment, unit.source_start_ms) - unit.vibrato_start_ms
+            vibrato_active = active & (elapsed >= 0)
+            cents[vibrato_active] += unit.vibrato_depth_cents * np.sin(
+                2 * np.pi * unit.vibrato_rate_hz * elapsed[vibrato_active] / 1000
+            )
+        return render_local_pitch_curve(samples, cents)
+    if not np.any(voiced):
+        return samples.astype(np.float32, copy=True)
+    frame_ids = np.flatnonzero(voiced)
+    groups = np.split(frame_ids, np.flatnonzero(np.diff(frame_ids) > 1) + 1)
+    output = samples.astype(np.float32, copy=True)
+    sample_times_ms = np.arange(len(samples), dtype=np.float64) * 1000 / 16000
+    positions = np.asarray([point.position for point in region.pitch_points], dtype=np.float64)
+    midis = np.asarray([point.midi for point in region.pitch_points], dtype=np.float64)
+    for group in groups:
+        if not len(group):
+            continue
+        start_ms = max(0.0, frame_times[group[0]] - AUTOTUNE_WINDOW_MS / 2)
+        end_ms = min(len(samples) / 16, frame_times[group[-1]] + AUTOTUNE_WINDOW_MS / 2)
+        start = max(0, round(start_ms * 16))
+        end = min(len(samples), round(end_ms * 16))
+        if end - start < round(AUTOTUNE_WINDOW_MS * 16):
+            continue
+        local_times = sample_times_ms[start:end]
+        source_midi = np.interp(
+            local_times,
+            frame_times[group],
+            [hz_to_midi(frequencies[index]) for index in group],
+        )
+        region_positions = local_times / max(1e-9, len(samples) / 16)
+        target_midi = np.interp(region_positions, positions, midis)
+        correction = (target_midi - source_midi) * 100 + region.relative_pitch_cents
+        output_positions = (output_offset + local_times) / total_duration
+        if segment.pitch_envelope:
+            correction += np.interp(
+                output_positions,
+                [point.position for point in segment.pitch_envelope],
+                [point.cents for point in segment.pitch_envelope],
+            )
+        source_times = region.source_start_ms + local_times * (
+            region.source_end_ms - region.source_start_ms
+        ) / max(1e-9, len(samples) / 16)
+        for unit in segment.phone_units:
+            if unit.source_start_ms is None or unit.source_end_ms is None:
+                continue
+            active = (source_times >= unit.source_start_ms) & (source_times <= unit.source_end_ms)
+            if np.any(active) and unit.vibrato_depth_cents > 0 and unit.vibrato_rate_hz > 0:
+                unit_start = _segment_source_to_output_ms(segment, unit.source_start_ms)
+                elapsed = output_offset + local_times - unit_start - unit.vibrato_start_ms
+                vibrato_active = active & (elapsed >= 0)
+                correction[vibrato_active] += unit.vibrato_depth_cents * np.sin(
+                    2 * np.pi * unit.vibrato_rate_hz * elapsed[vibrato_active] / 1000
+                )
+        output[start:end] = render_local_pitch_curve(samples[start:end], correction.astype(np.float32))
+    return output
+
+
+def _build_pitch_groups(segments):
+    return build_phone_pitch_groups(segments)
+
+
+def _pitch_owner_key(segment_id, unit):
+    if unit.pitch_owner_ref is not None:
+        return unit.pitch_owner_ref.segment_id, unit.pitch_owner_ref.phone_unit_id
+    if unit.pitch_points:
+        return segment_id, unit.phone_unit_id
+    return None
+
+
+def _segment_source_to_output_ms(segment, source_ms):
+    offset = 0.0
+    for region in segment.edit_regions:
+        if source_ms <= region.source_end_ms:
+            source_duration = max(1, region.source_end_ms - region.source_start_ms)
+            local = min(source_duration, max(0.0, source_ms - region.source_start_ms))
+            return offset + local * region.output_duration_ms / source_duration
+        offset += region.output_duration_ms
+    return offset
+
+
+def _apply_segment_phone_pitch_curves(path, segment, clip, base_cents, pitch_groups):
+    output = clip.astype(np.float32, copy=True)
+    cursor = 0.0
+    for unit in segment.phone_units:
+        if segment.edit_regions and unit.source_start_ms is not None and unit.source_end_ms is not None:
+            start_ms = _segment_source_to_output_ms(segment, unit.source_start_ms)
+            end_ms = _segment_source_to_output_ms(segment, unit.source_end_ms)
+        else:
+            start_ms = cursor
+            end_ms = cursor + unit.output_duration_ms
+        cursor = end_ms
+        start = max(0, min(len(output), round(start_ms * 16)))
+        end = max(start, min(len(output), round(end_ms * 16)))
+        owner_key = _pitch_owner_key(segment.segment_id, unit)
+        group = pitch_groups.get(owner_key) if owner_key else None
+        source_pitch = _unit_source_pitch(path, unit)
+        if not group or (unit.source_f0_hz is None and not unit.pitch_points) or source_pitch is None or end - start < 2:
+            continue
+        output[start:end] = _render_phone_pitch_points(
+            output[start:end], unit, group,
+            segment.timeline_start_ms + start_ms,
+            segment.timeline_start_ms + end_ms,
+            source_pitch,
+            base_cents[start:end],
+        )
+    return output
+
+
+def _render_phone_pitch_points(samples, unit, group, member_start_ms, member_end_ms, source_midi, base_cents=None):
+    points, group_start_ms, group_end_ms = group
+    group_duration = max(1e-9, group_end_ms - group_start_ms)
+    member_start = np.clip((member_start_ms - group_start_ms) / group_duration, 0, 1)
+    member_end = np.clip((member_end_ms - group_start_ms) / group_duration, 0, 1)
+    if member_end <= member_start:
+        return samples
+    group_positions_all = np.asarray([point.position for point in points], dtype=np.float64)
+    group_midis = np.asarray([point.midi for point in points], dtype=np.float64)
+    if base_cents is None:
+        base_cents = np.zeros(len(samples), dtype=np.float32)
+    else:
+        base_cents = np.asarray(base_cents, dtype=np.float32).copy()
+    frequencies, voiced, frame_times = _estimate_f0(samples, 16000)
+    if not np.any(voiced):
+        return samples.astype(np.float32, copy=True)
+
+    frame_window_ms = AUTOTUNE_WINDOW_MS
+    sample_times_ms = np.arange(len(samples), dtype=np.float64) * 1000 / 16000
+    sample_voiced = np.zeros(len(samples), dtype=bool)
+    frame_indices = np.flatnonzero(voiced)
+    groups = np.split(frame_indices, np.flatnonzero(np.diff(frame_indices) > 1) + 1)
+    output = samples.astype(np.float32, copy=True)
+    for frame_group in groups:
+        if not len(frame_group):
+            continue
+        start_ms = max(0.0, frame_times[frame_group[0]] - frame_window_ms / 2)
+        end_ms = min(len(samples) * 1000 / 16000, frame_times[frame_group[-1]] + frame_window_ms / 2)
+        start = max(0, round(start_ms * 16))
+        end = min(len(samples), round(end_ms * 16))
+        if end - start < round(frame_window_ms * 16):
+            continue
+        local_times = sample_times_ms[start:end]
+        source_midi_curve = np.interp(local_times, frame_times[frame_group], [hz_to_midi(frequencies[i]) for i in frame_group])
+        output_times = member_start_ms + local_times / max(1e-9, len(samples) / 16) * (member_end_ms - member_start_ms)
+        target_positions = (output_times - group_start_ms) / group_duration
+        target_midi_curve = np.interp(target_positions, group_positions_all, group_midis)
+        correction = (target_midi_curve - source_midi_curve) * 100 + base_cents[start:end]
+        if unit.vibrato_depth_cents > 0 and unit.vibrato_rate_hz > 0:
+            elapsed_ms = output_times - member_start_ms - unit.vibrato_start_ms
+            active = elapsed_ms >= 0
+            correction[active] += unit.vibrato_depth_cents * np.sin(
+                2 * np.pi * unit.vibrato_rate_hz * elapsed_ms[active] / 1000
+            )
+        output[start:end] = render_local_pitch_curve(samples[start:end], correction.astype(np.float32))
+        sample_voiced[start:end] = True
+    if not np.any(sample_voiced):
+        return samples.astype(np.float32, copy=True)
+    return output
+
+
 def _apply_volume_envelope(clip: np.ndarray, segment: TimelineSegment) -> np.ndarray:
     if not segment.volume_envelope or not len(clip):
         return clip
@@ -242,6 +582,8 @@ def _render_professional_phone_audio(
     expected: int,
     previous_unit: PhoneUnit | None,
     next_unit: PhoneUnit | None,
+    segment: TimelineSegment,
+    pitch_groups: dict[tuple[str, str], tuple[list[PhonePitchPoint], float, float]] | None,
 ) -> np.ndarray:
     output = np.zeros(expected, dtype=np.float32)
     weights = np.zeros(expected, dtype=np.float32)
@@ -262,17 +604,38 @@ def _render_professional_phone_audio(
         start_pitch, start_ms, end_pitch, end_ms = _pitch_context(
             units, index, previous_unit, next_unit
         )
+        owner_key = _pitch_owner_key(segment.segment_id, unit)
+        phone_curve = pitch_groups.get(owner_key) if pitch_groups else None
+        if phone_curve and unit.source_f0_hz is None and not unit.pitch_points:
+            phone_curve = None
+        if phone_curve:
+            start_pitch = end_pitch = None
+            start_ms = end_ms = 0.0
+        source_pitch = _unit_source_pitch(path, unit)
+        source_frequency = 440 * 2 ** ((source_pitch - 69) / 12) if source_pitch is not None else None
         rendered = render_pitched_audio(
             samples,
             left_context + duration + right_context,
-            unit.source_f0_hz,
-            unit.target_pitch_midi,
+            source_frequency,
+            source_pitch if phone_curve else _effective_phone_pitch(unit),
             start_pitch,
-            round(start_ms * 16),
+            0 if phone_curve else round(start_ms * 16),
             end_pitch,
-            round(end_ms * 16),
+            0 if phone_curve else round(end_ms * 16),
             formant_shift_semitones=unit.formant_shift_semitones,
+            vibrato_depth_cents=0 if phone_curve else unit.vibrato_depth_cents,
+            vibrato_rate_hz=unit.vibrato_rate_hz,
+            vibrato_start_samples=left_context + unit.vibrato_start_ms * 16,
         )
+        if phone_curve and source_pitch is not None:
+            core_start = left_context
+            core_end = min(len(rendered), core_start + duration)
+            rendered[core_start:core_end] = _render_phone_pitch_points(
+                rendered[core_start:core_end], unit, phone_curve,
+                cursor / 16 + segment.timeline_start_ms,
+                cursor / 16 + segment.timeline_start_ms + unit.output_duration_ms,
+                source_pitch,
+            )
         envelope = np.ones(len(rendered), dtype=np.float32)
         if left_context:
             envelope[:left_context] = np.linspace(0, 1, left_context, endpoint=False)
@@ -292,6 +655,16 @@ def _render_professional_phone_audio(
     active = weights > np.finfo(np.float32).eps
     output[active] /= weights[active]
     return output
+
+
+def _unit_source_pitch(path, unit):
+    if unit.source_f0_hz is not None and unit.source_f0_hz > 0:
+        return hz_to_midi(unit.source_f0_hz)
+    if unit.source_start_ms is None or unit.source_end_ms is None:
+        return None
+    samples = _read_audio_clip(path, unit.source_start_ms, unit.source_end_ms)
+    f0, voiced, _ = _estimate_f0(samples, 16000)
+    return hz_to_midi(float(np.median(f0[voiced]))) if np.any(voiced) else None
 
 
 def _read_phone_with_context(
@@ -342,9 +715,11 @@ def _pitch_context(
 def _transition(
     left: PhoneUnit, right: PhoneUnit
 ) -> tuple[float | None, float, float | None, float]:
+    left_target = _effective_phone_pitch(left)
+    right_target = _effective_phone_pitch(right)
     if (
-        left.target_pitch_midi is None
-        or right.target_pitch_midi is None
+        left_target is None
+        or right_target is None
         or left.transition_to_next_ms <= 0
         or left.transition_strength_percent <= 0
     ):
@@ -352,13 +727,21 @@ def _transition(
     duration = float(left.transition_to_next_ms)
     before = min(duration, max(0.0, duration / 2 - left.transition_center_ms))
     after = duration - before
-    boundary = left.target_pitch_midi + (
-        right.target_pitch_midi - left.target_pitch_midi
-    ) * before / duration
+    boundary = left_target + (right_target - left_target) * before / duration
     strength = left.transition_strength_percent / 100
-    left_pitch = left.target_pitch_midi + (boundary - left.target_pitch_midi) * strength
-    right_pitch = right.target_pitch_midi + (boundary - right.target_pitch_midi) * strength
+    left_pitch = left_target + (boundary - left_target) * strength
+    right_pitch = right_target + (boundary - right_target) * strength
     return left_pitch, before, right_pitch, after
+
+
+def _effective_phone_pitch(unit: PhoneUnit) -> float | None:
+    if unit.target_pitch_midi is None:
+        return None
+    if unit.source_f0_hz is None:
+        return unit.target_pitch_midi
+    source_pitch = hz_to_midi(unit.source_f0_hz)
+    strength = unit.target_pitch_strength_percent / 100
+    return source_pitch + (unit.target_pitch_midi - source_pitch) * strength
 
 
 def _read_audio_clip(path: Path, start_ms: int, end_ms: int) -> np.ndarray:
@@ -381,6 +764,7 @@ def _export_mp4(
     composition: CompositionProject,
     sources: dict[str, MediaSource],
     destination: Path,
+    progress_callback: ExportProgressCallback | None = None,
 ) -> None:
     import av
 
@@ -401,17 +785,21 @@ def _export_mp4(
     video_stream.pix_fmt = "yuv420p"
     audio_stream = output.add_stream("aac", rate=16000)
     audio_stream.layout = "mono"
+    report = progress_callback or (lambda _stage, _percent: None)
+    total_frames = max(1, round(max(item.timeline_end_ms for item in composition.segments) * fps / 1000))
+    report(EXPORT_JOB_STAGE_VIDEO, 1)
+    video_progress = lambda frame: report(EXPORT_JOB_STAGE_VIDEO, 1 + 69 * min(frame, total_frames) / total_frames)
     if composition.mode == CompositionMode.PROFESSIONAL:
         _encode_professional_video(
-            av, output, video_stream, composition, sources, width, height, fps
+            av, output, video_stream, composition, sources, width, height, fps, video_progress
         )
     else:
         _encode_simple_video(
-            av, output, video_stream, composition, sources, width, height, fps
+            av, output, video_stream, composition, sources, width, height, fps, video_progress
         )
     for packet in video_stream.encode():
         output.mux(packet)
-    audio = np.clip(_compose_audio(project_dir, composition) * 32767, -32768, 32767).astype(
+    audio = np.clip(_compose_audio(project_dir, composition, report, (71, 82)) * 32767, -32768, 32767).astype(
         np.int16
     )
     audio_pts = 0
@@ -424,9 +812,11 @@ def _export_mp4(
         audio_pts += len(chunk)
         for packet in audio_stream.encode(frame):
             output.mux(packet)
+        report(EXPORT_JOB_STAGE_AUDIO, 82 + 16 * min(audio_pts, max(1, len(audio))) / max(1, len(audio)))
     for packet in audio_stream.encode():
         output.mux(packet)
     output.close()
+    report(EXPORT_JOB_STAGE_FINALIZE, 99)
 
 
 def _encode_simple_video(
@@ -438,6 +828,7 @@ def _encode_simple_video(
     width: int,
     height: int,
     fps: int,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> None:
     last_frame_index = -1
     for segment in sorted(composition.segments, key=_timeline_key):
@@ -467,6 +858,8 @@ def _encode_simple_video(
                 last_frame_index = frame_index
                 for packet in video_stream.encode(frame):
                     output.mux(packet)
+                if progress_callback:
+                    progress_callback(frame_index)
 
 
 def _encode_professional_video(
@@ -478,6 +871,7 @@ def _encode_professional_video(
     width: int,
     height: int,
     fps: int,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> None:
     segments = sorted(composition.segments, key=_timeline_key)
     pending: dict[int, np.ndarray] = {}
@@ -517,6 +911,8 @@ def _encode_professional_video(
             last_encoded = frame_index
             for packet in video_stream.encode(frame):
                 output.mux(packet)
+            if progress_callback:
+                progress_callback(frame_index)
 
 
 def _professional_segment_frames(

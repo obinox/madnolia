@@ -4,6 +4,10 @@ from madnolia.constants import (
     FORMANT_ENVELOPE_LIFTER,
     FORMANT_GAIN_MAX,
     FORMANT_GAIN_MIN,
+    PITCH_CURVE_FRAME_SAMPLES,
+    PITCH_CURVE_HOP_SAMPLES,
+    PITCH_CURVE_PHASE_ALIGN_SAMPLES,
+    PITCH_CURVE_STATIC_TOLERANCE_CENTS,
     PITCH_SHIFT_FRAME_SAMPLES,
     PITCH_SHIFT_HOP_SAMPLES,
     PROFESSIONAL_PITCH_SHIFT_MIN_SEMITONES,
@@ -30,6 +34,9 @@ def render_pitched_audio(
     end_pitch_midi: float | None = None,
     end_transition_samples: int = 0,
     formant_shift_semitones: float = 0.0,
+    vibrato_depth_cents: int = 0,
+    vibrato_rate_hz: float = 0.0,
+    vibrato_start_samples: int = 0,
 ) -> np.ndarray:
     stretched = stretch_audio(samples, target_length)
     if source_f0_hz is None or target_pitch_midi is None or len(stretched) < 2:
@@ -54,6 +61,10 @@ def render_pitched_audio(
             end_pitch_midi,
             end_transition_samples,
         )
+        if vibrato_depth_cents and center >= vibrato_start_samples:
+            pitch += vibrato_depth_cents / 100 * np.sin(
+                2 * np.pi * vibrato_rate_hz * (center - vibrato_start_samples) / 16000
+            )
         frame = stretched[position : position + frame_size]
         shifted = _shift_frame(frame, pitch - source_pitch, formant_shift_semitones)
         output[position : position + frame_size] += shifted * window
@@ -101,6 +112,65 @@ def render_relative_pitch_curve(
     source_positions = np.interp(output_positions, relative, cumulative / cumulative[-1]) * (length - 1)
     resampled = np.interp(source_positions, np.arange(length), samples).astype(np.float32)
     return stretch_audio(resampled, length)
+
+
+def render_local_pitch_curve(samples: np.ndarray, cents: np.ndarray) -> np.ndarray:
+    if len(samples) < 2 or len(cents) != len(samples) or np.all(cents == 0):
+        return samples.astype(np.float32, copy=True)
+    if np.ptp(cents) <= PITCH_CURVE_STATIC_TOLERANCE_CENTS:
+        return render_relative_pitched_audio(samples, len(samples), round(float(cents[0])))
+    length = len(samples)
+    frame_size = min(PITCH_CURVE_FRAME_SAMPLES, length)
+    if length <= PITCH_CURVE_FRAME_SAMPLES:
+        return render_relative_pitch_curve(
+            samples,
+            [PitchEnvelopePoint(0.0, 0), PitchEnvelopePoint(1.0, 0)],
+            cents,
+        )
+    hop = min(PITCH_CURVE_HOP_SAMPLES, max(1, frame_size // 2))
+    last_start = length - frame_size
+    starts = list(range(0, last_start + 1, hop))
+    if starts[-1] != last_start:
+        starts.append(last_start)
+    window = np.hanning(frame_size + 2)[1:-1].astype(np.float32)
+    output = np.zeros(length, dtype=np.float32)
+    weights = np.zeros(length, dtype=np.float32)
+    for start in starts:
+        shifted = render_relative_pitch_curve(
+            samples[start : start + frame_size],
+            [PitchEnvelopePoint(0.0, 0), PitchEnvelopePoint(1.0, 0)],
+            cents[start : start + frame_size],
+        )
+        if start:
+            overlap = min(frame_size - hop, length - start)
+            previous = output[start : start + overlap] / np.maximum(
+                weights[start : start + overlap], np.finfo(np.float32).eps
+            )
+            maximum_shift = min(PITCH_CURVE_PHASE_ALIGN_SAMPLES, max(0, overlap // 4))
+            best_shift = 0
+            best_score = -np.inf
+            for shift in range(-maximum_shift, maximum_shift + 1):
+                if shift < 0:
+                    left, right = previous[-shift:], shifted[: overlap + shift]
+                elif shift > 0:
+                    left, right = previous[: overlap - shift], shifted[shift : overlap]
+                else:
+                    left, right = previous, shifted[:overlap]
+                left = left - np.mean(left)
+                right = right - np.mean(right)
+                score = float(np.dot(left, right)) / max(
+                    float(np.sqrt(np.dot(left, left) * np.dot(right, right))),
+                    np.finfo(np.float32).eps,
+                )
+                if score > best_score:
+                    best_shift, best_score = shift, score
+            if best_shift > 0:
+                shifted = np.pad(shifted[best_shift:], (0, best_shift), mode="reflect")
+            elif best_shift < 0:
+                shifted = np.pad(shifted[:best_shift], (-best_shift, 0), mode="reflect")
+        output[start : start + frame_size] += shifted * window
+        weights[start : start + frame_size] += window
+    return output / np.maximum(weights, np.finfo(np.float32).eps)
 
 
 def _pitch_at(

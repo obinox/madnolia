@@ -1,0 +1,65 @@
+.global-task-app { width: 100%; height: 100%; }
+.global-task-backdrop {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: clamp(8px, 3vh, 24px) clamp(8px, 3vw, 24px);
+  background: rgba(3, 6, 9, .78);
+  backdrop-filter: blur(5px);
+}
+.global-task-dialog {
+  display: grid;
+  min-width: 0;
+  max-width: min(460px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  gap: 15px;
+  width: 100%;
+  padding: clamp(14px, 4vw, 28px);
+  border: 1px solid #344b5e;
+  border-radius: 14px;
+  background: #101820;
+  box-shadow: 0 24px 90px #000a;
+}
+.global-task-dialog h2 { min-width: 0; margin: 0; font-size: 22px; overflow-wrap: anywhere; }
+.global-task-stage { min-width: 0; margin: 0; color: #aab9c7; overflow-wrap: anywhere; }
+.global-task-progress, .global-task-indeterminate {
+  position: relative;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: #243441;
+}
+.global-task-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #65a9ff;
+  transition: width .2s ease;
+}
+.global-task-indeterminate::after {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  border-radius: inherit;
+  background: #65a9ff;
+  content: "";
+  animation: global-task-sweep 1.25s ease-in-out infinite alternate;
+}
+.global-task-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; color: #9aa9b7; }
+.global-task-footer > span { margin-right: auto; }
+.global-task-footer button { padding: 9px 13px; border-color: #80535b; color: #ffdfe3; background: #38252b; }
+.global-task-footer button:disabled { cursor: wait; opacity: .7; }
+.global-task-error { margin: 0; color: #ff9d9d; overflow-wrap: anywhere; }
+@keyframes global-task-sweep { from { transform: translateX(-5%); } to { transform: translateX(195%); } }
+@media (prefers-reduced-motion: reduce) {
+  .global-task-progress span { transition: none; }
+  .global-task-indeterminate::after { animation-duration: 3s; }
+}
+@media (max-height: 480px) {
+  .global-task-backdrop { place-items: start center; }
+  .global-task-dialog { gap: 9px; }
+}

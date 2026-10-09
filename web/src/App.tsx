@@ -13,10 +13,12 @@ import { CollagePanel } from "./components/CollagePanel"
 import { AnalysisPage } from "./components/AnalysisPage"
 import { ProjectsPage } from "./components/ProjectsPage"
 import { ProfessionalSynthesisPage } from "./components/ProfessionalSynthesisPage"
+import { useGlobalTask } from "./globalTask"
 import type {
   ProjectDetail,
   ProjectSummary,
   PhoneCache,
+  SavedDetailLoadState,
   TimelineSelection,
   TimelineSlice,
   UnitCandidate,
@@ -25,6 +27,8 @@ import type {
 } from "./types"
 
 export default function App() {
+  const { task, beginTask, updateTask, finishTask, isTaskActive } = useGlobalTask()
+  const taskActive = task !== null
   const audioRefs = useRef<Map<string, HTMLAudioElement>>(new Map())
   const playbackFrameRef = useRef<number | null>(null)
   const waveformRequestRef = useRef(0)
@@ -39,24 +43,48 @@ export default function App() {
   const [audioObjectUrls, setAudioObjectUrls] = useState<Record<string, string>>({})
   const [audioCacheCount, setAudioCacheCount] = useState(0)
   const [audioCacheProcessedCount, setAudioCacheProcessedCount] = useState(0)
+  const [audioCacheWorkTotal, setAudioCacheWorkTotal] = useState(0)
+  const [audioCacheError, setAudioCacheError] = useState("")
+  const [audioCacheCancelled, setAudioCacheCancelled] = useState(false)
   const [transcriptCandidateId, setTranscriptCandidateId] = useState("")
   const [viewStartMs, setViewStartMs] = useState(0)
   const [viewEndMs, setViewEndMs] = useState(1)
   const [currentMs, setCurrentMs] = useState(0)
   const [waveform, setWaveform] = useState<WaveformData | null>(null)
   const [waveformLoading, setWaveformLoading] = useState(false)
+  const [waveformError, setWaveformError] = useState("")
+  const [waveformRetry, setWaveformRetry] = useState(0)
+  const [projectLoading, setProjectLoading] = useState(false)
+  const [projectLoadError, setProjectLoadError] = useState("")
+  const [savedDetailState, setSavedDetailState] = useState<SavedDetailLoadState>("idle")
+  const [savedDetailError, setSavedDetailError] = useState("")
   const [phoneCache, setPhoneCache] = useState<PhoneCache | null>(null)
   const [selection, setSelection] = useState<TimelineSelection | null>(null)
   const [loopSelection, setLoopSelection] = useState(false)
   const [pendingCandidate, setPendingCandidate] = useState<UnitCandidate | null>(null)
   const [error, setError] = useState("")
   const audioObjectUrlsRef = useRef<string[]>([])
+  const audioObjectUrlBySourceRef = useRef<Record<string, string>>({})
+  const lastAllowedHashRef = useRef(window.location.hash || "#/analysis")
+  const initialRoutePendingRef = useRef(true)
+  const syncPageRef = useRef<((initial?: boolean) => void) | null>(null)
+  const previousTaskActiveRef = useRef(taskActive)
+  const pendingTaskRetryRef = useRef(false)
+  const projectLoadKeyRef = useRef("")
+  const loadedProjectIdRef = useRef("")
+  const [taskRetry, setTaskRetry] = useState(0)
 
   const activeAudio = () => audioRefs.current.get(sourceId) ?? null
 
   const prepareSourceAudio = (nextSourceId: string) => {
     const audio = audioRefs.current.get(nextSourceId)
     if (audio && audio.readyState < 2) audio.load()
+  }
+
+  const retryProjectLoad = () => {
+    loadedProjectIdRef.current = ""
+    setProjectLoadError("")
+    setTaskRetry((value) => value + 1)
   }
 
   const source = project?.manifest.sources.find((item) => item.source_id === sourceId) ?? null
@@ -69,50 +97,102 @@ export default function App() {
   const viewSpan = viewEndMs - viewStartMs
 
   const openProject = (id: string, destination: "collage" | "professional" = "collage") => {
+    if (isTaskActive()) return
     setRequestedCollageId("")
+    const nextHash = `#/${destination}/${encodeURIComponent(id)}`
+    lastAllowedHashRef.current = nextHash
     setProjectId(id)
-    window.location.hash = `#/${destination}/${encodeURIComponent(id)}`
+    setPage(destination)
+    window.location.hash = nextHash
   }
 
   useEffect(() => {
     let routeRequestId = 0
-    const syncPage = () => {
+    const syncPage = (initial = false) => {
       const currentRequestId = ++routeRequestId
       const hash = window.location.hash
+      if (isTaskActive()) {
+        if (initial && initialRoutePendingRef.current) return
+        const safeHash = lastAllowedHashRef.current
+        window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${safeHash}`)
+        return
+      }
+      initialRoutePendingRef.current = false
+      lastAllowedHashRef.current = hash || "#/analysis"
+      try {
       if (hash.startsWith("#/collages/")) {
         const id = decodeURIComponent(hash.slice("#/collages/".length))
+        if (!id) throw new Error("empty composition ID")
+        setSavedDetailState("loading")
+        setSavedDetailError("")
+        setError("")
         setRequestedCollageId(id)
         setProjectId("")
         fetchCollage(id).then((collage) => {
           if (currentRequestId === routeRequestId) {
             setProjectId(collage.corpus_project_id)
             setPage(collage.mode === "PROFESSIONAL" ? "professional" : "collage")
+            setSavedDetailState("idle")
           }
         }).catch((caught: Error) => {
-          if (currentRequestId === routeRequestId) setError(caught.message)
+          if (currentRequestId === routeRequestId) {
+            setSavedDetailError(caught.message)
+            setSavedDetailState("error")
+          }
         })
       } else if (hash.startsWith("#/collage/")) {
+        setSavedDetailState("idle")
+        setSavedDetailError("")
         setRequestedCollageId("")
         setProjectId(decodeURIComponent(hash.slice("#/collage/".length)))
         setPage("collage")
       } else if (hash.startsWith("#/professional/")) {
+        setSavedDetailState("idle")
+        setSavedDetailError("")
         setRequestedCollageId("")
         setProjectId(decodeURIComponent(hash.slice("#/professional/".length)))
         setPage("professional")
       } else if (hash === "#/projects") {
+        setSavedDetailState("idle")
+        setSavedDetailError("")
         setPage("projects")
       } else {
+        setSavedDetailState("idle")
+        setSavedDetailError("")
         setPage("analysis")
         if (hash !== "#/analysis") window.location.hash = "#/analysis"
       }
+      } catch {
+        setSavedDetailState("idle")
+        setSavedDetailError("")
+        setRequestedCollageId("")
+        setProjectId("")
+        setPage("projects")
+        setError("주소의 프로젝트 ID를 읽을 수 없습니다. 프로젝트 목록에서 다시 선택하세요.")
+        window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#/projects`)
+      }
     }
-    syncPage()
-    window.addEventListener("hashchange", syncPage)
+    syncPageRef.current = syncPage
+    syncPage(true)
+    const onHashChange = () => syncPage(false)
+    window.addEventListener("hashchange", onHashChange)
     return () => {
       routeRequestId += 1
-      window.removeEventListener("hashchange", syncPage)
+      syncPageRef.current = null
+      window.removeEventListener("hashchange", onHashChange)
     }
-  }, [])
+  }, [isTaskActive])
+
+  useEffect(() => {
+    if (previousTaskActiveRef.current && !taskActive) {
+      if (pendingTaskRetryRef.current) {
+        pendingTaskRetryRef.current = false
+        setTaskRetry((current) => current + 1)
+      }
+      if (initialRoutePendingRef.current) syncPageRef.current?.(true)
+    }
+    previousTaskActiveRef.current = taskActive
+  }, [taskActive])
 
   useEffect(() => {
     selectionRef.current = selection
@@ -135,17 +215,43 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    setProject(null)
-    setSourceId("")
-    setAudioObjectUrls({})
-    setAudioCacheCount(0)
-    setAudioCacheProcessedCount(0)
+    if (projectLoadKeyRef.current !== projectId) {
+      projectLoadKeyRef.current = projectId
+      loadedProjectIdRef.current = ""
+      setProjectLoading(false)
+      setProjectLoadError("")
+      setProject(null)
+      setSourceId("")
+      audioObjectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
+      audioObjectUrlsRef.current = []
+      audioObjectUrlBySourceRef.current = {}
+      setAudioObjectUrls({})
+      setAudioCacheCount(0)
+      setAudioCacheProcessedCount(0)
+      setAudioCacheWorkTotal(0)
+      setAudioCacheError("")
+      setAudioCacheCancelled(false)
+    }
     if (!projectId) return
+    if (loadedProjectIdRef.current === projectId) return
+    if (isTaskActive()) {
+      pendingTaskRetryRef.current = true
+      return
+    }
+    setProjectLoading(true)
+    setProjectLoadError("")
     let active = true
+    const controller = new AbortController()
+    const taskId = beginTask({ label: "프로젝트 불러오기", stage: "프로젝트 정보 불러오는 중" })
+    if (!taskId) {
+      pendingTaskRetryRef.current = true
+      return
+    }
     setError("")
-    fetchProject(projectId)
+    fetchProject(projectId, controller.signal)
       .then((detail) => {
         if (!active) return
+        loadedProjectIdRef.current = projectId
         setProject(detail)
         const firstSource = detail.manifest.sources[0]
         if (firstSource) {
@@ -161,40 +267,82 @@ export default function App() {
           setPhoneCache(null)
         }
       })
-      .catch((caught: Error) => { if (active) setError(caught.message) })
-    return () => { active = false }
-  }, [projectId])
+      .catch((caught: Error) => { if (active) { setProjectLoadError(caught.message); setError("") } })
+      .finally(() => { if (active) setProjectLoading(false); finishTask(taskId) })
+    return () => {
+      active = false
+      controller.abort()
+      finishTask(taskId)
+    }
+  }, [beginTask, finishTask, isTaskActive, projectId, taskRetry])
 
   useEffect(() => {
     if (!projectId || !project) return
+    if (isTaskActive()) {
+      pendingTaskRetryRef.current = true
+      return
+    }
     const controller = new AbortController()
     let active = true
-    for (const url of audioObjectUrlsRef.current) URL.revokeObjectURL(url)
-    audioObjectUrlsRef.current = []
-    setAudioObjectUrls({})
-    setAudioCacheCount(0)
+    let processed = 0
+    let resolveCancel: (() => void) | null = null
+    const missingSources = project.manifest.sources.filter((item) => !audioObjectUrlBySourceRef.current[item.source_id])
+    const total = missingSources.length
+    if (!total) return
+    setAudioCacheWorkTotal(total)
+    const taskId = beginTask({
+      label: "오디오 준비",
+      stage: `오디오 캐시 준비 중 0/${total}`,
+      percent: total ? 0 : 100,
+      cancel: () => new Promise<void>((resolve) => {
+        resolveCancel = resolve
+        controller.abort()
+      }),
+      cancelLabel: "준비 중단",
+    })
+    if (!taskId) {
+      pendingTaskRetryRef.current = true
+      return
+    }
     setAudioCacheProcessedCount(0)
-    void Promise.all(project.manifest.sources.map(async (sourceItem) => {
+    setAudioCacheError("")
+    setAudioCacheCancelled(false)
+    void Promise.all(missingSources.map(async (sourceItem) => {
       try {
         const blob = await fetchAudioBlob(projectId, sourceItem.source_id, controller.signal)
         if (!active) return
         const url = URL.createObjectURL(blob)
         audioObjectUrlsRef.current.push(url)
+        audioObjectUrlBySourceRef.current[sourceItem.source_id] = url
         setAudioObjectUrls((current) => ({ ...current, [sourceItem.source_id]: url }))
         setAudioCacheCount((current) => current + 1)
       } catch (caught) {
         if (caught instanceof Error && caught.name !== "AbortError" && active) {
-          setError(caught.message)
+          setAudioCacheError((current) => current ? `${current} · ${sourceItem.path}: ${caught.message}` : `${sourceItem.path}: ${caught.message}`)
         }
       } finally {
-        if (active) setAudioCacheProcessedCount((current) => current + 1)
+        processed += 1
+        if (active) {
+          setAudioCacheProcessedCount(processed)
+          updateTask(taskId, {
+            stage: `오디오 준비 처리 ${processed}/${total}`,
+            percent: total ? processed / total * 100 : 100,
+          })
+        }
       }
     }))
+      .finally(() => {
+        if (active && controller.signal.aborted && Object.keys(audioObjectUrlBySourceRef.current).length < project.manifest.sources.length) setAudioCacheCancelled(true)
+        finishTask(taskId)
+        resolveCancel?.()
+        resolveCancel = null
+      })
     return () => {
       active = false
       controller.abort()
+      finishTask(taskId)
     }
-  }, [project, projectId])
+  }, [beginTask, finishTask, isTaskActive, project, projectId, taskRetry, updateTask])
 
   useEffect(() => () => {
     for (const url of audioObjectUrlsRef.current) URL.revokeObjectURL(url)
@@ -239,6 +387,7 @@ export default function App() {
   useEffect(() => {
     const requestId = ++waveformRequestRef.current
     setWaveform(null)
+    setWaveformError("")
     if (!projectId || !sourceId || viewEndMs <= viewStartMs) {
       setWaveformLoading(false)
       return
@@ -248,10 +397,13 @@ export default function App() {
     const timer = window.setTimeout(() => {
       fetchWaveform(projectId, sourceId, viewStartMs, viewEndMs, WAVEFORM_BINS, controller.signal)
         .then((nextWaveform) => {
-          if (waveformRequestRef.current === requestId) setWaveform(nextWaveform)
+          if (waveformRequestRef.current === requestId) {
+            setWaveform(nextWaveform)
+            setWaveformError("")
+          }
         })
         .catch((caught: Error) => {
-          if (caught.name !== "AbortError") setError(caught.message)
+          if (caught.name !== "AbortError" && waveformRequestRef.current === requestId) setWaveformError(caught.message)
         })
         .finally(() => {
           if (waveformRequestRef.current === requestId) setWaveformLoading(false)
@@ -261,7 +413,7 @@ export default function App() {
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [projectId, sourceId, viewEndMs, viewStartMs])
+  }, [projectId, sourceId, viewEndMs, viewStartMs, waveformRetry])
 
   useEffect(() => {
     if (!projectId || !sourceId || viewEndMs <= viewStartMs || viewSpan > PHONE_DETAIL_MAX_MS) return
@@ -448,23 +600,23 @@ export default function App() {
           <h1>Madnolia Viewer</h1>
         </div>
         <nav className="workflow-nav" aria-label="작업 단계">
-          <a href="#/analysis" aria-current={page === "analysis" ? "page" : undefined}>1. 영상 분석</a>
-          <a href="#/projects" aria-current={page === "projects" ? "page" : undefined}>2. 프로젝트</a>
+          <a href="#/analysis" aria-current={savedDetailState === "idle" && page === "analysis" ? "page" : undefined}>1. 영상 분석</a>
+          <a href="#/projects" aria-current={savedDetailState === "idle" && page === "projects" ? "page" : undefined}>2. 프로젝트</a>
           <a
             href={projectId ? `#/collage/${encodeURIComponent(projectId)}` : "#/projects"}
             className={projectId ? undefined : "disabled"}
             aria-disabled={projectId ? undefined : true}
-            aria-current={page === "collage" ? "page" : undefined}
+            aria-current={savedDetailState === "idle" && page === "collage" ? "page" : undefined}
           >3. 합성</a>
           <a
             href={projectId ? `#/professional/${encodeURIComponent(projectId)}` : "#/projects"}
             className={projectId ? undefined : "disabled"}
             aria-disabled={projectId ? undefined : true}
-            aria-current={page === "professional" ? "page" : undefined}
+            aria-current={savedDetailState === "idle" && page === "professional" ? "page" : undefined}
           >4. 전문 편집</a>
         </nav>
         <div className="header-context">
-        {page === "collage" || page === "professional" ? <div className="header-controls">
+        {(page === "collage" || page === "professional") && savedDetailState === "idle" ? <div className="header-controls">
           <label>
             Project
             <select value={projectId} onChange={(event) => openProject(
@@ -510,27 +662,51 @@ export default function App() {
 
       {error && <div className="error">{error}</div>}
 
-      {page === "analysis" ? (
-        <AnalysisPage onGoToProjects={() => { window.location.hash = "#/projects" }} />
+      <div className="analysis-page-host" hidden={page !== "analysis" || savedDetailState !== "idle"}>
+        <AnalysisPage onGoToProjects={() => {
+          if (!isTaskActive()) window.location.hash = "#/projects"
+        }} />
+      </div>
+
+      {savedDetailState === "loading" ? (
+        <div className="empty panel" role="status" aria-live="polite">저장한 합성을 불러오는 중입니다.</div>
+      ) : savedDetailState === "error" ? (
+        <div className="empty panel" role="alert"><p>저장한 합성을 불러오지 못했습니다. {savedDetailError}</p><button onClick={() => syncPageRef.current?.()}>다시 시도</button><button onClick={() => { window.location.hash = "#/projects" }}>프로젝트 목록</button></div>
       ) : page === "projects" ? (
         <ProjectsPage projects={projects}
           onOpenProject={openProject}
-          onOpenCollage={(id) => { window.location.hash = `#/collages/${encodeURIComponent(id)}` }}
+          onOpenCollage={(id) => {
+            if (isTaskActive()) return
+            const nextHash = `#/collages/${encodeURIComponent(id)}`
+            lastAllowedHashRef.current = nextHash
+            window.location.hash = nextHash
+          }}
           onProjectCreated={async () => { setProjects(await fetchProjects()) }} />
-      ) : page === "professional" && project ? (
+      ) : page === "analysis" ? null : projectLoading ? (
+        <div className="empty panel" role="status">프로젝트 정보를 불러오는 중입니다.</div>
+      ) : projectLoadError ? (
+        <div className="empty panel" role="alert"><p>프로젝트를 불러오지 못했습니다. {projectLoadError}</p><button onClick={retryProjectLoad}>다시 시도</button><button onClick={() => { window.location.hash = "#/projects" }}>프로젝트 목록</button></div>
+      ) : project && !project.manifest.sources.length ? (
+        <div className="empty panel"><p>이 프로젝트에는 사용할 수 있는 원본 영상이 없습니다.</p><button onClick={() => { window.location.hash = "#/projects" }}>프로젝트 목록</button><button onClick={retryProjectLoad}>다시 시도</button></div>
+      ) : project && !project.analyses.length ? (
+        <div className="empty panel"><p>원본 분석 결과가 없습니다. 프로젝트를 다시 불러오거나 다른 프로젝트를 선택하세요.</p><button onClick={() => { window.location.hash = "#/projects" }}>프로젝트 목록</button><button onClick={retryProjectLoad}>다시 시도</button></div>
+      ) : project && source && !analysis ? (
+        <div className="empty panel" role="status"><p>선택한 원본의 분석 결과를 찾을 수 없습니다.</p><button onClick={retryProjectLoad}>프로젝트 다시 불러오기</button><button onClick={() => { window.location.hash = "#/projects" }}>프로젝트 목록</button></div>
+      ) : page === "professional" && project && project.manifest.project_id === projectId && source && analysis ? (
         <ProfessionalSynthesisPage
           projectId={projectId}
           initialCompositionId={requestedCollageId}
         />
-      ) : project && source && analysis ? (
+      ) : page === "collage" && project && project.manifest.project_id === projectId && source && analysis ? (
         <>
           <div className="editor-shell">
           <section className="workspace-grid">
             <div className="source-audio-card panel">
               <div className="quadrant-heading">
                 <strong>SOURCE AUDIO</strong>
-                <span>{source.path.split(/[\\/]/).pop()} · CACHE {audioCacheProcessedCount}/{project.manifest.sources.length} · RAM {audioCacheCount}</span>
+                <span>{source.path.split(/[\\/]/).pop()} · 준비 {audioCacheCount}/{project.manifest.sources.length} · 처리 {audioCacheProcessedCount}/{audioCacheWorkTotal}{audioCacheCancelled ? " · 취소됨" : audioCacheError ? " · 일부 실패" : ""}</span>
               </div>
+              {(audioCacheError || audioCacheCancelled) && <div className="source-cache-error" role="status">{audioCacheCancelled ? `오디오 준비가 취소되었습니다. 준비 완료 ${audioCacheCount}/${project.manifest.sources.length}, 처리 ${audioCacheProcessedCount}/${audioCacheWorkTotal}.${audioCacheError ? ` 오류: ${audioCacheError}` : ""}` : `오디오 준비 오류: ${audioCacheError}`}<button disabled={taskActive || audioCacheCount >= project.manifest.sources.length} onClick={() => setTaskRetry((value) => value + 1)}>누락 항목 다시 준비</button></div>}
               <div className="source-audio-pool">
                 {project.manifest.sources.map((bufferedSource) => {
                   const bufferedSourceId = bufferedSource.source_id
@@ -573,6 +749,7 @@ export default function App() {
               </div>
             </div>
 
+            <div className="source-details">
             <aside className="inspector panel">
               <p className="section-label">ANALYSIS</p>
               <dl className="stats">
@@ -629,14 +806,20 @@ export default function App() {
                 )}
               </div>
             </aside>
+            <section className="transcript panel">
+              <p className="section-label">TRANSCRIPT</p>
+              <p>{transcriptCandidate?.transcript ?? analysis.transcript}</p>
+            </section>
+            </div>
           </section>
 
           <section className="timeline-panel panel">
             <div className="timeline-toolbar">
               <strong className="panel-kicker">SOURCE TIMELINE</strong>
-              <span className={`waveform-status${waveformLoading ? " loading" : ""}`}>
-                {waveformLoading ? "파형 업데이트 중" : "파형 최신"}
+              <span className={`waveform-status${waveformLoading ? " loading" : waveformError ? " error" : ""}`}>
+                {waveformLoading ? "파형 업데이트 중" : waveform ? "파형 최신" : waveformError ? `파형 오류: ${waveformError}` : "파형 없음"}
               </span>
+              {waveformError && <button type="button" disabled={waveformLoading} onClick={() => setWaveformRetry((value) => value + 1)}>파형 다시 불러오기</button>}
               <div className="legend">
                 <span><i className="speech" />Speech</span>
                 <span><i className="non-speech" />Non-speech</span>
@@ -681,14 +864,10 @@ export default function App() {
             onPreparePreview={prepareCandidatePreview}
           />
 
-          <section className="transcript panel">
-            <p className="section-label">TRANSCRIPT</p>
-            <p>{transcriptCandidate?.transcript ?? analysis.transcript}</p>
-          </section>
           </div>
         </>
       ) : (
-        <div className="empty panel">프로젝트를 불러오는 중입니다.</div>
+        <div className="empty panel"><p>요청한 원본이나 분석 데이터를 찾을 수 없습니다.</p><button onClick={() => { window.location.hash = "#/projects" }}>프로젝트 목록</button><button onClick={retryProjectLoad}>다시 시도</button></div>
       )}
     </main>
   )

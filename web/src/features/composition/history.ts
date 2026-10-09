@@ -8,6 +8,7 @@ export function createProfessionalHistory(present: ProfessionalEditableState): P
 }
 
 export function reduceProfessionalHistory(state: ProfessionalHistoryState, action: ProfessionalHistoryAction): ProfessionalHistoryState {
+  if (action.type === "restore") return action.history
   if (action.type === "reset") return createProfessionalHistory(action.next)
   if (action.type === "begin-gesture") return state.gestureBaseline ? state : { ...state, gestureBaseline: state.present }
   if (action.type === "end-gesture") {

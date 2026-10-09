@@ -14,6 +14,8 @@ from madnolia.types.common import (
     AlignmentMethod,
     AlignmentStatus,
     AnalysisResult,
+    AudioRegion,
+    AudioRegionType,
     InputLanguage,
     MatchStatus,
     MediaSource,
@@ -33,6 +35,153 @@ def test_search_returns_overlapping_exact_spans() -> None:
     assert (0, 2) in ranges
     assert any(candidate.match_status == MatchStatus.EXACT for candidate in result.candidates)
     assert all(candidate.alignments for candidate in result.candidates)
+
+
+def test_selected_consonant_tail_stops_before_next_phone_with_margin() -> None:
+    consonant = replace(_phone("k", 0), end_ms=20)
+    vowel = _phone("a", 100)
+    analysis = _analysis([consonant, vowel])
+
+    result = search_candidates("가", [analysis], include_approximate=False)
+    candidate = next(item for item in result.candidates if item.occurrence_ids == [consonant.occurrence_id])
+
+    assert candidate.source_end_ms == 90
+    assert candidate.alignments[0].source_end_ms == 90
+    assert analysis.phones == [consonant, vowel]
+
+
+def test_selected_vowel_tail_stops_at_analyzed_silence_before_next_phone() -> None:
+    phones = [_phone("k", 0), replace(_phone("a", 40), end_ms=60), _phone("n", 200, "ko.consonant.alveolar.nasal")]
+    analysis = replace(
+        _analysis(phones),
+        audio_regions=[
+            AudioRegion(AudioRegionType.SPEECH, 0, 80),
+            AudioRegion(AudioRegionType.NON_SPEECH, 80, 140),
+            AudioRegion(AudioRegionType.SPEECH, 140, 1000),
+        ],
+    )
+
+    result = search_candidates("가", [analysis], include_approximate=False)
+    candidate = next(item for item in result.candidates if item.occurrence_ids == [phones[0].occurrence_id, phones[1].occurrence_id])
+
+    assert candidate.source_end_ms == 80
+    assert candidate.alignments[0].source_end_ms == phones[0].end_ms
+    assert candidate.alignments[1].source_end_ms == 80
+    assert analysis.phones[-1].end_ms == 240
+
+
+def test_tail_uses_speech_end_without_next_phone_and_eof_is_a_ceiling() -> None:
+    vowel = _phone("a", 100)
+    speech_ended = replace(
+        _analysis([vowel]),
+        audio_regions=[AudioRegion(AudioRegionType.SPEECH, 0, 500)],
+    )
+    result = search_candidates("아", [speech_ended], include_approximate=False)
+    candidate = next(item for item in result.candidates if item.occurrence_ids == [vowel.occurrence_id])
+    assert candidate.source_end_ms == 500
+
+    eof_capped = replace(
+        speech_ended,
+        audio_regions=[AudioRegion(AudioRegionType.SPEECH, 0, 1200)],
+    )
+    eof_result = search_candidates("아", [eof_capped], include_approximate=False)
+    eof_candidate = next(item for item in eof_result.candidates if item.occurrence_ids == [vowel.occurrence_id])
+    assert eof_candidate.source_end_ms == eof_capped.source.duration_ms
+
+
+def test_tail_preserves_original_end_for_overlapping_or_too_close_next_phone() -> None:
+    for next_start in (35, 45):
+        consonant = replace(_phone("k", 0), end_ms=40)
+        vowel = _phone("a", next_start)
+        result = search_candidates(
+            "가",
+            [_analysis([consonant, vowel])],
+            include_approximate=False,
+        )
+        candidate = next(item for item in result.candidates if item.occurrence_ids == [consonant.occurrence_id])
+        assert candidate.source_end_ms == consonant.end_ms
+        assert candidate.alignments[0].source_end_ms == consonant.end_ms
+
+
+def test_tail_does_not_cross_containing_non_speech_or_invent_eof_boundary() -> None:
+    vowel = _phone("a", 100)
+    analysis = replace(
+        _analysis([vowel]),
+        audio_regions=[
+            AudioRegion(AudioRegionType.SPEECH, 0, 100),
+            AudioRegion(AudioRegionType.NON_SPEECH, 100, 200),
+            AudioRegion(AudioRegionType.SPEECH, 200, 1000),
+        ],
+    )
+    result = search_candidates("아", [analysis], include_approximate=False)
+    candidate = next(item for item in result.candidates if item.occurrence_ids == [vowel.occurrence_id])
+
+    no_boundary = search_candidates("아", [_analysis([vowel])], include_approximate=False)
+    conservative = next(item for item in no_boundary.candidates if item.occurrence_ids == [vowel.occurrence_id])
+    assert candidate.source_end_ms == vowel.end_ms
+    assert conservative.source_end_ms == vowel.end_ms
+
+
+def test_tail_preserves_original_end_when_speech_boundary_precedes_it() -> None:
+    vowel = _phone("a", 100)
+    analysis = replace(
+        _analysis([vowel]),
+        audio_regions=[
+            AudioRegion(AudioRegionType.SPEECH, 0, 120),
+            AudioRegion(AudioRegionType.NON_SPEECH, 120, 200),
+        ],
+    )
+    result = search_candidates("아", [analysis])
+    candidate = next(item for item in result.candidates if item.occurrence_ids == [vowel.occurrence_id])
+    assert candidate.source_end_ms == vowel.end_ms
+
+
+def test_tail_boundary_lookup_stays_with_its_source() -> None:
+    candidates = []
+    for source_id, next_start in (("first", 100), ("second", 200)):
+        consonant = replace(
+            _phone("k", 0), occurrence_id="shared-k", source_id=source_id, end_ms=20
+        )
+        vowel = replace(_phone("a", next_start), source_id=source_id)
+        analysis = replace(
+            _analysis([consonant, vowel]),
+            source=MediaSource(source_id, f"{source_id}.mp4", 1000, 16000, 1, 1920, 1080, 30),
+        )
+        result = search_candidates("가", [analysis], include_approximate=False)
+        candidates.extend(
+            candidate
+            for candidate in result.candidates
+            if candidate.occurrence_ids == [consonant.occurrence_id]
+        )
+
+    assert {candidate.source_id: candidate.source_end_ms for candidate in candidates} == {
+        "first": 90,
+        "second": 190,
+    }
+
+
+def test_approximate_fallback_candidate_tail_alignment_is_extended() -> None:
+    phone = _phone("p", 0, "ko.consonant.bilabial.plosive.lenis")
+    analysis = replace(
+        _analysis([phone]),
+        audio_regions=[AudioRegion(AudioRegionType.SPEECH, 0, 400)],
+    )
+    result = search_candidates(
+        "ヴ",
+        [replace(
+            analysis,
+            phones=[phone, replace(_phone("\u026f", 40, "ko.vowel.eu"), occurrence_id="vowel")],
+        )],
+        input_language=InputLanguage.JA,
+        include_exact=False,
+    )
+    fallback = next(candidate for candidate in result.candidates if candidate.fallback)
+    assert fallback.source_end_ms == 400
+    assert next(
+        alignment
+        for alignment in fallback.alignments
+        if alignment.source_occurrence_id == fallback.occurrence_ids[-1]
+    ).source_end_ms == 400
 
 
 def test_exact_search_balances_long_and_short_spans_within_limit() -> None:

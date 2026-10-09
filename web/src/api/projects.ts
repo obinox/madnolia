@@ -16,8 +16,8 @@ export const createProject = (name: string, analysisIds: string[]): Promise<Proj
     body: JSON.stringify({ name, analysis_ids: analysisIds }),
   })
 
-export const fetchProject = (projectId: string): Promise<ProjectDetail> =>
-  request(`/api/projects/${encodeURIComponent(projectId)}`)
+export const fetchProject = (projectId: string, signal?: AbortSignal): Promise<ProjectDetail> =>
+  request(`/api/projects/${encodeURIComponent(projectId)}`, signal)
 
 export const fetchTimeline = (
   projectId: string,

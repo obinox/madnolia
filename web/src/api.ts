@@ -10,6 +10,7 @@ export {
 } from "./api/analysis"
 export {
   createComposition,
+  autotuneComposition,
   exportComposition,
   fetchCompositions,
   previewComposition,

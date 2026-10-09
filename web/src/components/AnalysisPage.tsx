@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react"
 import { controlAnalysisJob, fetchAnalysisHardware, fetchAnalysisJob, fetchVideos, startAnalysis, uploadVideo } from "../api/analysis"
 import {
   VIDEO_UPLOAD_ACCEPT,
+  ANALYSIS_MODEL_DOWNLOAD_STAGE,
   ANALYSIS_MODEL_OPTIONS,
   QWEN_ASR_MODEL_OPTIONS,
   ANALYSIS_DEVICE_OPTIONS,
@@ -20,9 +21,18 @@ import {
   FALLBACK_ANALYSIS_BACKEND,
   FALLBACK_ANALYSIS_DEVICE,
 } from "../constants"
-import type { AnalysisAction, AnalysisJob, AnalysisPageProps, AnalysisSettings, DetectedAnalysisHardware } from "../types"
+import type { AnalysisAction, AnalysisJob, AnalysisPageProps, AnalysisSettings, DetectedAnalysisHardware, GlobalTaskAction } from "../types"
+import { useGlobalTask } from "../globalTask"
 
 export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
+  const { task, beginTask, updateTask, finishTask, isTaskActive } = useGlobalTask()
+  const taskIdRef = useRef<string | null>(null)
+  const jobRef = useRef<AnalysisJob | null>(null)
+  const actionPendingRef = useRef(false)
+  const actionGenerationRef = useRef(0)
+  const actionTaskIdRef = useRef<string | null>(null)
+  const busyOwnerRef = useRef(0)
+  const cancelWaitersRef = useRef<Array<() => void>>([])
   const [videos, setVideos] = useState<string[]>([])
   const [filename, setFilename] = useState("")
   const [settings, setSettings] = useState<AnalysisSettings>({
@@ -30,7 +40,10 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
     device: DEFAULT_ANALYSIS_DEVICE, alignment_mode: DEFAULT_ANALYSIS_ALIGNMENT,
     candidate_models: [], acoustic_units: DEFAULT_ANALYSIS_ACOUSTIC_UNITS,
   })
-  const [jobId, setJobId] = useState(() => window.localStorage.getItem(ANALYSIS_JOB_STORAGE_KEY) ?? "")
+  const [jobId, setJobId] = useState(() => {
+    try { return window.localStorage.getItem(ANALYSIS_JOB_STORAGE_KEY) ?? "" } catch { return "" }
+  })
+  const jobIdRef = useRef(jobId)
   const [job, setJob] = useState<AnalysisJob | null>(null)
   const [displayPercent, setDisplayPercent] = useState(0)
   const displayedPercentRef = useRef(0)
@@ -43,12 +56,35 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
   const [hardware, setHardware] = useState<DetectedAnalysisHardware | null>(null)
   const deviceChangedRef = useRef(false)
   const modelOptions = settings.backend === "qwen3-asr" ? QWEN_ASR_MODEL_OPTIONS : ANALYSIS_MODEL_OPTIONS
+  const clearStoredJob = () => { try { window.localStorage.removeItem(ANALYSIS_JOB_STORAGE_KEY) } catch { } }
+
+  const ensureAnalysisTask = (label: string, stage: string, percent: number | null = null) => {
+    if (taskIdRef.current) return taskIdRef.current
+    const id = beginTask({ label, stage, percent, cancel: cancelAnalysis, cancelLabel: "분석 중단" })
+    taskIdRef.current = id
+    return id
+  }
+
+  const modalActions = (current: AnalysisJob): GlobalTaskAction[] => {
+    const actions: GlobalTaskAction[] = []
+    if (current.status === "running" || current.status === "paused" || current.status === "pausing") {
+      const action: AnalysisAction = current.status === "paused" ? "resume" : "pause"
+      actions.push({ id: action, label: current.status === "pausing" ? "일시정지 대기 중" : action === "pause" ? "일시정지" : "계속하기", disabled: actionPendingRef.current || current.status === "pausing", pending: current.status === "pausing", onAction: () => control(action, true) })
+    }
+    return actions
+  }
+
+  useEffect(() => {
+    if (jobId && !taskIdRef.current) ensureAnalysisTask("분석 작업", "진행 상태 확인 중", null)
+  }, [jobId, task?.id])
 
   useEffect(() => {
     fetchAnalysisHardware()
       .then((detected) => {
         setHardware(detected)
-        if (!deviceChangedRef.current && !window.localStorage.getItem(ANALYSIS_JOB_STORAGE_KEY)) {
+        let storedJob = ""
+        try { storedJob = window.localStorage.getItem(ANALYSIS_JOB_STORAGE_KEY) ?? "" } catch { }
+        if (!deviceChangedRef.current && !storedJob) {
           setSettings((current) => ({ ...current, backend: detected.backend, device: detected.device }))
         }
       })
@@ -80,13 +116,60 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
         const current = await fetchAnalysisJob(jobId)
         if (!active) return
         setJob(current)
-        if (["running", "pausing", "paused", "stopping"].includes(current.status)) return
-        window.localStorage.removeItem(ANALYSIS_JOB_STORAGE_KEY)
+        jobRef.current = current
+        if (["running", "pausing", "paused", "stopping"].includes(current.status)) {
+          const id = ensureAnalysisTask(
+            current.download_model && current.stage === ANALYSIS_MODEL_DOWNLOAD_STAGE ? `모델 준비: ${current.download_model}` : `분석: ${current.filename}`,
+            current.stage,
+            current.download_model && current.stage === ANALYSIS_MODEL_DOWNLOAD_STAGE && current.download_percent !== null ? current.download_percent : current.percent,
+          )
+          if (id) updateTask(id, {
+            label: current.download_model && current.stage === ANALYSIS_MODEL_DOWNLOAD_STAGE ? `모델 준비: ${current.download_model}` : `분석: ${current.filename}`,
+            stage: current.stage,
+            percent: current.download_model && current.stage === ANALYSIS_MODEL_DOWNLOAD_STAGE && current.download_percent !== null ? current.download_percent : current.percent,
+            actions: modalActions(current),
+            cancel: current.status === "stopping" ? undefined : cancelAnalysis,
+            cancelLabel: current.status === "stopping" ? "중단 요청 중" : "분석 중단",
+          })
+          return
+        }
+        clearStoredJob()
+        jobIdRef.current = ""
         setJobId("")
+        const finishedTaskId = taskIdRef.current
+        if (actionTaskIdRef.current === finishedTaskId) {
+          actionGenerationRef.current += 1
+          actionTaskIdRef.current = null
+          actionPendingRef.current = false
+          if (busyOwnerRef.current === actionGenerationRef.current - 1) {
+            busyOwnerRef.current = 0
+            setBusy(false)
+          }
+        }
+        if (finishedTaskId) finishTask(finishedTaskId)
+        taskIdRef.current = null
       } catch (error) {
         if (!active) return
-        window.localStorage.removeItem(ANALYSIS_JOB_STORAGE_KEY)
-        setJobId("")
+        if (error instanceof Error && error.name === "AnalysisJobNotFoundError") {
+          clearStoredJob()
+          jobIdRef.current = ""
+          setJobId("")
+          const finishedTaskId = taskIdRef.current
+          if (actionTaskIdRef.current === finishedTaskId) {
+            actionGenerationRef.current += 1
+            actionTaskIdRef.current = null
+            actionPendingRef.current = false
+            if (busyOwnerRef.current === actionGenerationRef.current - 1) {
+              busyOwnerRef.current = 0
+              setBusy(false)
+            }
+          }
+          if (finishedTaskId) finishTask(finishedTaskId)
+          taskIdRef.current = null
+          setMessage(error.message)
+          return
+        }
+        if (taskIdRef.current) updateTask(taskIdRef.current, { stage: "분석 상태 연결을 재시도하는 중", percent: null })
         setMessage(error instanceof Error ? error.message : String(error))
       } finally {
         pending = false
@@ -125,11 +208,24 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
   }, [job?.percent, job?.job_id])
 
   const analyze = async () => {
+    if (isTaskActive()) return
+    const taskId = ensureAnalysisTask(`분석: ${filename}`, "분석 요청 중", null)
+    if (!taskId) return
+    const busyOwner = ++actionGenerationRef.current
+    busyOwnerRef.current = busyOwner
     setBusy(true)
     setMessage("")
     try {
       const started = await startAnalysis({ ...settings, filename })
-      window.localStorage.setItem(ANALYSIS_JOB_STORAGE_KEY, started.job_id)
+      updateTask(taskId, { label: `분석: ${filename}`, stage: "분석 시작 중", percent: 0 })
+      jobIdRef.current = started.job_id
+      setJobId(started.job_id)
+      try {
+        window.localStorage.setItem(ANALYSIS_JOB_STORAGE_KEY, started.job_id)
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : String(error))
+      }
+      cancelWaitersRef.current.splice(0).forEach((resolve) => resolve())
       displayedPercentRef.current = 0
       setDisplayPercent(0)
       setJob({
@@ -137,29 +233,85 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
         stage: "대기 중", analysis_id: null, error: null,
         download_model: null, download_percent: null,
       })
-      setJobId(started.job_id)
+      jobRef.current = { job_id: started.job_id, filename, status: "running", percent: 0, stage: "대기 중", analysis_id: null, error: null, download_model: null, download_percent: null }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
-    } finally { setBusy(false) }
+      finishTask(taskId)
+      taskIdRef.current = null
+      cancelWaitersRef.current.splice(0).forEach((resolve) => resolve())
+    } finally {
+      if (busyOwnerRef.current === busyOwner) {
+        busyOwnerRef.current = 0
+        setBusy(false)
+      }
+    }
   }
 
-  const control = async (action: AnalysisAction) => {
+  const cancelAnalysis = async () => {
+    const taskId = taskIdRef.current
+    if (!taskId) return
+    if (!jobIdRef.current) await new Promise<void>((resolve) => cancelWaitersRef.current.push(resolve))
+    if (taskIdRef.current === taskId && jobIdRef.current) await control("stop", true)
+  }
+
+  const control = async (action: AnalysisAction, propagateError = false) => {
+    const taskId = taskIdRef.current
+    const currentJobId = jobIdRef.current
+    if (!currentJobId || !taskId || actionPendingRef.current) return
+    const actionGeneration = ++actionGenerationRef.current
+    actionTaskIdRef.current = taskId
+    busyOwnerRef.current = actionGeneration
+    actionPendingRef.current = true
     setBusy(true)
     setMessage("")
     try {
-      setJob(await controlAnalysisJob(job!.job_id, action))
+      updateTask(taskId, { stage: action === "pause" ? "일시정지 요청 중" : action === "resume" ? "다시 시작 요청 중" : "중단 요청 중", actions: (jobRef.current ? modalActions(jobRef.current) : []).map((item) => ({ ...item, disabled: true, pending: true })), cancelLabel: action === "stop" ? "중단 요청 중" : "분석 중단" })
+      const current = jobRef.current ?? await fetchAnalysisJob(currentJobId)
+      const updated = await controlAnalysisJob(current.job_id, action)
+      if (actionGenerationRef.current !== actionGeneration || taskIdRef.current !== taskId || jobIdRef.current !== currentJobId) return
+      setJob(updated)
+      jobRef.current = updated
+      updateTask(taskId, { stage: updated.stage || (action === "stop" ? "중단 요청 중" : "상태 변경 중"), percent: updated.percent, actions: modalActions(updated), cancel: updated.status === "stopping" ? undefined : cancelAnalysis, cancelLabel: updated.status === "stopping" ? "중단 요청 중" : "분석 중단" })
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally { setBusy(false) }
+      if (actionGenerationRef.current === actionGeneration && taskIdRef.current === taskId && jobIdRef.current === currentJobId) {
+        setMessage(error instanceof Error ? error.message : String(error))
+        if (jobRef.current) updateTask(taskId, { actions: modalActions(jobRef.current), cancelLabel: action === "stop" ? "중단 실패 · 다시 시도" : "분석 중단" })
+      }
+      if (propagateError) throw error
+    } finally {
+      if (actionGenerationRef.current === actionGeneration) {
+        actionTaskIdRef.current = null
+        actionPendingRef.current = false
+      }
+      if (actionGenerationRef.current === actionGeneration && taskIdRef.current === taskId && jobIdRef.current === currentJobId) {
+        if (busyOwnerRef.current === actionGeneration) busyOwnerRef.current = 0
+        setBusy(false)
+        if (jobRef.current) updateTask(taskId, { actions: modalActions(jobRef.current) })
+      }
+    }
   }
 
   const importVideo = async (file?: File) => {
-    if (!file || uploading || jobId) return
+    if (!file || uploading || jobId || isTaskActive()) return
+    const controller = new AbortController()
+    const taskId = beginTask({
+      label: `영상 업로드: ${file.name}`, stage: "전송 중", percent: 0,
+      cancel: () => controller.abort(), cancelLabel: "업로드 취소",
+    })
+    if (!taskId) return
     setMessage("")
     setUploadPercent(0)
     setUploading(true)
     try {
-      const uploaded = await uploadVideo(file, setUploadPercent)
+      const uploaded = await uploadVideo(file, (percent) => {
+        setUploadPercent(percent)
+        updateTask(taskId, { percent })
+      }, () => updateTask(taskId, {
+        stage: "서버에서 업로드 처리 중",
+        percent: null,
+        cancel: undefined,
+        cancelLabel: undefined,
+      }), controller.signal)
       setFilename(uploaded.filename)
       setVideos((current) => current.includes(uploaded.filename)
         ? current : [...current, uploaded.filename].sort())
@@ -168,6 +320,7 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {
+      finishTask(taskId)
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ""
     }
@@ -305,12 +458,14 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
           {job.status === "pausing" && <p>현재 처리 구간이 끝나면 일시정지합니다.</p>}
           {job.status === "paused" && <p>일시정지 중입니다. 계속하기를 누르면 이어서 처리합니다.</p>}
           {job.status === "stopping" && <p>현재 처리 구간이 끝나면 분석을 중단합니다.</p>}
-          {["running", "pausing", "paused"].includes(job.status) && (
+          {["running", "pausing", "paused", "stopping"].includes(job.status) && (
             <div className="analysis-controls">
-              {job.status === "running" ? (
-                <button disabled={busy} onClick={() => void control("pause")}>일시정지</button>
-              ) : (
+              {job.status === "running" || job.status === "pausing" ? (
+                <button disabled={busy || job.status === "pausing"} onClick={() => void control("pause")}>{job.status === "pausing" ? "일시정지 대기 중" : "일시정지"}</button>
+              ) : job.status === "paused" ? (
                 <button disabled={busy} onClick={() => void control("resume")}>계속하기</button>
+              ) : (
+                <button disabled>중단 대기 중</button>
               )}
               <button disabled={busy} onClick={() => void control("stop")}>분석 중단</button>
             </div>

@@ -17,6 +17,10 @@ from madnolia.exporters import (
     export_composition,
     render_wav,
 )
+from madnolia.services.composition_validation import (
+    _validate_phone_pitch_settings,
+    _validate_pitch_owner_refs,
+)
 from madnolia.types.common import (
     CompositionMode,
     CompositionProject,
@@ -24,6 +28,8 @@ from madnolia.types.common import (
     ExportTarget,
     MatchStatus,
     PhoneAlignmentOperation,
+    PhonePitchOwnerRef,
+    PhonePitchPoint,
     PhoneUnit,
     PitchEnvelopePoint,
     SaveCompositionRequest,
@@ -407,6 +413,9 @@ def test_professional_composition_round_trip_and_phone_duration(tmp_path, monkey
         source_start_ms=100,
         source_end_ms=200,
         output_duration_ms=250,
+        source_f0_hz=220,
+        pitch_points=[PhonePitchPoint(0, 69), PhonePitchPoint(1, 69)],
+        pitch_owner_ref=PhonePitchOwnerRef("segment_0", "phone_0"),
     )
     segment = replace(
         _segment(),
@@ -458,6 +467,45 @@ def test_professional_composition_round_trip_and_phone_duration(tmp_path, monkey
     )
     with pytest.raises(ValueError, match="변경"):
         update_composition(project_dir, composition.composition_id, request)
+
+
+def test_pitch_point_validation_checks_owner_ranges_and_cycles() -> None:
+    owner = PhoneUnit(
+        phone_unit_id="owner",
+        operation=PhoneAlignmentOperation.MATCH,
+        target_index=0,
+        target_phone_id="ko.vowel.a",
+        target_ipa="a",
+        source_occurrence_id="owner",
+        source_phone_id="ko.vowel.a",
+        source_ipa="a",
+        source_start_ms=100,
+        source_end_ms=200,
+        output_duration_ms=100,
+        pitch_points=[PhonePitchPoint(0, 69), PhonePitchPoint(1, 69)],
+        pitch_owner_ref=PhonePitchOwnerRef("segment_0", "owner"),
+    )
+    _validate_phone_pitch_settings(owner, 100)
+    segment = replace(_segment(), phone_units=[owner])
+    _validate_pitch_owner_refs([segment])
+    with pytest.raises(ValueError, match="pitch point values"):
+        _validate_phone_pitch_settings(
+            replace(owner, pitch_points=[PhonePitchPoint(0, 69), PhonePitchPoint(1, 200)]),
+            100,
+        )
+    with pytest.raises(ValueError, match="does not exist"):
+        _validate_pitch_owner_refs([
+            replace(segment, phone_units=[replace(owner, pitch_owner_ref=PhonePitchOwnerRef("missing", "owner"))])
+        ])
+    follower = replace(
+        owner,
+        phone_unit_id="follower",
+        pitch_points=[],
+        pitch_owner_ref=PhonePitchOwnerRef("segment_0", "owner"),
+    )
+    cyclic_owner = replace(owner, pitch_owner_ref=PhonePitchOwnerRef("segment_0", "follower"))
+    with pytest.raises(ValueError, match="chained or cyclic"):
+        _validate_pitch_owner_refs([replace(segment, phone_units=[cyclic_owner, follower])])
 
 
 def test_professional_mp4_retimes_phone_video(tmp_path, monkeypatch) -> None:
@@ -572,7 +620,7 @@ def test_professional_regions_round_trip_validate_and_preserve_contiguous_audio(
         name="parent", target_text="k", target_pronunciation="k", crossfade_ms=0, segments=[_segment()]
     ))
     regions = [
-        EditRegion("r1", 100, 140, 40),
+        EditRegion("r1", 100, 140, 40, pitch_points=[PhonePitchPoint(0, 69), PhonePitchPoint(0.5, 69.5), PhonePitchPoint(1, 70)], source_f0_hz=440),
         EditRegion("r2", 140, 175, 35),
         EditRegion("r3", 175, 200, 25),
     ]
@@ -630,7 +678,8 @@ def test_professional_regions_round_trip_validate_and_preserve_contiguous_audio(
         compositions._validate_request(replace(request, segments=[replace(segment, volume_envelope=[VolumeEnvelopePoint(0, 1), VolumeEnvelopePoint(.5, float("inf")), VolumeEnvelopePoint(1, 1)])]))
     with pytest.raises(ValueError, match="Pitch envelope"):
         compositions._validate_request(replace(request, segments=[replace(segment, pitch_envelope=[PitchEnvelopePoint(0, 0), PitchEnvelopePoint(.5, 1.5), PitchEnvelopePoint(1, 0)])]))
-    with wave.open(BytesIO(render_wav(project_dir, loaded)), "rb") as audio:
+    render_segment = replace(loaded.segments[0], edit_regions=[replace(region, pitch_points=[], source_f0_hz=None) for region in loaded.segments[0].edit_regions])
+    with wave.open(BytesIO(render_wav(project_dir, replace(loaded, segments=[render_segment]))), "rb") as audio:
         rendered = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
     np.testing.assert_allclose(rendered, samples[1600:3200], atol=1)
     invalid = replace(segment, edit_regions=[regions[0], replace(regions[1], source_start_ms=141), regions[2]])
@@ -638,6 +687,11 @@ def test_professional_regions_round_trip_validate_and_preserve_contiguous_audio(
         compositions._validate_request(replace(request, segments=[invalid]))
     with pytest.raises(ValueError, match="User length markers"):
         compositions._validate_request(replace(request, segments=[replace(segment, user_guide_source_ms=[150])]))
+    invalid_curve = replace(segment, edit_regions=[replace(regions[0], pitch_points=[PhonePitchPoint(0, 69), PhonePitchPoint(0.5, 70), PhonePitchPoint(0.5, 71), PhonePitchPoint(1, 70)]) , *regions[1:]])
+    with pytest.raises(ValueError, match="positions must increase"):
+        compositions._validate_request(replace(request, segments=[invalid_curve]))
+    with pytest.raises(ValueError, match="finite and positive"):
+        compositions._validate_request(replace(request, segments=[replace(segment, edit_regions=[replace(regions[0], source_f0_hz=float("inf")), *regions[1:]])]))
 
 
 def test_professional_volume_gain_and_crossfade_overlap_are_rendered(tmp_path) -> None:
@@ -712,7 +766,7 @@ def test_professional_regions_are_authoritative_and_require_integer_cents() -> N
         target_index=0, target_phone_id="k", target_ipa="k",
         source_occurrence_id="occ", source_phone_id="k", source_ipa="k",
         source_start_ms=100, source_end_ms=200, output_duration_ms=0,
-        source_f0_hz=float("nan"), target_pitch_midi=float("nan"),
+        source_f0_hz=float("nan"), target_pitch_midi=None,
         formant_shift_semitones=float("nan"),
     )
     segment = replace(_segment(), edit_regions=regions, phone_units=[obsolete_guide])
@@ -729,6 +783,86 @@ def test_professional_regions_are_authoritative_and_require_integer_cents() -> N
     invalid_overlap = replace(segment, timeline_start_ms=-1, timeline_end_ms=99)
     with pytest.raises(ValueError, match="nonnegative"):
         compositions._validate_request(replace(request, segments=[invalid_overlap]))
+
+
+def test_phone_unit_ids_must_be_nonempty_and_unique_per_segment() -> None:
+    unit = PhoneUnit(
+        phone_unit_id="phone",
+        operation=PhoneAlignmentOperation.MATCH,
+        target_index=0,
+        target_phone_id="k",
+        target_ipa="k",
+        source_occurrence_id="occ",
+        source_phone_id="k",
+        source_ipa="k",
+        source_start_ms=100,
+        source_end_ms=150,
+        output_duration_ms=50,
+    )
+    second = replace(
+        unit,
+        phone_unit_id="phone",
+        target_index=1,
+        source_start_ms=150,
+        source_end_ms=200,
+    )
+    request = SaveCompositionRequest(
+        name="ids",
+        target_text="kk",
+        target_pronunciation="kk",
+        crossfade_ms=0,
+        mode=CompositionMode.PROFESSIONAL,
+        segments=[replace(_segment(), target_end_index=2, phone_units=[unit, second])],
+    )
+
+    with pytest.raises(ValueError, match="nonempty and unique"):
+        compositions._validate_request(request)
+    empty_id = replace(
+        unit,
+        phone_unit_id="",
+        source_end_ms=200,
+        output_duration_ms=100,
+    )
+    for invalid_id in (empty_id, replace(empty_id, phone_unit_id="   ")):
+        with pytest.raises(ValueError, match="nonempty and unique"):
+            compositions._validate_request(
+                replace(request, segments=[replace(_segment(), phone_units=[invalid_id])])
+            )
+
+
+def test_delete_phone_requires_both_source_bounds_or_neither() -> None:
+    deleted = PhoneUnit(
+        phone_unit_id="deleted",
+        operation=PhoneAlignmentOperation.DELETE,
+        target_index=0,
+        target_phone_id="k",
+        target_ipa="k",
+        source_occurrence_id=None,
+        source_phone_id=None,
+        source_ipa=None,
+        source_start_ms=100,
+        source_end_ms=None,
+        output_duration_ms=100,
+    )
+    segment = replace(
+        _segment(),
+        edit_regions=[EditRegion("region", 100, 200, 100)],
+        phone_units=[deleted],
+    )
+    request = SaveCompositionRequest(
+        name="partial delete",
+        target_text="k",
+        target_pronunciation="k",
+        crossfade_ms=0,
+        mode=CompositionMode.PROFESSIONAL,
+        segments=[segment],
+    )
+
+    with pytest.raises(ValueError, match="both be present or both be absent"):
+        compositions._validate_request(request)
+
+    no_bounds = replace(deleted, source_start_ms=None, source_end_ms=None)
+    compositions._validate_request(replace(request, segments=[replace(segment, phone_units=[no_bounds])]))
 
 
 def test_independent_overlapping_professional_tracks_round_trip_and_mix_pcm(tmp_path, monkeypatch) -> None:

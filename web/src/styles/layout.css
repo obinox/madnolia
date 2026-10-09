@@ -16,24 +16,34 @@
 .editor-app > .workflow-page > .page-intro { position: sticky; top: 0; grid-column: 1; grid-row: 1; align-self: start; padding: 20px; border: 1px solid #202b35; border-radius: 12px; background: #0c1218; }
 .editor-app > .workflow-page > :not(.page-intro) { grid-column: 2; }
 .editor-app > .workflow-page .workflow-card, .editor-app > .workflow-page .progress-card { padding: 16px; }
-.editor-app > .analysis-page { grid-template-columns: minmax(220px, 28%) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; overflow: hidden; }
-.editor-app > .analysis-page > * { min-width: 0; }
-.editor-app > .analysis-page > .page-intro { grid-column: 1; grid-row: 1; }
-.editor-app > .analysis-page > .workflow-card { grid-column: 2; grid-row: 1 / -1; align-content: start; gap: 9px; padding: 12px; overflow: hidden; }
-.editor-app > .analysis-page > .progress-card { grid-column: 1; grid-row: 2; align-content: start; gap: 10px; margin-top: 8px; padding: 12px; overflow: hidden; }
-.editor-app > .analysis-page > .error { grid-column: 1; grid-row: 3; margin: 8px 0 0; padding: 12px; }
+.analysis-page-host:not([hidden]) { display: grid; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.analysis-page-host[hidden] { display: none !important; }
+.analysis-page-host > .analysis-page { grid-template-columns: minmax(0, 28%) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 100%; overflow: auto; }
+.editor-app .analysis-page-host > .analysis-page > * { min-width: 0; }
+.analysis-page-host > .analysis-page > .page-intro { grid-column: 1; grid-row: 1; }
+.analysis-page-host > .analysis-page > .workflow-card { grid-column: 2; grid-row: 1 / -1; align-content: start; gap: 9px; padding: 12px; overflow: auto; }
+.analysis-page-host > .analysis-page > .progress-card { grid-column: 1; grid-row: 2; align-content: start; gap: 10px; margin-top: 8px; padding: 12px; overflow: auto; }
+.analysis-page-host > .analysis-page > .error { grid-column: 1; grid-row: 3; margin: 8px 0 0; padding: 12px; }
 .editor-app .analysis-page .video-drop-zone { gap: 6px; padding: 10px 12px; }
 .editor-app .analysis-page .analysis-settings { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .editor-app .analysis-page .workflow-card label { gap: 3px; font-size: 11px; }
-.editor-app .analysis-page .workflow-card select, .editor-app .analysis-page .workflow-card input:not([type="checkbox"]) { padding: 7px 9px; }
+.editor-app .analysis-page .workflow-card select, .editor-app .analysis-page .workflow-card input:not([type="checkbox"]):not(.visually-hidden) { padding: 7px 9px; }
 .editor-app .analysis-page .workflow-card button { padding: 7px 12px; }
 .editor-app .analysis-page .workflow-card p { font-size: 11px; }
-.editor-shell { display: grid; min-height: 0; grid-template-columns: 340px minmax(0, 1fr); grid-template-rows: 190px 230px minmax(0, 1fr); gap: 8px; overflow: hidden; }
+.editor-shell { display: grid; min-width: 0; min-height: 0; height: 100%; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); grid-template-rows: minmax(100px, .72fr) minmax(145px, 1fr) minmax(70px, .58fr) minmax(58px, .42fr); gap: 8px; overflow: hidden; }
 .editor-shell > .workspace-grid, .editor-shell > .collage { display: contents; }
 .editor-shell .source-audio-card { grid-column: 1; grid-row: 1; display: grid; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
 .editor-shell .source-audio-pool { min-height: 0; }
+.editor-shell .source-cache-error { grid-column: 1; z-index: 5; max-height: 76px; overflow: auto; padding: 6px 9px; color: #ffb0bb; background: #28131a; font-size: 10px; overflow-wrap: anywhere; }
+.editor-shell .source-cache-error button { position: sticky; bottom: 0; display: block; margin-top: 5px; padding: 4px 7px; background: #45202b; }
 .editor-shell .transport-readout { padding: 4px 10px; }
-.editor-shell .inspector, .editor-shell .collage-heading, .editor-shell .transcript { display: none; }
+.editor-shell .source-details { grid-column: 1; grid-row: 3 / -1; display: grid; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1.2fr) minmax(0, .8fr); gap: 6px; overflow: hidden; }
+.editor-shell .inspector, .editor-shell .transcript { display: block; min-height: 0; margin: 0; overflow: auto; overscroll-behavior: contain; }
+.editor-shell .inspector { padding: 8px; }
+.editor-shell .source-details > * { min-width: 0; }
+.editor-shell .transcript > p:last-child { max-height: 100%; overflow: auto; overflow-wrap: anywhere; }
+.editor-shell .inspector .stats { gap: 2px; }
+.editor-shell .collage-heading { display: none; }
 .editor-shell .synthesis-search { grid-column: 2; grid-row: 1 / 3; display: grid; min-height: 0; grid-template-rows: auto auto auto minmax(0, 1fr); gap: 5px; padding: 0 8px 8px; overflow: hidden; border: 1px solid #202b35; border-radius: 12px; background: rgba(15, 20, 26, .92); }
 .editor-shell .synthesis-search > .quadrant-heading { margin: 0 -10px; }
 .editor-shell .search-row { grid-template-columns: minmax(96px, 120px) minmax(0, 1fr) auto; gap: 7px; margin: 0; }
@@ -44,11 +54,11 @@
 .editor-shell .pronunciation { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .editor-shell .phone-picker { min-height: 0; }
 .editor-shell .candidate-list { min-height: 0; max-height: none; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 5px; overflow: auto; overscroll-behavior: contain; }
-.editor-shell .timeline-panel { grid-column: 1; grid-row: 2; display: flex; height: 230px; min-height: 0; flex-direction: column; margin: 0; overflow: hidden; }
+.editor-shell .timeline-panel { grid-column: 1; grid-row: 2; display: flex; height: auto; min-height: 0; flex-direction: column; margin: 0; overflow: hidden; }
 .editor-shell .timeline-toolbar { padding-bottom: 5px; }
 .editor-shell .timeline-shell { min-height: 90px; flex: 1 1 auto; }
 .editor-shell .timeline-hint { display: none; }
-.editor-shell .assembly { grid-column: 2; grid-row: 3; min-width: 0; min-height: 0; margin: 0; padding: 0 10px 10px; overflow: auto; overscroll-behavior: contain; border: 1px solid #202b35; border-radius: 12px; background: rgba(15, 20, 26, .92); }
+.editor-shell .assembly { grid-column: 2; grid-row: 3 / -1; min-width: 0; min-height: 0; margin: 0; padding: 0 10px 10px; overflow: auto; overscroll-behavior: contain; border: 1px solid #202b35; border-radius: 12px; background: rgba(15, 20, 26, .92); }
 .editor-shell .assembly > .quadrant-heading { position: sticky; top: 0; z-index: 6; margin: 0 -10px 8px; }
 .editor-shell .assembly-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .editor-shell .composition-name-field { grid-column: 1 / -1; }
@@ -75,11 +85,13 @@
   .editor-app .header-controls select { min-width: 0; }
   .editor-app > .workflow-page { display: grid; grid-template-columns: 1fr; overflow: visible; }
   .editor-app > .workflow-page > .page-intro, .editor-app > .workflow-page > :not(.page-intro) { position: static; grid-column: 1; grid-row: auto; }
-  .editor-app > .analysis-page { height: auto; overflow: visible; }
-  .editor-app > .analysis-page > .page-intro, .editor-app > .analysis-page > .workflow-card, .editor-app > .analysis-page > .progress-card, .editor-app > .analysis-page > .error { grid-column: 1; grid-row: auto; overflow: visible; }
+  .analysis-page-host:not([hidden]) { display: block; overflow: visible; }
+  .analysis-page-host > .analysis-page { display: grid; grid-template-columns: 1fr; grid-template-rows: auto; height: auto; min-height: 0; overflow: visible; }
+  .analysis-page-host > .analysis-page > .page-intro, .analysis-page-host > .analysis-page > .workflow-card, .analysis-page-host > .analysis-page > .progress-card, .analysis-page-host > .analysis-page > .error { grid-column: 1; grid-row: auto; overflow: visible; }
   .editor-shell { display: flex; min-height: 0; flex-direction: column; overflow: visible; }
   .editor-shell > .workspace-grid { display: grid; }
   .editor-shell > .collage { display: block; }
+  .editor-shell .source-details { display: contents; }
   .editor-shell .inspector, .editor-shell .collage-heading, .editor-shell .transcript { display: block; }
   .editor-shell .synthesis-search { display: block; overflow: visible; }
   .editor-shell .search-row { grid-template-columns: 1fr; }

@@ -7,6 +7,8 @@ from typing import Any, Protocol
 from tqdm.auto import tqdm
 
 from madnolia.constants import (
+    AUTOTUNE_DEFAULT_SPEED_MS,
+    AUTOTUNE_DEFAULT_STRENGTH_PERCENT,
     DEFAULT_ANALYSIS_ACOUSTIC_UNITS,
     DEFAULT_ANALYSIS_ALIGNMENT,
     DEFAULT_ANALYSIS_BACKEND,
@@ -17,7 +19,11 @@ from madnolia.constants import (
     PROFESSIONAL_BEAT_DIVISION_DEFAULT,
     PROFESSIONAL_BEATS_PER_BAR_DEFAULT,
     PROFESSIONAL_GRID_OFFSET_UNITS_DEFAULT,
+    PROFESSIONAL_PHONE_PITCH_STRENGTH_DEFAULT,
     PROFESSIONAL_TEMPO_DEFAULT_BPM,
+    PROFESSIONAL_VIBRATO_DEPTH_DEFAULT_CENTS,
+    PROFESSIONAL_VIBRATO_RATE_DEFAULT_HZ,
+    PROFESSIONAL_VIBRATO_START_DEFAULT_MS,
 )
 
 AnalysisProgressCallback = Callable[[str, float], None]
@@ -26,6 +32,7 @@ ModelDownloadCallback = Callable[[str, float], None]
 DownloadBytesCallback = Callable[[int, int], None]
 SearchProgressCallback = Callable[[str, float], None]
 SearchCheckpoint = Callable[[], None]
+ExportProgressCallback = Callable[[str, float], None]
 
 
 class ModelDownloadProgressBar(tqdm):
@@ -135,6 +142,24 @@ class ExportTarget(StrEnum):
     MP4 = "MP4"
     EDL = "EDL"
     FCPXML = "FCPXML"
+
+
+class ExportJobStatus(StrEnum):
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+
+
+@dataclass
+class ExportJob:
+    job_id: str
+    composition_id: str
+    target: ExportTarget
+    status: ExportJobStatus
+    percent: float
+    stage: str
+    filename: str
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -407,6 +432,7 @@ class SearchRequest:
 
 class SearchJobStatus(StrEnum):
     RUNNING = "running"
+    CANCELLING = "cancelling"
     COMPLETE = "complete"
     CANCELLED = "cancelled"
     FAILED = "failed"
@@ -447,6 +473,72 @@ class PhoneUnit:
     transition_to_next_ms: int = PITCH_TRANSITION_DEFAULT_MS
     transition_strength_percent: int = PITCH_TRANSITION_DEFAULT_STRENGTH
     transition_center_ms: int = 0
+    target_pitch_strength_percent: int = PROFESSIONAL_PHONE_PITCH_STRENGTH_DEFAULT
+    vibrato_depth_cents: int = PROFESSIONAL_VIBRATO_DEPTH_DEFAULT_CENTS
+    vibrato_rate_hz: float = PROFESSIONAL_VIBRATO_RATE_DEFAULT_HZ
+    vibrato_start_ms: int = PROFESSIONAL_VIBRATO_START_DEFAULT_MS
+    pitch_points: list["PhonePitchPoint"] = field(default_factory=list)
+    pitch_owner_ref: "PhonePitchOwnerRef | None" = None
+
+
+@dataclass(frozen=True)
+class PhonePitchPoint:
+    position: float
+    midi: float
+
+
+@dataclass(frozen=True)
+class PianoRollPitchNote:
+    note_id: str
+    start_ms: int
+    end_ms: int
+    pitch_points: list[PhonePitchPoint]
+
+
+@dataclass(frozen=True)
+class PhonePitchOwnerRef:
+    segment_id: str
+    phone_unit_id: str
+
+
+@dataclass(frozen=True)
+class PitchCurvePoint:
+    position: float
+    hz: float | None
+
+
+@dataclass(frozen=True)
+class PhonePitchContour:
+    phone_unit_id: str
+    source_start_ms: int
+    source_end_ms: int
+    output_start_ms: int
+    output_end_ms: int
+    original: list[PitchCurvePoint]
+    corrected: list[PitchCurvePoint]
+
+
+@dataclass(frozen=True)
+class SegmentPitchContour:
+    segment_id: str
+    phones: list[PhonePitchContour]
+    regions: list["RegionPitchContour"] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RegionPitchContour:
+    region_id: str
+    source_start_ms: int
+    source_end_ms: int
+    output_start_ms: int
+    output_end_ms: int
+    original: list[PitchCurvePoint]
+    corrected: list[PitchCurvePoint]
+
+
+@dataclass(frozen=True)
+class CompositionPitchAnalysis:
+    segments: list[SegmentPitchContour]
 
 
 @dataclass(frozen=True)
@@ -481,6 +573,8 @@ class EditRegion:
     source_end_ms: int
     output_duration_ms: int
     relative_pitch_cents: int = 0
+    pitch_points: list[PhonePitchPoint] = field(default_factory=list)
+    source_f0_hz: float | None = None
 
 
 @dataclass(frozen=True)
@@ -493,6 +587,17 @@ class VolumeEnvelopePoint:
 class PitchEnvelopePoint:
     position: float
     cents: int
+
+
+@dataclass(frozen=True)
+class WorldPitchAnalysis:
+    samples: Any
+    sample_rate: int
+    source_start_ms: int
+    f0: Any
+    times_ms: Any
+    spectrum: Any
+    aperiodicity: Any
 
 
 @dataclass(frozen=True)
@@ -514,6 +619,7 @@ class CompositionProject:
     beats_per_bar: int = PROFESSIONAL_BEATS_PER_BAR_DEFAULT
     beat_division: int = PROFESSIONAL_BEAT_DIVISION_DEFAULT
     grid_offset_units: int = PROFESSIONAL_GRID_OFFSET_UNITS_DEFAULT
+    pitch_notes: list[PianoRollPitchNote] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -534,6 +640,27 @@ class SaveCompositionRequest:
     beats_per_bar: int = PROFESSIONAL_BEATS_PER_BAR_DEFAULT
     beat_division: int = PROFESSIONAL_BEAT_DIVISION_DEFAULT
     grid_offset_units: int = PROFESSIONAL_GRID_OFFSET_UNITS_DEFAULT
+    pitch_notes: list[PianoRollPitchNote] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AutotuneRequest:
+    composition: SaveCompositionRequest
+    strength_percent: int = AUTOTUNE_DEFAULT_STRENGTH_PERCENT
+    speed_ms: int = AUTOTUNE_DEFAULT_SPEED_MS
+
+
+@dataclass(frozen=True)
+class AutotuneSegmentResult:
+    segment_id: str
+    phone_units: list[PhoneUnit]
+    pitch_envelope: list[PitchEnvelopePoint] = field(default_factory=list)
+    edit_regions: list[EditRegion] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AutotuneResponse:
+    segments: list[AutotuneSegmentResult]
 
 
 @dataclass(frozen=True)

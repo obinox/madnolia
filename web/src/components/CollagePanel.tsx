@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import { cancelSearch, getSearchJob, startSearch } from "../api/search"
+import { cancelSearch, startSearch } from "../api/search"
+import { clearRemoteTask, pollSearchJob, remoteTaskStage, saveRemoteTask, updateRemoteTask } from "../api/remoteTasks"
 import { createComposition, exportComposition, fetchCompositions, previewComposition, updateComposition } from "../api/compositions"
 import {
   APPROXIMATE_SEARCH_CANDIDATES_PER_PHONE,
@@ -16,24 +17,35 @@ import {
   PROFESSIONAL_BEAT_DIVISION_DEFAULT,
   PITCH_TRANSITION_DEFAULT_MS,
   PITCH_TRANSITION_DEFAULT_STRENGTH,
+  PITCH_TARGET_STRENGTH_DEFAULT_PERCENT,
+  PITCH_VIBRATO_DEPTH_DEFAULT_CENTS,
+  PITCH_VIBRATO_RATE_DEFAULT_HZ,
+  PITCH_VIBRATO_START_DEFAULT_MS,
+  REMOTE_SEARCH_RESULT_STORAGE_PREFIX,
+  REMOTE_TASK_SCHEMA_VERSION,
 } from "../constants"
 import type {
   CandidateSearchResult,
+  ApiError,
   CandidateSearchTab,
   CollagePanelProps,
   CompositionDraft,
   CompositionProject,
+  ExportJob,
   ExportTarget,
   InputLanguage,
   PhoneUnit,
   SaveCompositionRequest,
   SearchJob,
+  RemoteSearchResult,
   SynthesisWorkspace,
   TimelineSegment,
   UnitCandidate,
 } from "../types"
 import { retimeCompositionSegments } from "../composition"
 import { formatTime } from "./Timeline"
+import { ExportProgress } from "./ExportProgress"
+import { useGlobalTask } from "../globalTask"
 
 export function CollagePanel({
   projectId,
@@ -57,19 +69,46 @@ export function CollagePanel({
   const [crossfadeMs, setCrossfadeMs] = useState(8)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState("")
+  const [listRefreshFailed, setListRefreshFailed] = useState(false)
+  const listRefreshFailedRef = useRef(false)
   const [searchError, setSearchError] = useState("")
   const [previewUrl, setPreviewUrl] = useState("")
   const [searchProgress, setSearchProgress] = useState<SearchJob | null>(null)
+  const [exportProgress, setExportProgress] = useState<ExportJob | null>(null)
   const [draftProjectId, setDraftProjectId] = useState("")
+  const draftProjectIdRef = useRef(draftProjectId)
+  draftProjectIdRef.current = draftProjectId
+  const latestDraftRef = useRef<CompositionDraft | null>(null)
+  const { beginTask, updateTask, finishTask } = useGlobalTask()
   const previewAudioRef = useRef<HTMLAudioElement | null>(null)
   const previewController = useRef<AbortController | null>(null)
   const searchController = useRef<AbortController | null>(null)
+  const exportController = useRef<AbortController | null>(null)
   const searchJobId = useRef("")
+  const searchStartRequest = useRef<ReturnType<typeof startSearch> | null>(null)
+  const searchCancelRequest = useRef<Promise<void> | null>(null)
+  const searchMonitorPromise = useRef<Promise<SearchJob> | null>(null)
   const searchBusyRef = useRef(false)
   const projectIdRef = useRef(projectId)
   const compositionsRequestId = useRef(0)
+  const searchTaskId = useRef<string | null>(null)
   const appliedInitialCompositionKey = useRef("")
+  const restoredSearchProject = useRef("")
   projectIdRef.current = projectId
+  if (draftProjectId === projectId) {
+    latestDraftRef.current = !targetText.trim() && !segments.length && !compositionId ? null : {
+      schema_version: COMPOSITION_DRAFT_SCHEMA_VERSION,
+      project_id: projectId,
+      composition_id: compositionId,
+      saved_at: new Date().toISOString(),
+      target_text: targetText,
+      target_pronunciation: targetPronunciation,
+      input_language: inputLanguage,
+      name,
+      crossfade_ms: crossfadeMs,
+      segments,
+    }
+  }
 
   const reloadProjectCompositions = async (targetProjectId: string): Promise<void> => {
     if (projectIdRef.current !== targetProjectId) return
@@ -94,12 +133,11 @@ export function CollagePanel({
   }, [previewUrl])
 
   useEffect(() => {
+    listRefreshFailedRef.current = false
+    setListRefreshFailed(false)
+    setExportProgress(null)
     setDraftProjectId("")
-    searchController.current?.abort()
-    if (searchJobId.current) void cancelSearch(searchJobId.current).catch(() => undefined)
     searchController.current = null
-    searchJobId.current = ""
-    searchBusyRef.current = false
     setSearchProgress(null)
     compositionsRequestId.current += 1
     setResult(null)
@@ -121,7 +159,13 @@ export function CollagePanel({
         if (
           draft.schema_version === COMPOSITION_DRAFT_SCHEMA_VERSION
           && draft.project_id === projectId
+          && typeof draft.composition_id === "string" && typeof draft.target_text === "string"
+          && typeof draft.target_pronunciation === "string" && typeof draft.name === "string"
+          && ["AUTO", "KO", "EN", "JA"].includes(draft.input_language)
+          && Number.isFinite(draft.crossfade_ms)
           && Array.isArray(draft.segments)
+          && draft.segments.every((segment) => segment && typeof segment.segment_id === "string"
+            && Array.isArray(segment.phone_units) && Array.isArray(segment.edit_regions) && Array.isArray(segment.volume_envelope))
         ) {
           setCompositionId(draft.composition_id)
           setTargetText(draft.target_text)
@@ -134,7 +178,7 @@ export function CollagePanel({
         }
       }
     } catch {
-      window.localStorage.removeItem(`${COMPOSITION_DRAFT_STORAGE_PREFIX}${projectId}`)
+      try { window.localStorage.removeItem(`${COMPOSITION_DRAFT_STORAGE_PREFIX}${projectId}`) } catch { }
     }
     setDraftProjectId(projectId)
     void reloadProjectCompositions(projectId).catch((error: Error) => {
@@ -142,33 +186,95 @@ export function CollagePanel({
     })
     return () => {
       compositionsRequestId.current += 1
-      searchController.current?.abort()
-      if (searchJobId.current) void cancelSearch(searchJobId.current).catch(() => undefined)
-      searchJobId.current = ""
-      searchBusyRef.current = false
+      const latest = latestDraftRef.current
+      if (latest?.project_id === projectId) {
+        try { window.localStorage.setItem(`${COMPOSITION_DRAFT_STORAGE_PREFIX}${projectId}`, JSON.stringify(latest)) } catch { }
+      } else if (!latest && draftProjectIdRef.current === projectId) {
+        try { window.localStorage.removeItem(`${COMPOSITION_DRAFT_STORAGE_PREFIX}${projectId}`) } catch { }
+      }
+    }
+  }, [projectId])
+
+  useEffect(() => {
+    const flushDraft = () => {
+      const targetProjectId = projectIdRef.current
+      if (draftProjectIdRef.current !== targetProjectId) return
+      const latest = latestDraftRef.current
+      try {
+        if (latest?.project_id === targetProjectId) {
+          window.localStorage.setItem(`${COMPOSITION_DRAFT_STORAGE_PREFIX}${targetProjectId}`, JSON.stringify(latest))
+        } else {
+          window.localStorage.removeItem(`${COMPOSITION_DRAFT_STORAGE_PREFIX}${targetProjectId}`)
+        }
+      } catch { }
+    }
+    window.addEventListener("pagehide", flushDraft)
+    window.addEventListener("beforeunload", flushDraft)
+    return () => {
+      window.removeEventListener("pagehide", flushDraft)
+      window.removeEventListener("beforeunload", flushDraft)
+    }
+  }, [])
+
+  useEffect(() => {
+    const key = `${REMOTE_SEARCH_RESULT_STORAGE_PREFIX}${projectId}`
+    try {
+      const raw = window.localStorage.getItem(key)
+      if (!raw) return
+      const restored = JSON.parse(raw) as RemoteSearchResult
+      if (restored.descriptor.version !== REMOTE_TASK_SCHEMA_VERSION
+        || restored.descriptor.project_id !== projectId || restored.descriptor.kind !== "search"
+        || !restored.descriptor.search || !restored.result
+        || !Array.isArray(restored.result.candidates) || !Array.isArray(restored.result.target_phones)) {
+        try { window.localStorage.removeItem(key) } catch { }
+        return
+      }
+      restoredSearchProject.current = projectId
+      setTargetText(restored.descriptor.search.text)
+      setInputLanguage(restored.descriptor.search.input_language)
+      setTargetPronunciation(restored.result.target_pronunciation)
+      if (restored.descriptor.search.tab === "EXACT") {
+        setResult(restored.result)
+        setCandidateTab("EXACT")
+      } else {
+        if (restored.descriptor.search.exact_result) setResult(restored.descriptor.search.exact_result)
+        setApproximateResult(restored.result)
+        setCandidateTab("APPROXIMATE")
+      }
+      setWorkspace("SEARCH")
+      setMessage(restored.descriptor.search.tab === "EXACT"
+        ? `정확 후보 ${restored.result.candidates.length}개를 복원했습니다.`
+        : `유사 후보 ${restored.result.candidates.length}개를 복원했습니다.`)
+      try { window.localStorage.removeItem(key) } catch { }
+    } catch {
+      try { window.localStorage.removeItem(key) } catch { }
     }
   }, [projectId])
 
   useEffect(() => {
     if (draftProjectId !== projectId) return
     const storageKey = `${COMPOSITION_DRAFT_STORAGE_PREFIX}${projectId}`
+    if (!targetText.trim() && !segments.length && !compositionId) {
+      latestDraftRef.current = null
+      const timer = window.setTimeout(() => {
+        try { window.localStorage.removeItem(storageKey) } catch { }
+      }, 300)
+      return () => window.clearTimeout(timer)
+    }
+    const draft: CompositionDraft = {
+      schema_version: COMPOSITION_DRAFT_SCHEMA_VERSION,
+      project_id: projectId,
+      composition_id: compositionId,
+      saved_at: new Date().toISOString(),
+      target_text: targetText,
+      target_pronunciation: targetPronunciation,
+      input_language: inputLanguage,
+      name,
+      crossfade_ms: crossfadeMs,
+      segments,
+    }
+    latestDraftRef.current = draft
     const timer = window.setTimeout(() => {
-      if (!targetText.trim() && !segments.length && !compositionId) {
-        window.localStorage.removeItem(storageKey)
-        return
-      }
-      const draft: CompositionDraft = {
-        schema_version: COMPOSITION_DRAFT_SCHEMA_VERSION,
-        project_id: projectId,
-        composition_id: compositionId,
-        saved_at: new Date().toISOString(),
-        target_text: targetText,
-        target_pronunciation: targetPronunciation,
-        input_language: inputLanguage,
-        name,
-        crossfade_ms: crossfadeMs,
-        segments,
-      }
       try {
         window.localStorage.setItem(storageKey, JSON.stringify(draft))
       } catch {
@@ -189,6 +295,7 @@ export function CollagePanel({
   ])
 
   useEffect(() => {
+    if (restoredSearchProject.current === projectId) return
     if (!initialCompositionId) {
       appliedInitialCompositionKey.current = ""
       return
@@ -223,18 +330,28 @@ export function CollagePanel({
     }
     return counts
   }, [activeResult])
-  const selectedTarget = result?.target_phones[selectedPhone] ?? null
+  const selectedTarget = activeResult?.target_phones[selectedPhone] ?? null
   const selectedExactCount = visibleCandidates.filter(
     (candidate) => candidate.match_status === "EXACT",
   ).length
   const selectedApproximateCount = visibleCandidates.length - selectedExactCount
   const selectedFallbackCount = visibleCandidates.filter((candidate) => candidate.fallback).length
-  const missingCandidateCount = result?.target_phones.filter((phone) => !result.candidates.some(
+  const missingCandidateCount = activeResult?.target_phones.filter((phone) => !activeResult.candidates.some(
     (candidate) => candidate.target_start_index === phone.target_index,
   )).length ?? 0
 
   const runSearch = async (searchTab: CandidateSearchTab = "EXACT") => {
     if (!targetText.trim() || searchBusyRef.current) return
+    const taskId = beginTask({
+      label: searchTab === "EXACT" ? "정확 후보 검색" : "유사 후보 검색",
+      stage: "검색 준비 중",
+      percent: null,
+      cancel: () => stopSearch(),
+      cancelLabel: "검색 취소",
+    })
+    if (!taskId) return
+    searchTaskId.current = taskId
+    searchCancelRequest.current = null
     searchBusyRef.current = true
     searchController.current?.abort()
     const controller = new AbortController()
@@ -256,7 +373,7 @@ export function CollagePanel({
     setSearchError("")
     setMessage("")
     try {
-      const { job_id } = await startSearch(
+      const startRequest = startSearch(
         projectId,
         targetText,
         inputLanguage,
@@ -265,21 +382,37 @@ export function CollagePanel({
           : APPROXIMATE_SEARCH_CANDIDATES_PER_PHONE,
         searchTab === "EXACT",
         searchTab === "APPROXIMATE",
-        controller.signal,
       )
+      searchStartRequest.current = startRequest
+      const { job_id } = await startRequest
+      if (searchStartRequest.current === startRequest) searchStartRequest.current = null
       searchJobId.current = job_id
-      if (controller.signal.aborted) {
-        await cancelSearch(job_id).catch(() => undefined)
-        return
-      }
-      let job: SearchJob
-      do {
-        job = await getSearchJob(job_id, controller.signal)
+      saveRemoteTask({
+        version: REMOTE_TASK_SCHEMA_VERSION,
+        job_id,
+        kind: "search",
+        project_id: projectId,
+        label: `${searchTab === "EXACT" ? "정확" : "유사"} 후보 검색: ${targetText}`,
+        stage: "검색 대기 중",
+        percent: 0,
+        search: { text: targetText, input_language: inputLanguage, tab: searchTab, pronunciation: targetPronunciation, exact_result: searchTab === "APPROXIMATE" ? result ?? undefined : undefined },
+      })
+      const monitor = pollSearchJob(job_id, (status) => {
+        if (!status) {
+          if (searchTaskId.current === taskId) updateTask(taskId, { stage: "상태 확인을 재시도하는 중" })
+          updateRemoteTask(job_id, { stage: "상태 확인을 재시도하는 중" })
+          return
+        }
         if (projectIdRef.current !== projectId || controller.signal.aborted) return
-        setSearchProgress(job)
-        if (job.status === "running") await new Promise((resolve) => window.setTimeout(resolve, 250))
-      } while (job.status === "running")
+        setSearchProgress(status)
+        const stage = remoteTaskStage(status.stage)
+        if (searchTaskId.current === taskId) updateTask(taskId, { stage, percent: status.percent })
+        updateRemoteTask(job_id, { stage, percent: status.percent })
+      }, controller.signal)
+      searchMonitorPromise.current = monitor
+      const job = await monitor
       if (projectIdRef.current !== projectId) return
+      clearRemoteTask(job_id)
       if (job.status === "cancelled") {
         setMessage("검색이 취소됐어요")
         return
@@ -292,8 +425,6 @@ export function CollagePanel({
         setResult(next)
         setTargetPronunciation(next.target_pronunciation)
         setSelectedPhone(0)
-        setSegments([])
-        setCompositionId("")
         setMessage(`${next.target_phones.length}개 음소 · 정확 후보 ${next.candidates.length}개`)
       } else {
         setApproximateResult(next)
@@ -302,6 +433,7 @@ export function CollagePanel({
     } catch (error) {
       if (!controller.signal.aborted && projectIdRef.current === projectId) {
         const detail = error instanceof Error ? error.message : String(error)
+        if ((error as ApiError)?.status === 404 && searchJobId.current) clearRemoteTask(searchJobId.current)
         setSearchError(detail)
         setMessage(detail)
       }
@@ -309,21 +441,60 @@ export function CollagePanel({
       if (searchController.current === controller) {
         searchController.current = null
         searchJobId.current = ""
+        searchStartRequest.current = null
+        searchCancelRequest.current = null
+        searchMonitorPromise.current = null
         searchBusyRef.current = false
         if (projectIdRef.current === projectId) setBusy(false)
+      }
+      if (searchTaskId.current === taskId) {
+        searchTaskId.current = null
+        finishTask(taskId)
       }
     }
   }
 
   const stopSearch = async () => {
-    const jobId = searchJobId.current
-    searchController.current?.abort()
-    if (jobId) await cancelSearch(jobId).catch(() => undefined)
-    searchJobId.current = ""
-    searchBusyRef.current = false
-    setBusy(false)
-    setSearchProgress((current) => current ? { ...current, status: "cancelled", stage: "cancelled" } : current)
-    setMessage("검색이 취소됐어요")
+    if (!searchCancelRequest.current) {
+      const taskId = searchTaskId.current
+      searchCancelRequest.current = (async () => {
+        let jobId = searchJobId.current
+        if (!jobId && searchStartRequest.current) {
+          try {
+            jobId = (await searchStartRequest.current).job_id
+          } catch {
+            if (taskId && searchTaskId.current === taskId) {
+              searchTaskId.current = null
+              searchBusyRef.current = false
+              finishTask(taskId)
+              if (projectIdRef.current === projectId) setBusy(false)
+            }
+            return
+          }
+        }
+        if (!jobId) return
+        searchJobId.current = jobId
+        let job: SearchJob
+        try {
+          job = await cancelSearch(jobId)
+          if (job.status === "cancelling" || job.status === "running") {
+            const monitor = searchMonitorPromise.current
+            if (monitor) job = await monitor
+          }
+        } catch (error) {
+          if ((error as ApiError)?.status === 404) clearRemoteTask(jobId)
+          if (taskId && searchTaskId.current !== taskId) return
+          throw error
+        }
+        if (!taskId || searchTaskId.current !== taskId) return
+        setSearchProgress(job)
+      })()
+    }
+    const cancellation = searchCancelRequest.current
+    try { await cancellation }
+    finally {
+      if (searchCancelRequest.current === cancellation) searchCancelRequest.current = null
+    }
   }
 
   const selectCandidateTab = (nextTab: CandidateSearchTab) => {
@@ -402,6 +573,8 @@ export function CollagePanel({
   }
 
   const playPreview = async () => {
+    const taskId = beginTask({ label: "전체 미리보기 생성", stage: "미리보기 생성 중" })
+    if (!taskId) return
     previewController.current?.abort()
     const controller = new AbortController()
     previewController.current = controller
@@ -419,6 +592,7 @@ export function CollagePanel({
         previewController.current = null
         setBusy(false)
       }
+      finishTask(taskId)
     }
   }
 
@@ -427,9 +601,18 @@ export function CollagePanel({
     const saved = compositionId
       ? await updateComposition(compositionId, body)
       : await createComposition(projectId, body)
-    if (projectIdRef.current === projectId) setCompositionId(saved.composition_id)
-    await reloadProjectCompositions(projectId)
+    if (projectIdRef.current === projectId) {
+      setCompositionId(saved.composition_id)
+      if (latestDraftRef.current?.project_id === projectId) latestDraftRef.current = { ...latestDraftRef.current, composition_id: saved.composition_id }
+    }
+    if (projectIdRef.current === projectId) setCompositions((current) => [saved, ...current.filter((item) => item.composition_id !== saved.composition_id)])
     return saved
+  }
+
+  const refreshCompositionList = async () => {
+    await reloadProjectCompositions(projectId)
+    listRefreshFailedRef.current = false
+    setListRefreshFailed(false)
   }
 
   const save = async () => {
@@ -437,17 +620,27 @@ export function CollagePanel({
       setMessage("먼저 문장을 검색하세요.")
       return
     }
+    const taskId = beginTask({ label: "합성 저장", stage: "저장 중" })
+    if (!taskId) return
     setBusy(true)
     setMessage("")
     try {
       const saved = await persistComposition()
-      if (projectIdRef.current === projectId) setMessage(`저장됨 · ${saved.composition_id}`)
+      try {
+        await refreshCompositionList()
+        if (projectIdRef.current === projectId) setMessage(`저장됨 · ${saved.composition_id}`)
+      } catch (error) {
+        listRefreshFailedRef.current = true
+        setListRefreshFailed(true)
+        if (projectIdRef.current === projectId) setMessage(`저장 성공 · ${saved.composition_id}. 목록 새로고침 실패: ${error instanceof Error ? error.message : String(error)}`)
+      }
     } catch (error) {
       if (projectIdRef.current === projectId) {
         setMessage(error instanceof Error ? error.message : String(error))
       }
     } finally {
       if (projectIdRef.current === projectId) setBusy(false)
+      finishTask(taskId)
     }
   }
 
@@ -472,18 +665,47 @@ export function CollagePanel({
       setMessage("먼저 문장을 검색하세요.")
       return
     }
+    const taskId = beginTask({ label: `${target} 내보내기`, stage: "합성 저장 중" })
+    if (!taskId) return
+    const controller = new AbortController()
+    exportController.current?.abort()
+    exportController.current = controller
     setBusy(true)
     setMessage("")
+    setExportProgress(null)
     try {
       const saved = await persistComposition()
-      await exportComposition(saved.composition_id, target)
-      if (projectIdRef.current === projectId) setMessage(`${target} 익스포트 완료`)
+      if (controller.signal.aborted || projectIdRef.current !== projectId) return
+      try { await refreshCompositionList() } catch {
+        listRefreshFailedRef.current = true
+        setListRefreshFailed(true)
+        setMessage(`저장 성공 · ${saved.composition_id}. 목록 새로고침에 실패했지만 내보내기를 계속합니다.`)
+      }
+      updateTask(taskId, { stage: `${target} 내보내기`, percent: null })
+      await exportComposition(saved.composition_id, target, (job) => {
+        if (exportController.current === controller && projectIdRef.current === projectId) {
+          setExportProgress(job)
+          updateTask(taskId, { stage: remoteTaskStage(job.stage), percent: job.percent })
+        }
+      }, controller.signal, {
+        kind: "export",
+        project_id: projectId,
+        composition_id: saved.composition_id,
+        target,
+        label: `${target} 내보내기`,
+      }, (stage, percent) => updateTask(taskId, percent === undefined ? { stage } : { stage, percent }))
+      if (projectIdRef.current === projectId && !listRefreshFailedRef.current) setMessage(`${target} 익스포트 완료`)
+      else if (projectIdRef.current === projectId) setMessage(`저장 및 ${target} 내보내기 완료 · 목록 새로고침에 실패했습니다.`)
     } catch (error) {
-      if (projectIdRef.current === projectId) {
+      if (!controller.signal.aborted && projectIdRef.current === projectId) {
+        setExportProgress(null)
         setMessage(error instanceof Error ? error.message : String(error))
       }
     } finally {
-      if (projectIdRef.current === projectId) setBusy(false)
+      const isCurrentExport = exportController.current === controller && projectIdRef.current === projectId
+      if (exportController.current === controller) exportController.current = null
+      if (isCurrentExport) setBusy(false)
+      finishTask(taskId)
     }
   }
 
@@ -546,6 +768,7 @@ export function CollagePanel({
         <div>
           <span>{({
             queued: "대기 중",
+            cancelling: "중단 요청 중",
             corpus: "영상 음소 불러오기",
             phonetic: "발음 음소 변환",
             exact: "정확 일치 검색",
@@ -555,7 +778,7 @@ export function CollagePanel({
           <strong>{Math.floor(searchProgress.percent)}%</strong>
         </div>
         <progress max={100} value={searchProgress.percent} aria-label="Search progress" />
-        <button onClick={() => void stopSearch()}>취소</button>
+        <button onClick={() => { void stopSearch().catch((error: Error) => setSearchError(error.message)) }}>취소</button>
       </div>}
 
       {searchError && <div className="search-diagnostics search-error" role="alert">
@@ -804,7 +1027,9 @@ export function CollagePanel({
             </button>
           ))}
           {message && <span className="assembly-message"><strong>INFO</strong>{message}</span>}
+          {listRefreshFailed && <button type="button" disabled={busy} onClick={() => void refreshCompositionList().then(() => setMessage("저장된 합성 목록을 새로고침했습니다.")).catch((error: Error) => setMessage(`목록 새로고침 실패: ${error.message}`))}>목록만 다시 불러오기</button>}
         </div>
+        {exportProgress && <ExportProgress job={exportProgress} />}
       </div>
     </section>
   )
@@ -829,7 +1054,11 @@ function candidateToPhoneUnits(candidate: UnitCandidate): PhoneUnit[] {
     source_f0_hz: alignment.source_f0_hz,
     voiced_probability: alignment.voiced_probability,
     target_pitch_midi: alignment.source_f0_hz === null ? null : hzToMidi(alignment.source_f0_hz),
+    target_pitch_strength_percent: PITCH_TARGET_STRENGTH_DEFAULT_PERCENT,
     formant_shift_semitones: 0,
+    vibrato_depth_cents: PITCH_VIBRATO_DEPTH_DEFAULT_CENTS,
+    vibrato_rate_hz: PITCH_VIBRATO_RATE_DEFAULT_HZ,
+    vibrato_start_ms: PITCH_VIBRATO_START_DEFAULT_MS,
     transition_to_next_ms: PITCH_TRANSITION_DEFAULT_MS,
     transition_strength_percent: PITCH_TRANSITION_DEFAULT_STRENGTH,
     transition_center_ms: 0,

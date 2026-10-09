@@ -15,6 +15,8 @@ export const fetchVideos = (): Promise<string[]> => request("/api/videos")
 export const uploadVideo = (
   file: File,
   onProgress: (percent: number) => void,
+  onUploadComplete?: () => void,
+  signal?: AbortSignal,
 ): Promise<VideoUploadResult> => new Promise((resolve, reject) => {
   const form = new FormData()
   form.append("file", file)
@@ -23,6 +25,7 @@ export const uploadVideo = (
   xhr.upload.onprogress = (event) => {
     if (event.lengthComputable) onProgress(Math.round(event.loaded / event.total * 100))
   }
+  xhr.upload.onload = () => onUploadComplete?.()
   xhr.onerror = () => reject(new Error("업로드 중 연결이 끊겼습니다. 다시 시도해 주세요."))
   xhr.onabort = () => reject(new Error("업로드가 취소되었습니다."))
   xhr.onload = () => {
@@ -36,6 +39,13 @@ export const uploadVideo = (
     }
     resolve(body as VideoUploadResult)
   }
+  if (signal?.aborted) {
+    reject(new Error("업로드가 취소되었습니다."))
+    return
+  }
+  const abort = () => xhr.abort()
+  signal?.addEventListener("abort", abort, { once: true })
+  xhr.onloadend = () => signal?.removeEventListener("abort", abort)
   xhr.send(form)
 })
 
@@ -52,8 +62,20 @@ export const renameAnalysis = (analysisId: string, nickname: string): Promise<An
 export const startAnalysis = (settings: AnalysisSettings): Promise<JobIdResponse> =>
   request("/api/analyses", undefined, { method: "POST", body: JSON.stringify(settings) })
 
-export const fetchAnalysisJob = (jobId: string): Promise<AnalysisJob> =>
-  request(`/api/analysis-jobs/${encodeURIComponent(jobId)}`)
+export const fetchAnalysisJob = async (jobId: string): Promise<AnalysisJob> => {
+  const response = await fetch(`/api/analysis-jobs/${encodeURIComponent(jobId)}`)
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`
+    try {
+      const body = await response.json() as ApiErrorResponse
+      if (typeof body.detail === "string") message = body.detail
+    } catch { }
+    const error = new Error(message)
+    if (response.status === 404) error.name = "AnalysisJobNotFoundError"
+    throw error
+  }
+  return response.json() as Promise<AnalysisJob>
+}
 
 export const controlAnalysisJob = (jobId: string, action: AnalysisAction): Promise<AnalysisJob> =>
   request(`/api/analysis-jobs/${encodeURIComponent(jobId)}/${action}`, undefined, { method: "POST" })

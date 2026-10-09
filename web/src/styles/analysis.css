@@ -52,7 +52,15 @@
 .dependency-bar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dependency-bar.stale { border-color: #713346; color: #d7a5ae; background: #28131a; }
 .dependency-bar.stale strong { color: #ff8ba0; }
-.professional-preview { width: 100%; height: 34px; }
+.professional-preview { width: 100%; height: 34px; color-scheme: dark; border: 1px solid #294a66; border-radius: 7px; background: #0b1620; accent-color: #65a9ff; }
+.professional-preview::-webkit-media-controls-enclosure { border: 1px solid #294a66; border-radius: 6px; background: #0b1620; }
+.professional-preview::-webkit-media-controls-panel { background: #0b1620; }
+.professional-preview::-webkit-media-controls-current-time-display,
+.professional-preview::-webkit-media-controls-time-remaining-display { color: #c7def2; text-shadow: none; }
+.professional-preview::-webkit-media-controls-timeline,
+.professional-preview::-webkit-media-controls-volume-slider { accent-color: #65a9ff; }
+.professional-preview::-webkit-media-controls-play-button:hover,
+.professional-preview::-webkit-media-controls-mute-button:hover { border-radius: 50%; background-color: #183149; }
 .professional-empty { display: grid; min-height: 220px; place-items: center; color: #8091a3; }
 .professional-footer { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; }
 .professional-footer .export-row { margin: 0; }
@@ -61,6 +69,8 @@
 .search-progress > div { display: flex; justify-content: space-between; gap: 12px; color: #9fb4c8; font-size: 12px; }
 .search-progress strong { color: #65a9ff; font: 700 13px ui-monospace, monospace; }
 .search-progress progress { width: 100%; height: 9px; accent-color: #65a9ff; }
+.export-progress { grid-template-columns: minmax(0, 1fr); margin-top: 8px; }
+.export-progress progress { grid-column: 1; }
 .search-progress button { grid-column: 2; grid-row: 1 / span 2; padding: 7px 10px; border: 1px solid #713346; border-radius: 7px; color: #ffb0bb; background: #28131a; }
 .search-diagnostics { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid #29425a; border-radius: 8px; color: #9fb4c8; background: #0d1822; font-size: 11px; }
 .search-diagnostics > div:first-child, .search-diagnostics dl > div { display: flex; justify-content: space-between; gap: 12px; }

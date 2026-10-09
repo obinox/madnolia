@@ -1,5 +1,6 @@
 from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import replace
 from functools import lru_cache
 from hashlib import sha1
 from heapq import heappop, heappush, nsmallest
@@ -17,11 +18,13 @@ from madnolia.constants import (
     SEARCH_PHONE_FALLBACK_SIMILARITIES,
     SEARCH_PHONE_SIMILARITY_OVERRIDES,
     SEARCH_PRIMARY_APPROXIMATE_SIMILARITY,
+    SYNTHESIS_TAIL_MARGIN_MS,
 )
 from madnolia.phonetics import MultilingualPhonetics
 from madnolia.types.common import (
     AlignmentStatus,
     AnalysisResult,
+    AudioRegionType,
     CandidatePhoneAlignment,
     CandidateSearchResult,
     InputLanguage,
@@ -129,6 +132,7 @@ def search_candidates(
     )
 
     selected = sorted(selected_exact + selected_approximate, key=_candidate_sort_key)
+    selected = _extend_candidate_tails(selected, analyses, sources, check)
     report("sorting", 100)
     return CandidateSearchResult(
         target_text=normalized,
@@ -137,6 +141,91 @@ def search_candidates(
         target_phones=targets,
         candidates=selected,
     )
+
+
+def _synthesis_tail_end_ms(
+    phone: PhoneOccurrence,
+    phone_index: int,
+    phones: list[PhoneOccurrence],
+    analysis: AnalysisResult,
+    lower_bound_ms: int | None = None,
+) -> int:
+    duration_ms = analysis.source.duration_ms
+    original_end = phone.end_ms
+    lower_bound = max(original_end, lower_bound_ms or original_end)
+    if (
+        phone.start_ms < 0
+        or original_end < phone.start_ms
+        or original_end > duration_ms
+        or lower_bound > duration_ms
+    ):
+        return lower_bound
+    boundaries: list[int] = []
+    if phone_index + 1 < len(phones):
+        boundaries.append(phones[phone_index + 1].start_ms - SYNTHESIS_TAIL_MARGIN_MS)
+    in_non_speech = False
+    for region in analysis.audio_regions:
+        if (
+            region.region_type == AudioRegionType.NON_SPEECH
+            and region.start_ms <= phone.start_ms < region.end_ms
+        ):
+            in_non_speech = True
+        elif region.region_type == AudioRegionType.NON_SPEECH and region.start_ms >= phone.start_ms:
+            boundaries.append(region.start_ms)
+        elif (
+            region.region_type == AudioRegionType.SPEECH
+            and region.start_ms <= phone.start_ms < region.end_ms
+        ):
+            boundaries.append(region.end_ms)
+    if in_non_speech or not boundaries:
+        return lower_bound
+    return min(duration_ms, max(lower_bound, min(boundaries)))
+
+
+def _extend_candidate_tails(
+    candidates: list[UnitCandidate],
+    analyses: list[AnalysisResult],
+    sources: dict[str, list[PhoneOccurrence]],
+    checkpoint: SearchCheckpoint,
+) -> list[UnitCandidate]:
+    analysis_by_source = {analysis.source.source_id: analysis for analysis in analyses}
+    phone_indices = {
+        source_id: {phone.occurrence_id: index for index, phone in enumerate(phones)}
+        for source_id, phones in sources.items()
+    }
+    extended: list[UnitCandidate] = []
+    for index, candidate in enumerate(candidates):
+        if index % 64 == 0:
+            checkpoint()
+        if not candidate.occurrence_ids:
+            extended.append(candidate)
+            continue
+        analysis = analysis_by_source.get(candidate.source_id)
+        phones = sources.get(candidate.source_id, [])
+        phone_index = phone_indices.get(candidate.source_id, {}).get(candidate.occurrence_ids[-1])
+        if analysis is None or phone_index is None:
+            extended.append(candidate)
+            continue
+        phone = phones[phone_index]
+        if candidate.source_end_ms < phone.end_ms:
+            extended.append(candidate)
+            continue
+        source_end = _synthesis_tail_end_ms(
+            phone, phone_index, phones, analysis, candidate.source_end_ms
+        )
+        if source_end <= candidate.source_end_ms:
+            extended.append(candidate)
+            continue
+        alignments = [
+            replace(alignment, source_end_ms=source_end)
+            if alignment.source_occurrence_id == phone.occurrence_id
+            else alignment
+            for alignment in candidate.alignments
+        ]
+        extended.append(
+            replace(candidate, source_end_ms=source_end, alignments=alignments)
+        )
+    return extended
 
 
 def _balanced_candidates_by_span(

@@ -26,6 +26,9 @@ from madnolia.types.common import (
     EditRegion,
     MatchStatus,
     PhoneAlignmentOperation,
+    PhonePitchOwnerRef,
+    PhonePitchPoint,
+    PianoRollPitchNote,
     PhoneUnit,
     PitchEnvelopePoint,
     SaveCompositionRequest,
@@ -121,6 +124,7 @@ def create_composition(
         beats_per_bar=request.beats_per_bar,
         beat_division=request.beat_division,
         grid_offset_units=request.grid_offset_units,
+        pitch_notes=request.pitch_notes,
     )
     _validate_parent_dependency(project_dir, request)
     _validate_sources(project_dir, composition.segments)
@@ -153,6 +157,7 @@ def update_composition(
         beats_per_bar=request.beats_per_bar,
         beat_division=request.beat_division,
         grid_offset_units=request.grid_offset_units,
+        pitch_notes=request.pitch_notes,
     )
     _validate_parent_dependency(project_dir, request, composition_id)
     _validate_sources(project_dir, composition.segments)
@@ -198,11 +203,31 @@ def load_composition(path: Path) -> CompositionProject:
                             **{
                                 **unit,
                                 "operation": PhoneAlignmentOperation(unit["operation"]),
+                                "pitch_points": [
+                                    PhonePitchPoint(**point)
+                                    for point in unit.get("pitch_points", [])
+                                ],
+                                "pitch_owner_ref": (
+                                    PhonePitchOwnerRef(**unit["pitch_owner_ref"])
+                                    if unit.get("pitch_owner_ref")
+                                    else None
+                                ),
                             }
                         )
                         for unit in segment.get("phone_units", [])
                     ],
-                    "edit_regions": [EditRegion(**region) for region in segment.get("edit_regions", [])],
+                    "edit_regions": [
+                        EditRegion(
+                            **{
+                                **region,
+                                "pitch_points": [
+                                    PhonePitchPoint(**point)
+                                    for point in region.get("pitch_points", [])
+                                ],
+                            }
+                        )
+                        for region in segment.get("edit_regions", [])
+                    ],
                     "volume_envelope": [VolumeEnvelopePoint(**point) for point in segment.get("volume_envelope", [])],
                     "pitch_envelope": [PitchEnvelopePoint(**point) for point in segment.get("pitch_envelope", [])],
                     "user_guide_source_ms": segment.get("user_guide_source_ms", []),
@@ -218,6 +243,7 @@ def load_composition(path: Path) -> CompositionProject:
         beats_per_bar=data.get("beats_per_bar", PROFESSIONAL_BEATS_PER_BAR_DEFAULT),
         beat_division=data.get("beat_division", PROFESSIONAL_BEAT_DIVISION_DEFAULT),
         grid_offset_units=data.get("grid_offset_units", PROFESSIONAL_GRID_OFFSET_UNITS_DEFAULT),
+        pitch_notes=[PianoRollPitchNote(note["note_id"], note["start_ms"], note["end_ms"], [PhonePitchPoint(**point) for point in note.get("pitch_points", [])]) for note in data.get("pitch_notes", [])],
     )
 
 

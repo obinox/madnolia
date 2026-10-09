@@ -32,6 +32,8 @@ from madnolia.types.common import (
     PhoneAcousticFeatures,
     PhoneAlignmentOperation,
     PhoneOccurrence,
+    PhonePitchOwnerRef,
+    PhonePitchPoint,
     PhoneTarget,
     PhoneticTranscription,
     PhoneUnit,
@@ -56,6 +58,7 @@ from madnolia.types.common import (
     UnitCandidate,
     UnitType,
     WaveformData,
+    WorldPitchAnalysis,
 )
 
 __all__ = [
@@ -92,6 +95,8 @@ __all__ = [
     "PhoneAcousticFeatures",
     "PhoneAlignmentOperation",
     "PhoneOccurrence",
+    "PhonePitchOwnerRef",
+    "PhonePitchPoint",
     "PhoneTarget",
     "PhoneUnit",
     "PhoneticTranscription",
@@ -116,4 +121,5 @@ __all__ = [
     "UnitCandidate",
     "UnitType",
     "WaveformData",
+    "WorldPitchAnalysis",
 ]
