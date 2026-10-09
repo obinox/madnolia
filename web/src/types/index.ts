@@ -329,6 +329,13 @@ export interface PianoRollPitchNote {
   pitch_points: PhonePitchPoint[]
 }
 
+export interface PianoRollSelectionBox {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
 export interface PitchAnalysisPhone {
   phone_unit_id: string
   source_start_ms: number

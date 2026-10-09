@@ -76,6 +76,7 @@
 .piano-target-note polyline { fill: none; stroke: #fff4a7; stroke-width: 3; vector-effect: non-scaling-stroke; }
 .piano-target-note circle { fill: #fff; stroke: #1673a5; stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: auto; cursor: ns-resize; }
 .piano-target-note-resize { position: absolute; top: 0; right: -6px; bottom: 0; z-index: 0; width: 6px; cursor: ew-resize; }
+.piano-note-selection-box { position: absolute; z-index: 8; border: 1px solid #8bd7ff; background: #5dbff52e; pointer-events: none; }
 .piano-syllable-note.unpitched { justify-content: flex-start; color: #ffe0ac; border-color: color-mix(in srgb, var(--segment-color), white 48%); background: color-mix(in srgb, var(--segment-color), #101820 42%); }
 .piano-phone-note:hover, .piano-region-note:hover { z-index: 6; filter: brightness(1.18); }
 .piano-phone-note.selected, .piano-region-note.selected { z-index: 5; border: 1px solid #e4f3ff; box-shadow: 0 0 0 1px #69b8ff; }

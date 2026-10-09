@@ -140,6 +140,7 @@ export const PIANO_ROLL_UNPITCHED_LANE_HEIGHT = 30
 export const PIANO_ROLL_SELECTED_PHONE_SEPARATOR = ":"
 export const PIANO_ROLL_NOTE_MIN_DURATION_MS = 20
 export const PIANO_ROLL_PITCH_POINT_MIN_GAP = 0.01
+export const PIANO_ROLL_SELECTION_DRAG_THRESHOLD_PX = 4
 export const REGION_PITCH_MERGE_GAP_POSITION = 0.000001
 export const PIANO_ROLL_VOLUME_MIN_LANE_HEIGHT = 24
 export const PIANO_ROLL_SEMITONE_NAMES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"] as const
