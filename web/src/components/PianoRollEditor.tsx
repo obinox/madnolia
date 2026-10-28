@@ -4,6 +4,7 @@ import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react"
 import { analyzeCompositionPitch } from "../api/compositions"
 import {
   PIANO_ROLL_ANALYSIS_DEBOUNCE_MS,
+  PIANO_ROLL_CENTS_PER_SEMITONE,
   PIANO_ROLL_NOTE_MIN_DURATION_MS,
   PIANO_ROLL_PITCH_POINT_MIN_GAP,
   PIANO_ROLL_SELECTION_DRAG_THRESHOLD_PX,
@@ -41,7 +42,7 @@ import {
   PROFESSIONAL_GAIN_MAX,
   PROFESSIONAL_GAIN_MIN,
 } from "../constants"
-import { phoneOutputInterval, phonePitchGroupRefs, phonePitchOwnerRef, pianoRollDraggedMidi, pianoRollSyllableGroups, pianoRollUncoveredRegionViews, sourceTimeToSegmentOutput } from "../features/composition/pianoRoll"
+import { phoneOutputInterval, phonePitchGroupRefs, phonePitchOwnerRef, pianoRollDirectionalSemitoneDelta, pianoRollDraggedMidi, pianoRollQuantizeMidiCent, pianoRollSyllableGroups, pianoRollUncoveredRegionViews, sourceTimeToSegmentOutput } from "../features/composition/pianoRoll"
 import type {
   PianoRollRegionRef,
   PitchAnalysisPhone,
@@ -57,8 +58,6 @@ import type {
   PianoRollLoopRange,
   PianoRollZoomAnchor,
   ProfessionalBeatDivision,
-  PhonePitchPoint,
-  PhoneUnit,
   TimelineSegment,
   VolumeEnvelopePoint,
 } from "../types"
@@ -131,40 +130,8 @@ function phonePitchGroup(segments: TimelineSegment[], segmentId: string, phoneUn
 
 function phonePitchGroupBaseMidi(group: NonNullable<ReturnType<typeof phonePitchGroup>>, response: PitchAnalysisResponse | null): number | null {
   const phone = group.ownerPhone
-  if (phone.target_pitch_midi !== null && phone.target_pitch_midi !== undefined) return phone.target_pitch_midi
-  if (phone.source_f0_hz !== null && phone.source_f0_hz > 0) return midiFromHz(phone.source_f0_hz)
   const measured = analysisPhone(response, group.ownerSegment.segment_id, phone.phone_unit_id)
-  return measured ? averageMidi(measured.original) ?? averageMidi(measured.corrected) : null
-}
-
-function phonePitchGroupPoints(group: NonNullable<ReturnType<typeof phonePitchGroup>>, response: PitchAnalysisResponse | null): PhonePitchPoint[] {
-  if (group.ownerPhone.pitch_points?.length) return group.ownerPhone.pitch_points
-  const midi = phonePitchGroupBaseMidi(group, response)
-  return midi === null ? [] : [{ position: 0, midi }, { position: 1, midi }]
-}
-
-function midiAtPhonePitch(points: PhonePitchPoint[], position: number): number | null {
-  const rightIndex = points.findIndex((point) => point.position >= position)
-  if (rightIndex < 0) return points.at(-1)?.midi ?? null
-  if (rightIndex === 0) return points[0]?.midi ?? null
-  const left = points[rightIndex - 1]
-  const right = points[rightIndex]
-  const amount = (position - left.position) / Math.max(Number.EPSILON, right.position - left.position)
-  return left.midi + (right.midi - left.midi) * amount
-}
-
-function pitchEnvelopeCentsAtSourceTime(segment: TimelineSegment, sourceTimeMs: number): number {
-  const points = segment.pitch_envelope ?? []
-  if (!points.length) return 0
-  const duration = segment.edit_regions.reduce((sum, region) => sum + region.output_duration_ms, 0)
-  const position = sourceTimeToSegmentOutput(segment, sourceTimeMs) / Math.max(1, duration)
-  const rightIndex = points.findIndex((point) => point.position >= position)
-  if (rightIndex < 0) return points.at(-1)!.cents
-  if (rightIndex === 0) return points[0].cents
-  const left = points[rightIndex - 1]
-  const right = points[rightIndex]
-  const amount = (position - left.position) / Math.max(Number.EPSILON, right.position - left.position)
-  return left.cents + (right.cents - left.cents) * amount
+  return (measured ? averageMidi(measured.original) : null) ?? (phone.source_f0_hz !== null && phone.source_f0_hz > 0 ? midiFromHz(phone.source_f0_hz) : null)
 }
 
 function regionPhoneLabel(segment: TimelineSegment, region: TimelineSegment["edit_regions"][number]): string {
@@ -180,7 +147,7 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
     visible, analysisHold, projectId, request, segments, pitchNotes, tempoBpm, beatsPerBar, beatDivision, gridOffsetUnits, selectedSegmentId, playheadMs, isPlaying, loopEnabled, auditionMode,
     onPlayheadChange, onSelectSegment, onTogglePlayback, onToggleLoop, onAuditionModeChange, onLoopRangeChange,
     onTempoChange, onBeatsPerBarChange, onBeatDivisionChange, onGridOffsetChange, onUpdatePitchNotes,
-    onUpdatePhones, onUpdateEnvelope, onUpdateRegionPitchPoints, onUpdateRegionRangePitchPoints, onUpdateSyllablePitch, onBeginGesture, onEndGesture,
+    onUpdateEnvelope, onBeginGesture, onEndGesture,
   } = props
   const [analysis, setAnalysis] = useState<PitchAnalysisResponse | null>(null)
   const [analysisLoading, setAnalysisLoading] = useState(false)
@@ -195,7 +162,6 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
   const [selectedSyllableKey, setSelectedSyllableKey] = useState("")
   const [selectedPitchNoteIds, setSelectedPitchNoteIds] = useState<string[]>([])
   const [pitchNoteSelectionBox, setPitchNoteSelectionBox] = useState<PianoRollSelectionBox | null>(null)
-  const [pitchEditMessage, setPitchEditMessage] = useState("")
   const [dragPitchBadge, setDragPitchBadge] = useState<PianoRollDragPitchBadge | null>(null)
   const [selectedRegionView, setSelectedRegionView] = useState<PianoRollRegionView | null>(null)
   const [didInitialPitchCenter, setDidInitialPitchCenter] = useState(false)
@@ -260,21 +226,7 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
     segment: segments.find((segment) => segment.segment_id === reference.segmentId)!,
     phone: segments.find((segment) => segment.segment_id === reference.segmentId)!.phone_units.find((unit) => unit.phone_unit_id === reference.phoneUnitId)!,
   }))
-  const selectedRangeView = selectedRegionView ? regionViews.find((view) => view.segmentId === selectedRegionView.segmentId && view.sourceStartMs === selectedRegionView.sourceStartMs && view.sourceEndMs === selectedRegionView.sourceEndMs) ?? selectedRegionView : null
-  const selectedPitchRegion = selectedRangeView
-    ? segments.find((segment) => segment.segment_id === selectedRangeView.segmentId)?.edit_regions.find((region) => region.source_start_ms <= selectedRangeView.sourceStartMs && region.source_end_ms >= selectedRangeView.sourceEndMs)
-    : selectedRegion ? segments.find((segment) => segment.segment_id === selectedRegion.segmentId)?.edit_regions.find((region) => region.region_id === selectedRegion.regionId) : null
   const selectedPhone = selectedUnits[0]?.phone ?? null
-  const selectedRangePitchPoints = selectedRangeView?.pitchPoints ?? selectedPitchRegion?.pitch_points
-  const selectedRangeSegment = selectedRangeView ? segments.find((segment) => segment.segment_id === selectedRangeView.segmentId) : null
-  const selectedRangeSourceMid = selectedRangeView ? (selectedRangeView.sourceStartMs + selectedRangeView.sourceEndMs) / 2 : 0
-  const selectedRangeEnvelopeCents = selectedRangeSegment ? pitchEnvelopeCentsAtSourceTime(selectedRangeSegment, selectedRangeSourceMid) : 0
-  const selectedRangeMidi = selectedRangePitchPoints?.length
-    ? (midiAtPhonePitch(selectedRangePitchPoints, 0.5) ?? 60) + (selectedPitchRegion?.relative_pitch_cents ?? 0) / 100 + selectedRangeEnvelopeCents / 100
-    : selectedPitchRegion?.source_f0_hz && selectedPitchRegion.source_f0_hz > 0
-      ? midiFromHz(selectedPitchRegion.source_f0_hz) + (selectedPitchRegion.relative_pitch_cents ?? 0) / 100 + selectedRangeEnvelopeCents / 100
-      : selectedPhone?.target_pitch_midi ?? null
-  const pitchCurveActive = Boolean(selectedRangePitchPoints?.length)
 
   useEffect(() => {
     const node = mainRef.current
@@ -367,12 +319,8 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
   useLayoutEffect(() => {
     const node = pitchScrollRef.current
     if (didInitialPitchCenter || !visible || !node || node.clientHeight <= 0 || !segments.length) return
-    const preferred = segments.flatMap((segment) => segment.edit_regions.map((region) => {
-      const points = region.pitch_points ?? []
-      const midi = points.length ? midiAtPhonePitch(points, 0.5) : region.source_f0_hz && region.source_f0_hz > 0 ? midiFromHz(region.source_f0_hz) : null
-      return midi === null ? null : midi + region.relative_pitch_cents / 100
-    })).filter((midi): midi is number => midi !== null)
-    const analyzed = analysis?.segments.flatMap((segment) => (segment.regions?.length ? segment.regions : segment.phones).flatMap((region) => region.corrected.concat(region.original))) ?? []
+    const preferred = segments.flatMap((segment) => segment.edit_regions.map((region) => region.source_f0_hz && region.source_f0_hz > 0 ? midiFromHz(region.source_f0_hz) : null)).filter((midi): midi is number => midi !== null)
+    const analyzed = analysis?.segments.flatMap((segment) => (segment.regions?.length ? segment.regions : segment.phones).flatMap((region) => region.original)) ?? []
     const measured = averageMidi(analyzed)
     if (analysisError) {
       setDidInitialPitchCenter(true)
@@ -439,7 +387,7 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
     const node = pitchScrollRef.current
     if (!node) return 60
     const contentY = clientY - node.getBoundingClientRect().top + node.scrollTop
-    return Math.max(PITCH_MIN_MIDI, Math.min(PITCH_MAX_MIDI, PITCH_MAX_MIDI - (contentY - semitoneHeight / 2) / semitoneHeight))
+    return pianoRollQuantizeMidiCent(Math.max(PITCH_MIN_MIDI, Math.min(PITCH_MAX_MIDI, PITCH_MAX_MIDI - (contentY - semitoneHeight / 2) / semitoneHeight)))
   }
   const updatePitchNoteSelection = (update: (current: string[]) => string[]) => {
     setSelectedPitchNoteIds((current) => {
@@ -520,6 +468,7 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
     const startX = event.clientX
     const startY = event.clientY
     let moved = false
+    let appliedEdit = false
     startGesture(event.nativeEvent, (pointer) => {
       if (!moved && Math.hypot(pointer.clientX - startX, pointer.clientY - startY) < PIANO_ROLL_SELECTION_DRAG_THRESHOLD_PX) return
       moved = true
@@ -527,19 +476,27 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
       updatePitchNoteSelection(() => selectedIds)
       const group = pitchNotes.filter((item) => selectedIds.includes(item.note_id))
       const groupMinStart = Math.min(...group.map((item) => item.start_ms))
-      const rawDeltaMs = (pointer.clientX - startX) / scale
-      const snappedDeltaMs = snapNoteTime(note.start_ms + rawDeltaMs, pointer.altKey) - note.start_ms
+      const controlPitchDrag = pointer.ctrlKey || event.ctrlKey
+      const verticalMoved = pointer.clientY !== startY
+      const rawDeltaMs = controlPitchDrag ? 0 : (pointer.clientX - startX) / scale
+      const snappedDeltaMs = controlPitchDrag ? 0 : snapNoteTime(note.start_ms + rawDeltaMs, pointer.altKey) - note.start_ms
       const deltaMs = Math.max(-groupMinStart, snappedDeltaMs)
       const rawDeltaMidi = (startY - pointer.clientY) / semitoneHeight
-      const snappedDeltaMidi = pointer.ctrlKey || event.ctrlKey ? rawDeltaMidi : Math.round(rawDeltaMidi)
+      const grabbedMidi = note.pitch_points[0].midi
+      const snappedDeltaMidi = verticalMoved ? pianoRollQuantizeMidiCent(Math.round(grabbedMidi + rawDeltaMidi) - grabbedMidi) : 0
       const minimumMidi = Math.min(...group.flatMap((item) => item.pitch_points.map((point) => point.midi)))
       const maximumMidi = Math.max(...group.flatMap((item) => item.pitch_points.map((point) => point.midi)))
       const deltaMidi = Math.max(PITCH_MIN_MIDI - minimumMidi, Math.min(PITCH_MAX_MIDI - maximumMidi, snappedDeltaMidi))
+      if (!deltaMs && !deltaMidi) {
+        if (appliedEdit) onUpdatePitchNotes(pitchNotes)
+        return
+      }
+      appliedEdit = true
       onUpdatePitchNotes(pitchNotes.map((item) => selectedIds.includes(item.note_id) ? {
         ...item,
         start_ms: item.start_ms + deltaMs,
         end_ms: item.end_ms + deltaMs,
-        pitch_points: item.pitch_points.map((point) => ({ ...point, midi: point.midi + deltaMidi })),
+        pitch_points: item.pitch_points.map((point) => ({ ...point, midi: pianoRollQuantizeMidiCent(point.midi + deltaMidi) })),
       } : item))
       setDragPitchBadge({ midi: note.pitch_points[0].midi + deltaMidi, x: pointer.clientX + 14, y: pointer.clientY - 22 })
     }, () => { if (moved) window.setTimeout(() => { suppressPitchNoteClickRef.current = false }, 0) })
@@ -567,7 +524,7 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
         return Math.max(left + gap, Math.min(right - gap, (pointer.clientX - bounds.left) / bounds.width))
       })()
       const midi = midiAtClientY(pointer.clientY)
-      const points = note.pitch_points.map((point, item) => item === index ? { ...point, position, midi } : point).sort((left, right) => left.position - right.position)
+      const points = note.pitch_points.map((point, item) => item === index ? { ...point, position, midi: pianoRollQuantizeMidiCent(midi) } : point).sort((left, right) => left.position - right.position)
       onUpdatePitchNotes(pitchNotes.map((item) => item.note_id === note.note_id ? { ...note, pitch_points: points } : item))
       setDragPitchBadge({ midi, x: pointer.clientX + 14, y: pointer.clientY - 22 })
     })
@@ -578,7 +535,7 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
     const position = Math.max(PIANO_ROLL_PITCH_POINT_MIN_GAP, Math.min(1 - PIANO_ROLL_PITCH_POINT_MIN_GAP, (event.clientX - bounds.left) / bounds.width))
     if (note.pitch_points.some((point) => Math.abs(point.position - position) < PIANO_ROLL_PITCH_POINT_MIN_GAP)) return
     const midi = midiAtClientY(event.clientY)
-    const points = [...note.pitch_points, { position, midi }].sort((left, right) => left.position - right.position)
+    const points = [...note.pitch_points, { position, midi: pianoRollQuantizeMidiCent(midi) }].sort((left, right) => left.position - right.position)
     updatePitchNoteSelection(() => [note.note_id])
     onUpdatePitchNotes(pitchNotes.map((item) => item.note_id === note.note_id ? { ...note, pitch_points: points } : item))
   }
@@ -588,10 +545,35 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
     onUpdatePitchNotes(pitchNotes.filter((note) => !selected.has(note.note_id)))
     updatePitchNoteSelection(() => [])
   }
+  const moveSelectedPitchNotePitch = (requestedDelta: number) => {
+    if (!selectedPitchNoteIdsRef.current.length || dragCleanupRef.current || analysisHold) return
+    const selected = new Set(selectedPitchNoteIdsRef.current)
+    const notes = pitchNotes.filter((note) => selected.has(note.note_id))
+    if (!notes.length) return
+    const minimumMidi = Math.min(...notes.flatMap((note) => note.pitch_points.map((point) => point.midi)))
+    const maximumMidi = Math.max(...notes.flatMap((note) => note.pitch_points.map((point) => point.midi)))
+    const deltaMidi = pianoRollQuantizeMidiCent(Math.max(PITCH_MIN_MIDI - minimumMidi, Math.min(PITCH_MAX_MIDI - maximumMidi, requestedDelta)))
+    if (deltaMidi === 0) return
+    onUpdatePitchNotes(pitchNotes.map((note) => selected.has(note.note_id) ? {
+      ...note,
+      pitch_points: note.pitch_points.map((point) => ({ ...point, midi: pianoRollQuantizeMidiCent(point.midi + deltaMidi) })),
+    } : note))
+  }
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!visible || !selectedPitchNoteIdsRef.current.length || event.isComposing || event.keyCode === 229 || !["Delete", "Backspace"].includes(event.key)) return
+      if (!visible || !selectedPitchNoteIdsRef.current.length || event.isComposing || event.keyCode === 229) return
       if (event.target instanceof HTMLElement && (event.target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName))) return
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        if (event.ctrlKey || event.metaKey || dragCleanupRef.current || analysisHold) return
+        const selected = new Set(selectedPitchNoteIdsRef.current)
+        const notes = pitchNotes.filter((note) => selected.has(note.note_id))
+        const anchorMidi = notes[0]?.pitch_points[0]?.midi
+        if (anchorMidi === undefined) return
+        event.preventDefault()
+        moveSelectedPitchNotePitch(event.altKey ? (event.key === "ArrowUp" ? 1 : -1) / PIANO_ROLL_CENTS_PER_SEMITONE : pianoRollDirectionalSemitoneDelta(anchorMidi, event.key === "ArrowUp" ? 1 : -1))
+        return
+      }
+      if (!["Delete", "Backspace"].includes(event.key)) return
       event.preventDefault(); deleteSelectedPitchNote()
     }
     window.addEventListener("keydown", onKeyDown)
@@ -603,27 +585,6 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
     if (!segment || !phone) return null
     const nucleusMid = ((phone.source_start_ms ?? segment.source_start_ms) + (phone.source_end_ms ?? segment.source_end_ms)) / 2
     const region = segment.edit_regions.find((item) => item.source_start_ms <= nucleusMid && item.source_end_ms > nucleusMid)
-    if (region?.pitch_points?.length) {
-      const regionPosition = (nucleusMid - region.source_start_ms) / Math.max(1, region.source_end_ms - region.source_start_ms)
-      const outputMs = sourceTimeToSegmentOutput(segment, nucleusMid)
-      const outputDuration = segment.edit_regions.reduce((sum, item) => sum + item.output_duration_ms, 0)
-      const envelopePoints = segment.pitch_envelope ?? []
-      let envelopeCents = 0
-      if (envelopePoints.length) {
-        const position = outputMs / Math.max(1, outputDuration)
-        const rightIndex = envelopePoints.findIndex((point) => point.position >= position)
-        if (rightIndex < 0) envelopeCents = envelopePoints.at(-1)!.cents
-        else if (rightIndex === 0) envelopeCents = envelopePoints[0].cents
-        else {
-          const left = envelopePoints[rightIndex - 1]
-          const right = envelopePoints[rightIndex]
-          const amount = (position - left.position) / Math.max(Number.EPSILON, right.position - left.position)
-          envelopeCents = left.cents + (right.cents - left.cents) * amount
-        }
-      }
-      return (midiAtPhonePitch(region.pitch_points, regionPosition) ?? 60) + region.relative_pitch_cents / 100 + envelopeCents / 100
-    }
-    if (phone.target_pitch_midi !== null && phone.target_pitch_midi !== undefined) return phone.target_pitch_midi
     const measured = analysisPhone(analysis, segment.segment_id, phone.phone_unit_id)
     const measuredPhoneMidi = measured ? averageMidi(measured.original) : null
     if (measuredPhoneMidi !== null) return measuredPhoneMidi
@@ -632,12 +593,6 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
     if (measuredRegionMidi !== null) return measuredRegionMidi
     if (phone.source_f0_hz && phone.source_f0_hz > 0) return midiFromHz(phone.source_f0_hz)
     return region?.source_f0_hz && region.source_f0_hz > 0 ? midiFromHz(region.source_f0_hz) : null
-  }
-
-  const applySyllablePitch = (group: PianoRollSyllableGroup, midi: number | null) => {
-    const applied = onUpdateSyllablePitch(group, midi)
-    setPitchEditMessage(applied ? "" : "경계, 피치 자동화 또는 공유 피치 연결을 안전하게 처리할 수 없어 변경하지 않았습니다. 구간 경계를 조정하거나 연결된 피치를 먼저 정리하세요.")
-    return applied
   }
 
   const startGesture = (event: globalThis.PointerEvent, move: (pointer: globalThis.PointerEvent) => void, finishGesture?: () => void) => {
@@ -684,17 +639,13 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
     } else setSelectedPhones(keys)
   }
 
-  const updateSelectedPhones = (updates: Partial<PhoneUnit>) => {
-    if (selectedRefs.length) onUpdatePhones(selectedRefs, updates)
-  }
-
   const firstVisibleBar = Math.ceil(Math.max(0, -gridOffsetMs) / barMs)
   const lastVisibleBar = Math.floor((noteTimelineEndMs - gridOffsetMs) / barMs)
   const bars = Array.from({ length: Math.max(0, lastVisibleBar - firstVisibleBar + 1) }, (_, index) => firstVisibleBar + index)
   const pitchY = (midi: number) => yAtMidi(Math.max(PITCH_MIN_MIDI, Math.min(PITCH_MAX_MIDI, midi)))
   const selectedPitchNotes = pitchNotes.filter((note) => selectedPitchNoteIds.includes(note.note_id))
 
-  return <section ref={editorRef} className={`piano-roll-editor ${selectedSyllable ? "syllable-selected" : ""} ${selectedRegionView ? "region-range-selected" : ""} ${selectedPitchNoteIds.length ? "target-note-selected" : ""}`} title="Ctrl+드래그: 음정 미세 이동 · Ctrl+휠: 피치 확대/축소 · Ctrl+Shift+휠: 시간 확대/축소" aria-label="음소 피아노 롤 편집기" style={{ display: visible ? "flex" : "none" }}>
+  return <section ref={editorRef} className={`piano-roll-editor ${selectedSyllable ? "syllable-selected" : ""} ${selectedRegionView ? "region-range-selected" : ""} ${selectedPitchNoteIds.length ? "target-note-selected" : ""}`} title="Ctrl+드래그: 시간 고정 피치 이동 · 선택 노트 ↑/↓: 반음 · Alt+↑/↓: 1 cent · Ctrl+휠: 피치 확대/축소 · Ctrl+Shift+휠: 시간 확대/축소" aria-label="음소 피아노 롤 편집기" style={{ display: visible ? "flex" : "none" }}>
     <div className="piano-roll-toolbar">
       <div className="piano-roll-transport">
         <button type="button" onClick={onTogglePlayback}>{isPlaying ? "일시정지" : "재생"}</button>
@@ -746,7 +697,7 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
               const noteWidth = Math.max(6, (note.end_ms - note.start_ms) * scale)
               const points = note.pitch_points.map((point) => `${point.position * noteWidth},${(topMidi - point.midi) * semitoneHeight}`).join(" ")
               const selected = selectedPitchNoteIds.includes(note.note_id)
-              return <button key={note.note_id} type="button" className={`piano-target-note ${selected ? "selected" : ""}`} data-note-id={note.note_id} data-start-ms={note.start_ms} data-end-ms={note.end_ms} aria-label={`목표 음정 ${midiLabel(note.pitch_points[0].midi)}`} title="드래그: 선택 노트 이동 · Ctrl+클릭: 선택 전환 · 우클릭: 음정 곡선 점 추가" style={{ left: note.start_ms * scale, top, width: noteWidth, height }} onClick={(event) => {
+              return <button key={note.note_id} type="button" className={`piano-target-note ${selected ? "selected" : ""}`} data-note-id={note.note_id} data-start-ms={note.start_ms} data-end-ms={note.end_ms} aria-label={`목표 음정 ${midiLabel(note.pitch_points[0].midi)}`} title="드래그: 선택 노트 이동 · Ctrl+드래그: 시간 고정 피치 이동 · Ctrl+클릭: 선택 전환 · 우클릭: 음정 곡선 점 추가" style={{ left: note.start_ms * scale, top, width: noteWidth, height }} onClick={(event) => {
                 if (suppressPitchNoteClickRef.current) { suppressPitchNoteClickRef.current = false; return }
                 if (event.ctrlKey || event.metaKey) updatePitchNoteSelection((current) => current.includes(note.note_id) ? current.filter((id) => id !== note.note_id) : [...current, note.note_id])
                 else if (!selectedPitchNoteIdsRef.current.includes(note.note_id)) updatePitchNoteSelection(() => [note.note_id])
@@ -762,13 +713,11 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
               if (!segment || !region) return null
               const startMs = sourceTimeToSegmentOutput(segment, view.sourceStartMs)
               const endMs = sourceTimeToSegmentOutput(segment, view.sourceEndMs)
-              const points = view.pitchPoints ?? []
               const measuredRegions = analysis?.segments.find((item) => item.segment_id === segment.segment_id)?.regions ?? []
               const measuredRegion = measuredRegions.find((item) => item.region_id === region.region_id)
                 ?? measuredRegions.find((item) => item.source_start_ms < view.sourceEndMs && item.source_end_ms > view.sourceStartMs)
-              const measuredMidi = measuredRegion ? averageMidi(measuredRegion.original) ?? averageMidi(measuredRegion.corrected.map((point) => ({ ...point, hz: point.hz === null ? null : point.hz * 2 ** (-region.relative_pitch_cents / 1200) }))) : null
-              const baseMidi = points.length ? midiAtPhonePitch(points, 0.5) : region.source_f0_hz && region.source_f0_hz > 0 ? midiFromHz(region.source_f0_hz) : measuredMidi
-              const midi = baseMidi === null ? null : baseMidi + region.relative_pitch_cents / 100 + pitchEnvelopeCentsAtSourceTime(segment, (view.sourceStartMs + view.sourceEndMs) / 2) / 100
+              const measuredMidi = measuredRegion ? averageMidi(measuredRegion.original) : null
+              const midi = measuredMidi ?? (region.source_f0_hz && region.source_f0_hz > 0 ? midiFromHz(region.source_f0_hz) : null)
               const unpitched = midi === null
               const top = unpitched ? pitchRange * semitoneHeight + 1 : pitchY(midi) - semitoneHeight / 2
               const left = (segment.timeline_start_ms + startMs) * scale
@@ -777,7 +726,7 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
               return <button
                 key={`${segment.segment_id}:${view.sourceStartMs}:${view.sourceEndMs}`}
                 type="button"
-                className={`piano-region-note ${selected ? "selected" : ""} ${unpitched ? "unpitched" : ""} ${points.length ? "targeted" : ""}`}
+                className={`piano-region-note ${selected ? "selected" : ""} ${unpitched ? "unpitched" : ""}`}
                 data-segment-id={segment.segment_id}
                 data-region-id={region.region_id}
                 data-source-start-ms={view.sourceStartMs}
@@ -793,34 +742,7 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
                   setSelectedPhones(refs)
                   onSelectSegment(segment.segment_id)
                 }}
-                onPointerDown={(event) => {
-                  if (event.button !== 0) return
-                  event.stopPropagation()
-                  updatePitchNoteSelection(() => [])
-                  setSelectedSyllableKey("")
-                  setSelectedRegionView(view)
-                  setSelectedRegion({ segmentId: segment.segment_id, regionId: region.region_id })
-                  const refs = segment.phone_units.filter((phone) => phone.source_start_ms !== null && phone.source_end_ms !== null && phone.source_start_ms < region.source_end_ms && phone.source_end_ms > region.source_start_ms).map((phone) => phoneKey(segment.segment_id, phone.phone_unit_id))
-                  setSelectedPhones(refs)
-                  onSelectSegment(segment.segment_id)
-                  const pitchNode = pitchScrollRef.current!
-                  const initialCursorMidi = PITCH_MAX_MIDI - (event.clientY - pitchNode.getBoundingClientRect().top + pitchNode.scrollTop - semitoneHeightRef.current / 2) / semitoneHeightRef.current
-                  let didMove = false
-                  startGesture(event.nativeEvent, (pointer) => {
-                    const contentY = pointer.clientY - pitchNode.getBoundingClientRect().top + pitchNode.scrollTop
-                    const cursorMidi = PITCH_MAX_MIDI - (contentY - semitoneHeightRef.current / 2) / semitoneHeightRef.current
-                    const delta = cursorMidi - initialCursorMidi
-                    if (!didMove && Math.abs(delta) < 0.04) return
-                    didMove = true
-                    const targetMidi = pianoRollDraggedMidi(midi ?? 60, delta, pointer.ctrlKey)
-                    const pitchDelta = targetMidi - (midi ?? 60)
-                    const currentPoints = points.length ? points : [{ position: 0, midi: baseMidi ?? 60 }, { position: 1, midi: baseMidi ?? 60 }]
-                    const nextPoints = currentPoints.map((point) => ({ ...point, midi: Math.max(PITCH_MIN_MIDI, Math.min(PITCH_MAX_MIDI, point.midi + pitchDelta)) }))
-                    const boundedMidi = Math.max(PITCH_MIN_MIDI, Math.min(PITCH_MAX_MIDI, targetMidi))
-                    if (onUpdateRegionRangePitchPoints(view, nextPoints)) setDragPitchBadge({ midi: boundedMidi, x: pointer.clientX + 14, y: pointer.clientY - 22 })
-                    else setPitchEditMessage("이 구간의 경계나 피치를 안전하게 나눌 수 없어 변경하지 않았습니다.")
-                  })
-                }}
+                onPointerDown={(event) => event.stopPropagation()}
               >{regionPhoneLabel(segment, region) || "??"}</button>
             })}
             {syllableGroups.flatMap((group) => group.ranges.map((range) => {
@@ -834,7 +756,7 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
               return [<button
                 key={`${group.key}:${range.segmentId}`}
                 type="button"
-                className={`piano-syllable-note ${selected ? "selected" : ""} ${midi === null ? "unpitched" : ""} ${midi !== null ? "targeted" : ""}`}
+                className={`piano-syllable-note ${selected ? "selected" : ""} ${midi === null ? "unpitched" : ""}`}
                 style={{ left: (segment.timeline_start_ms + startMs) * scale, top, width: Math.max(12, (endMs - startMs) * scale), height: midi === null ? PIANO_ROLL_UNPITCHED_LANE_HEIGHT - 2 : Math.max(1, semitoneHeight - 2), "--segment-color": segmentColors.get(segment.segment_id) } as CSSProperties}
                 aria-label={`${group.label} ${midi === null ? "원본 음정" : midiLabel(midi)}`}
                 title={`${group.label}${midi === null ? " · 원본 음정" : ` · ${midiLabel(midi)}`}`}
@@ -846,31 +768,7 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
                   setSelectedPhones(group.phones.map((phone) => phoneKey(phone.segmentId, phone.phoneUnitId)))
                   onSelectSegment(range.segmentId)
                 }}
-                onPointerDown={(event) => {
-                  if (event.button !== 0) return
-                  event.stopPropagation()
-                  updatePitchNoteSelection(() => [])
-                  setSelectedSyllableKey(group.key)
-                  setSelectedRegion(null)
-                  setSelectedRegionView(null)
-                  setSelectedPhones(group.phones.map((phone) => phoneKey(phone.segmentId, phone.phoneUnitId)))
-                  onSelectSegment(range.segmentId)
-                  const baseMidi = syllableMidi(group)
-                  const pitchNode = pitchScrollRef.current!
-                  const initialCursorMidi = PITCH_MAX_MIDI - (event.clientY - pitchNode.getBoundingClientRect().top + pitchNode.scrollTop - semitoneHeightRef.current / 2) / semitoneHeightRef.current
-                  let didMove = false
-                  startGesture(event.nativeEvent, (pointer) => {
-                    const contentY = pointer.clientY - pitchNode.getBoundingClientRect().top + pitchNode.scrollTop
-                    const cursorMidi = PITCH_MAX_MIDI - (contentY - semitoneHeightRef.current / 2) / semitoneHeightRef.current
-                    const delta = cursorMidi - initialCursorMidi
-                    if (!didMove && Math.abs(delta) < 0.04) return
-                    didMove = true
-                    const startingMidi = baseMidi ?? initialCursorMidi
-                    const targetMidi = pianoRollDraggedMidi(startingMidi, delta, pointer.ctrlKey)
-                    const boundedMidi = Math.max(PITCH_MIN_MIDI, Math.min(PITCH_MAX_MIDI, targetMidi))
-                    if (applySyllablePitch(group, boundedMidi)) setDragPitchBadge({ midi: boundedMidi, x: pointer.clientX + 14, y: pointer.clientY - 22 })
-                  })
-                }}
+                onPointerDown={(event) => event.stopPropagation()}
               >{group.label}{midi === null ? "" : ` ${midiLabel(midi)}`}</button>]
             }))}
             <i className="piano-playhead" style={{ left: playheadMs * scale }}/>
@@ -883,40 +781,8 @@ export function PianoRollEditor(props: PianoRollEditorProps) {
     </div>
       {dragPitchBadge && <div className="piano-roll-drag-badge" style={{ left: dragPitchBadge.x, top: dragPitchBadge.y }}>{midiLabel(dragPitchBadge.midi)} <small>{`${(dragPitchBadge.midi - Math.round(dragPitchBadge.midi)) * 100 > 0 ? "+" : ""}${((dragPitchBadge.midi - Math.round(dragPitchBadge.midi)) * 100).toFixed(0)}¢`}</small></div>}
       <div className="piano-roll-controls" aria-label="선택 음소 설정">
-        <div className="piano-selection-heading"><strong>{selectedPitchNotes.length ? `${selectedPitchNotes.length}\uAC1C \uBAA9\uD45C \uB178\uD2B8 \uC120\uD0DD` : selectedUnits.length ? `${selectedUnits.length}\uAC1C \uC74C\uC18C \uC120\uD0DD` : "\uC74C\uC18C\uB97C \uC120\uD0DD\uD558\uC138\uC694"}</strong>{selectedPitchNotes.length ? <><small>{"Ctrl+\uD074\uB9AD \uB178\uD2B8 \uCD94\uAC00/\uD574\uC81C \u00B7 Shift+\uB4DC\uB798\uADF8 \uC0AC\uAC01\uD615 \uC120\uD0DD \u00B7 \uC120\uD0DD \uB178\uD2B8 \uB4DC\uB798\uADF8 \uC774\uB3D9"}</small><button type="button" className="piano-note-delete" disabled={Boolean(dragCleanupRef.current) || analysisHold} onClick={deleteSelectedPitchNote}>{"\uB178\uD2B8 \uC0AD\uC81C"}</button></> : <small>{"\uCC28\uD2B8 \uB4DC\uB798\uADF8\uB85C \uB178\uD2B8 \uC0DD\uC131 \u00B7 \uB178\uD2B8 \uC6B0\uD074\uB9AD\uC73C\uB85C \uACE1\uC120 \uC810 \uCD94\uAC00"}</small>}{analysisError && selectedPhone?.source_f0_hz !== null && selectedPhone?.source_f0_hz !== undefined && <small>{"\uD53C\uCE58 \uBD84\uC11D\uC774 \uC548 \uB420 \uB54C \uC6D0\uBCF8 \uCE21\uC815\uAC12\uC73C\uB85C \uAE30\uC900 \uD53C\uCE58\uB9CC \uD45C\uC2DC\uD569\uB2C8\uB2E4."}</small>}</div>
-        {selectedSyllable && <div className="piano-syllable-controls"><strong>{selectedSyllable.label} 목표 음표</strong><label>목표 음표 MIDI<input aria-label="음절 목표 음표 MIDI" type="number" min={PITCH_MIN_MIDI} max={PITCH_MAX_MIDI} step="1" value={syllableMidi(selectedSyllable) === null ? "" : Math.round(syllableMidi(selectedSyllable)!)} onChange={(event) => {
-          const value = event.target.value === "" ? null : Math.max(PITCH_MIN_MIDI, Math.min(PITCH_MAX_MIDI, Math.round(Number(event.target.value))))
-          if (value === null || Number.isFinite(value)) applySyllablePitch(selectedSyllable, value)
-        }}/></label><button type="button" onClick={() => applySyllablePitch(selectedSyllable, null)}>음절 피치 초기화</button>{pitchEditMessage && <small role="status">{pitchEditMessage}</small>}</div>}
-        <label title="직접 피치 포인트를 사용하는 동안 비활성화됩니다.">목표 음정<input aria-label="목표 음정 MIDI" type="number" min={PITCH_MIN_MIDI} max={PITCH_MAX_MIDI} disabled={!selectedUnits.length && !selectedRegion} value={selectedRangeMidi ?? ""} placeholder="원본" onChange={(event) => {
-          const value = event.target.value === "" ? null : Math.max(PITCH_MIN_MIDI, Math.min(PITCH_MAX_MIDI, Math.round(Number(event.target.value))))
-          if (value === null || Number.isFinite(value)) {
-            if (selectedRangeView && value !== null) {
-              const relativeCents = (selectedPitchRegion?.relative_pitch_cents ?? 0) / 100 + selectedRangeEnvelopeCents / 100
-              const delta = value - (selectedRangeMidi ?? value)
-              const next = selectedRangePitchPoints?.length
-                ? selectedRangePitchPoints.map((point) => ({ ...point, midi: Math.max(PITCH_MIN_MIDI, Math.min(PITCH_MAX_MIDI, point.midi + delta)) }))
-                : [{ position: 0, midi: value - relativeCents }, { position: 1, midi: value - relativeCents }]
-              onUpdateRegionRangePitchPoints(selectedRangeView, next)
-            } else if (value === null && selectedRangeView) onUpdateRegionRangePitchPoints(selectedRangeView, [])
-            else if (selectedRegion && value !== null) {
-              const region = selectedPitchRegion
-              if (!region) return
-              const points = region.pitch_points ?? []
-              const currentMidi = points.length ? (midiAtPhonePitch(points, 0.5) ?? selectedPhone?.target_pitch_midi ?? value) + (region.relative_pitch_cents ?? 0) / 100 : selectedPhone?.target_pitch_midi ?? value
-              const delta = value - currentMidi
-              const next = points.length ? points.map((point) => ({ ...point, midi: Math.max(PITCH_MIN_MIDI, Math.min(PITCH_MAX_MIDI, point.midi + delta)) })) : [{ position: 0, midi: value - (region.relative_pitch_cents ?? 0) / 100 }, { position: 1, midi: value - (region.relative_pitch_cents ?? 0) / 100 }]
-              onUpdateRegionPitchPoints(selectedRegion.segmentId, selectedRegion.regionId, next)
-            } else if (value === null && selectedRegion) onUpdateRegionPitchPoints(selectedRegion.segmentId, selectedRegion.regionId, [])
-            else updateSelectedPhones({ target_pitch_midi: value })
-          }
-        }}/></label>
-        <label title="직접 피치 포인트를 사용하는 동안 비활성화됩니다.">강도 (%)<input aria-label="목표 음정 강도" type="number" min="0" max="100" disabled={!selectedUnits.length || pitchCurveActive} value={selectedPhone?.target_pitch_strength_percent ?? PITCH_TARGET_STRENGTH_DEFAULT_PERCENT} onChange={(event) => updateSelectedPhones({ target_pitch_strength_percent: Math.max(0, Math.min(100, Math.round(Number(event.target.value) || 0))) })}/></label>
-        <label title="직접 피치 포인트를 사용하는 동안 비활성화됩니다.">포르타멘토 (ms)<input aria-label="포르타멘토 길이" type="number" min="0" max="500" disabled={!selectedUnits.length || pitchCurveActive} value={selectedPhone?.transition_to_next_ms ?? PITCH_TRANSITION_DEFAULT_MS} onChange={(event) => updateSelectedPhones({ transition_to_next_ms: Math.max(0, Math.min(500, Math.round(Number(event.target.value) || 0))) })}/></label>
-        <label title="직접 피치 포인트를 사용하는 동안 비활성화됩니다.">전환 강도 (%)<input aria-label="전환 강도" type="number" min="0" max="100" disabled={!selectedUnits.length || pitchCurveActive} value={selectedPhone?.transition_strength_percent ?? PITCH_TRANSITION_DEFAULT_STRENGTH} onChange={(event) => updateSelectedPhones({ transition_strength_percent: Math.max(0, Math.min(100, Math.round(Number(event.target.value) || 0))) })}/></label>
-        <label>비브라토 깊이 (cent)<input aria-label="비브라토 깊이" type="number" min="0" max={PITCH_VIBRATO_DEPTH_MAX_CENTS} disabled={!selectedUnits.length} value={selectedPhone?.vibrato_depth_cents ?? PITCH_VIBRATO_DEPTH_DEFAULT_CENTS} onChange={(event) => updateSelectedPhones({ vibrato_depth_cents: Math.max(0, Math.min(PITCH_VIBRATO_DEPTH_MAX_CENTS, Math.round(Number(event.target.value) || 0))) })}/></label>
-        <label>비브라토 속도 (Hz)<input aria-label="비브라토 속도" type="number" min="0" max="20" step="0.1" disabled={!selectedUnits.length} value={selectedPhone?.vibrato_rate_hz ?? PITCH_VIBRATO_RATE_DEFAULT_HZ} onChange={(event) => updateSelectedPhones({ vibrato_rate_hz: Math.max(0, Math.min(20, Number(event.target.value) || 0)) })}/></label>
-        <label>시작 지연 (ms)<input aria-label="비브라토 시작 지연" type="number" min="0" max="5000" disabled={!selectedUnits.length} value={selectedPhone?.vibrato_start_ms ?? PITCH_VIBRATO_START_DEFAULT_MS} onChange={(event) => updateSelectedPhones({ vibrato_start_ms: Math.max(0, Math.round(Number(event.target.value) || 0)) })}/></label>
+        <div className="piano-selection-heading"><strong>{selectedPitchNotes.length ? `${selectedPitchNotes.length}\uAC1C \uBAA9\uD45C \uB178\uD2B8 \uC120\uD0DD` : selectedUnits.length ? `${selectedUnits.length}\uAC1C \uC74C\uC18C \uC120\uD0DD` : "\uC74C\uC18C\uB97C \uC120\uD0DD\uD558\uC138\uC694"}</strong>{selectedPitchNotes.length ? <><small>{"Ctrl+\uD074\uB9AD \uB178\uD2B8 \uCD94\uAC00/\uD574\uC81C \u00B7 Ctrl+\uB4DC\uB798\uADF8 \uC74C\uC815 \uC774\uB3D9 \u00B7 \u2191/\u2193 \uBC18\uC74C \u00B7 Alt+\u2191/\u2193 1 cent \u00B7 Shift+\uB4DC\uB798\uADF8 \uC0AC\uAC01\uD615 \uC120\uD0DD \u00B7 \uC120\uD0DD \uB178\uD2B8 \uB4DC\uB798\uADF8 \uC774\uB3D9"}</small><button type="button" className="piano-note-delete" disabled={Boolean(dragCleanupRef.current) || analysisHold} onClick={deleteSelectedPitchNote}>{"\uB178\uD2B8 \uC0AD\uC81C"}</button></> : <small>{"\uCC28\uD2B8 \uB4DC\uB798\uADF8\uB85C \uB178\uD2B8 \uC0DD\uC131 \u00B7 \uB178\uD2B8 \uC6B0\uD074\uB9AD\uC73C\uB85C \uACE1\uC120 \uC810 \uCD94\uAC00"}</small>}{analysisError && selectedPhone?.source_f0_hz !== null && selectedPhone?.source_f0_hz !== undefined && <small>{"\uD53C\uCE58 \uBD84\uC11D\uC774 \uC548 \uB420 \uB54C \uC6D0\uBCF8 \uCE21\uC815\uAC12\uC73C\uB85C \uAE30\uC900 \uD53C\uCE58\uB9CC \uD45C\uC2DC\uD569\uB2C8\uB2E4."}</small>}</div>
+        <div className="piano-syllable-controls"><strong>{"\uC6D0\uBCF8 \uCE21\uC815 \uC74C\uC815"}</strong><output>{"\uD53C\uCE58 \uCC28\uD2B8\uC5D0 \uC790\uB3D9 \uCE21\uC815\uAC12\uC744 \uD45C\uC2DC\uD569\uB2C8\uB2E4"}</output></div>
         {analysisError && <span className="piano-roll-fallback-note">원본 측정 F0는 기준 음정에만 사용하고 윤곽선으로 그리지 않습니다.</span>}
       </div>
 

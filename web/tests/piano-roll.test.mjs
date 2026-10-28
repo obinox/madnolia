@@ -11,7 +11,7 @@ registerHooks({
   },
 })
 
-const { clampPhoneVibratoStarts, phoneOutputInterval, phonePitchGroupRefs, pianoRollDraggedMidi, pianoRollSyllableGroups, pianoRollUncoveredRegionViews, resizePhoneOutputDuration, setRegionRangePitchPoints, setSyllablePitch, sourceTimeToSegmentOutput, updatePhonePitchPoints } = await import("../src/features/composition/pianoRoll.ts")
+const { clampPhoneVibratoStarts, phoneOutputInterval, phonePitchGroupRefs, pianoRollDirectionalSemitoneDelta, pianoRollDraggedMidi, pianoRollQuantizeMidiCent, pianoRollSyllableGroups, pianoRollUncoveredRegionViews, resizePhoneOutputDuration, setRegionRangePitchPoints, setSyllablePitch, sourceTimeToSegmentOutput, updatePhonePitchPoints } = await import("../src/features/composition/pianoRoll.ts")
 const { deriveProfessionalSegments } = await import("../src/features/composition/regions.ts")
 const { mergeRegionPitchPoints, splitEditRegions } = await import("../src/features/composition/regions.ts")
 const { REGION_PITCH_MERGE_GAP_POSITION } = await import("../src/constants.ts")
@@ -40,11 +40,17 @@ function makeSegment() {
   }
 }
 
-test("piano-roll dragging snaps displayed MIDI unless Ctrl enables fine pitch movement", () => {
+test("piano-roll movement snaps semitones and limits fine pitch movement to cents", () => {
   assert.equal(pianoRollDraggedMidi(60.23, 0.51, false), 61)
   assert.ok(Math.abs(pianoRollDraggedMidi(60.23, 0.51, true) - 60.74) < 1e-12)
+  assert.equal(pianoRollDraggedMidi(60.234, 0, true), 60.23)
+  assert.equal(pianoRollQuantizeMidiCent(60.304999999), 60.3)
   assert.equal(pianoRollDraggedMidi(60.74, -0.1, false), 61)
   assert.ok(Math.abs(pianoRollDraggedMidi(60.74, -0.1, true) - 60.64) < 1e-12)
+  assert.equal(pianoRollDirectionalSemitoneDelta(60.3, 1), 0.7)
+  assert.equal(pianoRollDirectionalSemitoneDelta(60.3, -1), -0.3)
+  assert.equal(pianoRollDirectionalSemitoneDelta(60, 1), 1)
+  assert.equal(pianoRollDirectionalSemitoneDelta(60, -1), -1)
   const points = [{ position: 0, midi: 59 }, { position: 1, midi: 61 }]
   const displayedMidi = 60.25
   const snapped = pianoRollDraggedMidi(displayedMidi, 0.3, false)

@@ -337,8 +337,81 @@ async def run_smoke() -> None:
             await command("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": ctrl_target["x"], "y": ctrl_target["y"], "button": "left", "clickCount": 1, "modifiers": 2})
             selected_after_ctrl = await evaluate("[...document.querySelectorAll('.piano-target-note')].map(note=>({id:note.dataset.noteId,selected:note.classList.contains('selected')}))")
             assert sum(note["selected"] for note in selected_after_ctrl) == 2, f"Ctrl-click did not add a drawn target note to selection: {selected_after_ctrl}"
+            before_ctrl_drag = await evaluate("[...document.querySelectorAll('.piano-target-note')].map(note=>({id:note.dataset.noteId,start:Number(note.dataset.startMs),end:Number(note.dataset.endMs),top:parseFloat(note.style.top)}))")
+            await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":ctrl_target["x"],"y":ctrl_target["y"],"button":"left","modifiers":2})
+            await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":ctrl_target["x"]+64,"y":ctrl_target["y"]-16,"button":"left","buttons":1,"modifiers":2})
+            await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":ctrl_target["x"]+64,"y":ctrl_target["y"]-16,"button":"left","modifiers":2})
+            after_ctrl_drag = await evaluate("[...document.querySelectorAll('.piano-target-note')].map(note=>({id:note.dataset.noteId,start:Number(note.dataset.startMs),end:Number(note.dataset.endMs),top:parseFloat(note.style.top)}))")
+            assert [note["start"] for note in after_ctrl_drag] == [note["start"] for note in before_ctrl_drag] and [note["end"] for note in after_ctrl_drag] == [note["end"] for note in before_ctrl_drag], f"Ctrl+drag changed selected target note time or duration: {before_ctrl_drag} -> {after_ctrl_drag}"
+            assert all(after["top"] == before["top"]-16 for before, after in zip(before_ctrl_drag[:2], after_ctrl_drag[:2], strict=True)), f"Ctrl+drag did not move the selected group by a semitone: {before_ctrl_drag} -> {after_ctrl_drag}"
+            assert after_ctrl_drag[2] == before_ctrl_drag[2], f"Ctrl+drag moved an unselected target note: {before_ctrl_drag} -> {after_ctrl_drag}"
+            assert await evaluate("document.querySelectorAll('.piano-target-note.selected').length") == 2, "Ctrl+drag caused the click handler to replace the group selection"
+            await command("Input.dispatchKeyEvent", {"type":"keyDown","key":"Control","code":"ControlLeft","windowsVirtualKeyCode":17})
+            await command("Input.dispatchKeyEvent", {"type":"keyDown","key":"z","code":"KeyZ","windowsVirtualKeyCode":90,"modifiers":2})
+            await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"z","code":"KeyZ","windowsVirtualKeyCode":90,"modifiers":2})
+            await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"Control","code":"ControlLeft","windowsVirtualKeyCode":17})
+            await wait_for("parseFloat(document.querySelectorAll('.piano-target-note')[1].style.top)==="+str(before_ctrl_drag[1]["top"]))
             await evaluate("(() => {const notes=[...document.querySelectorAll('.piano-target-note')];notes[1].dispatchEvent(new MouseEvent('click',{bubbles:true,ctrlKey:true}));return true})()")
             assert await evaluate("document.querySelectorAll('.piano-target-note.selected').length") == 1, "Ctrl-click did not toggle a selected target note off"
+            return_origin = await evaluate("(() => {const n=document.querySelector('.piano-target-note.selected'),r=n.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,top:parseFloat(n.style.top)}})()")
+            await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":return_origin["x"],"y":return_origin["y"],"button":"left","modifiers":2})
+            await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":return_origin["x"],"y":return_origin["y"]-16,"button":"left","buttons":1,"modifiers":2})
+            await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":return_origin["x"],"y":return_origin["y"],"button":"left","buttons":1,"modifiers":2})
+            await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":return_origin["x"],"y":return_origin["y"],"button":"left","modifiers":2})
+            return_origin_top = await evaluate("parseFloat(document.querySelector('.piano-target-note.selected').style.top)")
+            assert return_origin_top == return_origin["top"], f"Returning a Ctrl pitch drag to its origin did not restore the original pitch: {return_origin} -> {return_origin_top}"
+            await evaluate("document.querySelector('.piano-target-note.selected').focus()")
+            fractional_point = await evaluate("(() => {const note=document.querySelector('.piano-target-note.selected'),circle=note.querySelector('circle'),r=circle.getBoundingClientRect(),h=parseFloat(getComputedStyle(document.querySelector('.piano-roll-pitch-content')).getPropertyValue('--semitone-height'));return {x:r.left+r.width/2,y:r.top+r.height/2,h}})()")
+            await evaluate("(() => {const circle=document.querySelector('.piano-target-note.selected circle'),id=32,x="+str(fractional_point["x"])+",y="+str(fractional_point["y"])+";circle.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,button:0,pointerId:id,clientX:x,clientY:y}));window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,cancelable:true,button:0,pointerId:id,clientX:x,clientY:y-"+str(fractional_point["h"]*.304)+"}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,button:0,pointerId:id,clientX:x,clientY:y-"+str(fractional_point["h"]*.304)+"}));return true})()")
+            first_midi_expression = "(() => {const note=document.querySelector('.piano-target-note.selected'),h=parseFloat(getComputedStyle(document.querySelector('.piano-roll-pitch-content')).getPropertyValue('--semitone-height')),top=parseFloat(note.style.top),y=Number(note.querySelector('polyline').getAttribute('points').split(/[ ,]/)[1]);return 108.5-top/h-y/h})()"
+            async def control_shortcut(key: str, code: str, virtual_key: int):
+                await command("Input.dispatchKeyEvent", {"type":"keyDown","key":"Control","code":"ControlLeft","windowsVirtualKeyCode":17})
+                await command("Input.dispatchKeyEvent", {"type":"keyDown","key":key,"code":code,"windowsVirtualKeyCode":virtual_key,"modifiers":2})
+                await command("Input.dispatchKeyEvent", {"type":"keyUp","key":key,"code":code,"windowsVirtualKeyCode":virtual_key,"modifiers":2})
+                await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"Control","code":"ControlLeft","windowsVirtualKeyCode":17})
+            fractional_midi = await evaluate(first_midi_expression)
+            assert abs(fractional_midi-70.30) < 1e-9, f"Target-note curve drag did not quantize to cents: {fractional_midi}"
+            fractional_horizontal = await evaluate("(() => {const n=document.querySelector('.piano-target-note.selected'),r=n.getBoundingClientRect();return {x:r.left+r.width*.8,y:r.top+r.height/2,start:Number(n.dataset.startMs)}})()")
+            await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":fractional_horizontal["x"],"y":fractional_horizontal["y"],"button":"left"})
+            await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":fractional_horizontal["x"]+48,"y":fractional_horizontal["y"],"button":"left","buttons":1})
+            await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":fractional_horizontal["x"]+48,"y":fractional_horizontal["y"],"button":"left"})
+            assert abs(await evaluate(first_midi_expression)-70.30) < 1e-9, "Horizontal-only note drag changed a fractional pitch anchor"
+            assert await evaluate("Number(document.querySelector('.piano-target-note.selected').dataset.startMs)") > fractional_horizontal["start"], "Horizontal-only note drag did not move note time"
+            await control_shortcut("z", "KeyZ", 90)
+            await wait_for("Math.abs(("+first_midi_expression+")-70.3)<1e-9")
+            await wait_for("Number(document.querySelector('.piano-target-note.selected').dataset.startMs)==="+str(fractional_horizontal["start"]))
+            fractional_horizontal = await evaluate("(() => {const n=document.querySelector('.piano-target-note.selected'),r=n.getBoundingClientRect();return {x:r.left+r.width*.8,y:r.top+r.height/2,start:Number(n.dataset.startMs)}})()")
+            await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":fractional_horizontal["x"],"y":fractional_horizontal["y"],"button":"left","modifiers":2})
+            await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":fractional_horizontal["x"]+48,"y":fractional_horizontal["y"],"button":"left","buttons":1,"modifiers":2})
+            await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":fractional_horizontal["x"]+48,"y":fractional_horizontal["y"],"button":"left","modifiers":2})
+            ctrl_horizontal_midi = await evaluate(first_midi_expression)
+            ctrl_horizontal_start = await evaluate("Number(document.querySelector('.piano-target-note.selected').dataset.startMs)")
+            assert abs(ctrl_horizontal_midi-70.30) < 1e-9 and ctrl_horizontal_start == fractional_horizontal["start"], f"Ctrl horizontal-only drag changed pitch or time: pitch={ctrl_horizontal_midi}, start={ctrl_horizontal_start}, initial={fractional_horizontal}"
+            note_time_before_keys = await evaluate("(() => {const n=document.querySelector('.piano-target-note.selected');return [n.dataset.startMs,n.dataset.endMs]})()")
+            await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"ArrowUp","code":"ArrowUp"})
+            await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"ArrowUp","code":"ArrowUp"})
+            assert await evaluate(first_midi_expression) == 71, "ArrowUp did not move fractional MIDI 70.3 to 71"
+            assert await evaluate("(() => {const n=document.querySelector('.piano-target-note.selected');return [n.dataset.startMs,n.dataset.endMs]})()") == note_time_before_keys, "ArrowUp changed note time or duration"
+            await control_shortcut("z", "KeyZ", 90)
+            await wait_for("Math.abs(("+first_midi_expression+")-70.3)<1e-9")
+            await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"ArrowDown","code":"ArrowDown"})
+            await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"ArrowDown","code":"ArrowDown"})
+            assert await evaluate(first_midi_expression) == 70, "ArrowDown did not move fractional MIDI 70.3 to 70"
+            reset_fractional = await evaluate("(() => {const c=document.querySelector('.piano-target-note.selected circle'),r=c.getBoundingClientRect(),scroll=document.querySelector('.piano-roll-pitch-scroll'),rect=scroll.getBoundingClientRect(),sem=Number.parseFloat(getComputedStyle(document.querySelector('.piano-roll-chart')).getPropertyValue('--semitone-height'))||16;return {x:r.left+r.width/2,startY:r.top+r.height/2,targetY:rect.top+(108.5-70.3)*sem-scroll.scrollTop}})()")
+            await evaluate("(() => {const c=document.querySelector('.piano-target-note.selected circle'),id=33,x="+str(reset_fractional["x"])+",startY="+str(reset_fractional["startY"])+",targetY="+str(reset_fractional["targetY"])+";c.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,button:0,pointerId:id,clientX:x,clientY:startY}));window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,cancelable:true,button:0,pointerId:id,clientX:x,clientY:targetY}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,button:0,pointerId:id,clientX:x,clientY:targetY}));return true})()")
+            assert abs(await evaluate(first_midi_expression)-70.3) < 1e-9, "Could not restore the fractional pitch anchor before cent-key tests"
+            await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"ArrowUp","code":"ArrowUp","modifiers":1})
+            await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"ArrowUp","code":"ArrowUp","modifiers":1})
+            one_cent_up = await evaluate(first_midi_expression)
+            assert abs(one_cent_up-70.31) < 1e-9, f"Alt+ArrowUp did not change pitch by exactly one cent: {one_cent_up}"
+            await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"ArrowDown","code":"ArrowDown","modifiers":1})
+            await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"ArrowDown","code":"ArrowDown","modifiers":1})
+            assert abs(await evaluate(first_midi_expression)-70.30) < 1e-9, "Alt+ArrowDown did not return the pitch by one cent"
+            input_guard = await evaluate("(() => {const input=document.querySelector('.piano-roll-grid-controls input[type=number]'),e=new KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true,cancelable:true});input.focus();input.dispatchEvent(e);return {prevented:e.defaultPrevented,value:"+first_midi_expression+"}})()")
+            assert not input_guard["prevented"] and abs(input_guard["value"]-70.30) < 1e-9, f"Pitch arrows were not guarded in editable inputs: {input_guard}"
+            await evaluate("document.querySelector('.piano-target-note.selected').focus()")
+            composing_guard = await evaluate("(() => {const e=new KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true,cancelable:true,isComposing:true});window.dispatchEvent(e);return {prevented:e.defaultPrevented,value:"+first_midi_expression+"}})()")
+            assert not composing_guard["prevented"] and abs(composing_guard["value"]-70.30) < 1e-9, f"Pitch arrows were not guarded during IME composition: {composing_guard}"
             await evaluate("(() => {const scale=document.querySelector('.piano-roll-toolbar input[type=range]'),set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(scale,'.3');scale.dispatchEvent(new Event('input',{bubbles:true}));scale.dispatchEvent(new Event('change',{bubbles:true}));return true})()")
             await wait_for("document.querySelector('.piano-roll-toolbar input[type=range]').value==='0.3'")
             await evaluate("(() => {const time=document.querySelector('.piano-roll-horizontal-scroll');time.scrollLeft=100;time.dispatchEvent(new Event('scroll'));return true})()")
@@ -465,106 +538,19 @@ async def run_smoke() -> None:
             assert "A\u266f3" in first["label"] and "E4" in second["label"], f"Loaded notes did not show distinct original measurements: {first}, {second}"
 
             await evaluate("document.querySelectorAll('.piano-syllable-note')[0].click()")
-            await wait_for("document.querySelector('[aria-label=\"음절 목표 음표 MIDI\"]')!==null")
-            await evaluate("(() => {const e=document.querySelector('[aria-label=\"음절 목표 음표 MIDI\"]'),s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;s.call(e,'60');e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()")
-            await wait_for("document.querySelectorAll('.piano-syllable-note')[0].getAttribute('aria-label').includes('C4')")
-            deadline = time.monotonic() + 8
-            while len(analysis_requests) < 2 and time.monotonic() < deadline:
-                await evaluate("true")
-                await asyncio.sleep(.05)
-            if len(analysis_requests) < 2:
-                raise AssertionError(f"Pitch analysis did not refresh after note edit: {request_log}")
-            await wait_for("document.querySelector('.piano-roll-analysis')===null")
-            second_after_first = await evaluate("document.querySelectorAll('.piano-syllable-note')[1].getAttribute('aria-label')")
-            assert "E4" in second_after_first, f"Editing the first note changed the second syllable: {second_after_first}"
-            await command("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Control", "code": "ControlLeft", "windowsVirtualKeyCode": 17})
-            await command("Input.dispatchKeyEvent", {"type": "keyDown", "key": "z", "code": "KeyZ", "windowsVirtualKeyCode": 90, "modifiers": 2})
-            await command("Input.dispatchKeyEvent", {"type": "keyUp", "key": "z", "code": "KeyZ", "windowsVirtualKeyCode": 90, "modifiers": 2})
-            await command("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Control", "code": "ControlLeft", "windowsVirtualKeyCode": 17})
-            await wait_for("document.querySelectorAll('.piano-syllable-note')[0].getAttribute('aria-label').includes('A♯3')")
-            await command("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Control", "code": "ControlLeft", "windowsVirtualKeyCode": 17})
-            await command("Input.dispatchKeyEvent", {"type": "keyDown", "key": "y", "code": "KeyY", "windowsVirtualKeyCode": 89, "modifiers": 2})
-            await command("Input.dispatchKeyEvent", {"type": "keyUp", "key": "y", "code": "KeyY", "windowsVirtualKeyCode": 89, "modifiers": 2})
-            await command("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Control", "code": "ControlLeft", "windowsVirtualKeyCode": 17})
-            await wait_for("document.querySelectorAll('.piano-syllable-note')[0].getAttribute('aria-label').includes('C4')")
-            await evaluate("document.querySelector('.piano-syllable-controls button').click()")
-            await wait_for("document.querySelectorAll('.piano-syllable-note')[0].getAttribute('aria-label').includes('A\u266f3')")
-            await evaluate("(() => {const e=document.querySelector('[aria-label=\"음절 목표 음표 MIDI\"]'),s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;s.call(e,'60');e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()")
-            await wait_for("document.querySelectorAll('.piano-syllable-note')[0].getAttribute('aria-label').includes('C4')")
-
-            await evaluate("document.querySelectorAll('.piano-syllable-note')[1].click()")
-            await evaluate("(() => {const e=document.querySelector('.piano-syllable-controls input'),s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;s.call(e,'64');e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()")
-            await wait_for("document.querySelectorAll('.piano-syllable-note')[1].getAttribute('aria-label').includes('E4')")
-            await evaluate("document.querySelectorAll('.piano-syllable-note')[0].click()")
-            await evaluate("(() => {const e=document.querySelector('.piano-syllable-controls input'),s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;s.call(e,'61');e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()")
-            analysis_count = len(analysis_requests)
-            deadline = time.monotonic() + 8
-            while len(analysis_requests) <= analysis_count and time.monotonic() < deadline:
-                await evaluate("true")
-                await asyncio.sleep(.05)
-            assert len(analysis_requests) > analysis_count, "Pitch analysis did not start for the first note edit"
-            analysis_count = len(analysis_requests)
-            analysis_delay_ms = 1200
-            await evaluate("(() => {const e=document.querySelector('.piano-syllable-controls input'),s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;s.call(e,'60');e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()")
-            deadline = time.monotonic() + 8
-            while len(analysis_requests) <= analysis_count and time.monotonic() < deadline:
-                await evaluate("true")
-                await asyncio.sleep(.05)
-            assert len(analysis_requests) > analysis_count, "Delayed pitch analysis did not start for the first note edit"
-            await evaluate("document.querySelectorAll('.piano-syllable-note')[1].click()")
-            note = await evaluate("(() => {const e=document.querySelectorAll('.piano-syllable-note')[1],r=e.getBoundingClientRect(),h=parseFloat(getComputedStyle(document.querySelector('.piano-roll-pitch-content')).getPropertyValue('--semitone-height'));return {x:r.left+r.width/2,y:r.top+r.height/2,h,top:parseFloat(e.style.top)}})()")
+            await wait_for("document.querySelector('.piano-syllable-controls output')!==null")
+            assert await evaluate("document.querySelector('.piano-syllable-controls input, .piano-syllable-controls button')===null"), "Measured syllable pitch still exposes editing controls"
+            baseline = await evaluate("(() => {const e=document.querySelectorAll('.piano-syllable-note')[0];return {label:e.getAttribute('aria-label'),top:e.style.top}})()")
+            assert "A\u266f3" in baseline["label"], f"Selected syllable did not retain its measured source pitch: {baseline}"
             await evaluate("window.__draftWriteCount=0")
-            initial_top = note["top"]
-            fractional_y = note["y"] - note["h"] / 4
-            await command("Input.dispatchMouseEvent", {"type": "mousePressed", "x": note["x"], "y": note["y"], "button": "left"})
-            await command("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": note["x"], "y": fractional_y, "button": "left", "buttons": 1, "modifiers": 2})
-            fractional_top = await evaluate("parseFloat(document.querySelectorAll('.piano-syllable-note')[1].style.top)")
-            assert abs(fractional_top - (note["top"] - note["h"] / 4)) < .1, f"Ctrl-drag did not retain a quarter-semitone target: {fractional_top}, {note}"
-            await command("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": note["x"], "y": fractional_y, "button": "left", "modifiers": 2})
-            await wait_for("window.__draftWriteCount===1")
-            note = await evaluate("(() => {const e=document.querySelectorAll('.piano-syllable-note')[1],r=e.getBoundingClientRect(),h=parseFloat(getComputedStyle(document.querySelector('.piano-roll-pitch-content')).getPropertyValue('--semitone-height'));return {x:r.left+r.width/2,y:r.top+r.height/2,h,top:parseFloat(e.style.top)}})()")
-            assert abs(note["top"] - (initial_top - note["h"] / 4)) < .1, f"Fractional MIDI was not retained after pointer release: {note}"
-            await evaluate("window.__draftWriteCount=0")
-            await command("Input.dispatchMouseEvent", {"type": "mousePressed", "x": note["x"], "y": note["y"], "button": "left"})
-            await command("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": note["x"], "y": note["y"] - note["h"] / 4, "button": "left", "buttons": 1, "modifiers": 2})
-            fine_move_top = await evaluate("parseFloat(document.querySelectorAll('.piano-syllable-note')[1].style.top)")
-            assert abs(fine_move_top - (note["top"] - note["h"] / 4)) < .1, f"Ctrl fine movement was not fractional: {fine_move_top}, {note}"
-            snapped_y = note["y"] - note["h"] * .75
-            await command("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": note["x"], "y": snapped_y, "button": "left", "buttons": 1})
-            snapped_top = await evaluate("parseFloat(document.querySelectorAll('.piano-syllable-note')[1].style.top)")
-            expected_snap_top = round(note["top"] / note["h"] - .75) * note["h"]
-            assert abs(snapped_top - expected_snap_top) < .1, f"Releasing Ctrl did not snap the next move to a MIDI row: {snapped_top}, expected {expected_snap_top}"
-            await command("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": note["x"], "y": snapped_y, "button": "left"})
-            await wait_for("document.querySelectorAll('.piano-syllable-note')[1].getAttribute('aria-label').includes('F4')")
-            await wait_for("window.__draftWriteCount===1")
-            note = await evaluate("(() => {const e=document.querySelectorAll('.piano-syllable-note')[1],r=e.getBoundingClientRect(),h=parseFloat(getComputedStyle(document.querySelector('.piano-roll-pitch-content')).getPropertyValue('--semitone-height'));return {x:r.left+r.width/2,y:r.top+r.height/2,h}})()")
-            await evaluate("window.__draftWriteCount=0")
-            await command("Input.dispatchMouseEvent", {"type": "mousePressed", "x": note["x"], "y": note["y"], "button": "left"})
-            await command("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": note["x"], "y": note["y"] - note["h"], "button": "left", "buttons": 1})
-            await wait_for("document.querySelectorAll('.piano-syllable-note')[1].getAttribute('aria-label').includes('F\\u266f4')")
-            await asyncio.sleep(.4)
-            assert await evaluate("window.__draftWriteCount") == 0, "A pitch drag wrote its draft before the gesture ended"
-            assert await evaluate("document.querySelectorAll('.global-task-dialog').length") == 0, "A pitch drag opened a blocking global task"
-            assert not preview_requests and not saved_requests, "A pitch drag triggered save or preview work"
-            assert await evaluate("document.querySelector('.professional-actions .primary-action').disabled"), "Save remained enabled during a pitch drag"
-            key_result = await evaluate("(() => {const e=new KeyboardEvent('keydown',{key:'s',code:'KeyS',ctrlKey:true,bubbles:true,cancelable:true});window.dispatchEvent(e);return e.defaultPrevented})()")
-            assert key_result, "Ctrl+S was not blocked during a pitch drag"
-            assert await evaluate("(() => {const e=new KeyboardEvent('keydown',{key:' ',code:'Space',shiftKey:true,bubbles:true,cancelable:true});window.dispatchEvent(e);return e.defaultPrevented})()"), "Shift+Space preview was not blocked during a pitch drag"
-            await evaluate("window.dispatchEvent(new PointerEvent('pointercancel',{pointerId:1,bubbles:true}))")
-            await wait_for("window.__draftWriteCount===1")
-            assert len(analysis_requests) >= 2, "Pitch analysis did not start for the first note edit"
-            await wait_for("document.querySelector('.piano-roll-analysis')===null", timeout=8)
-            await command("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Control", "code": "ControlLeft", "windowsVirtualKeyCode": 17})
-            await command("Input.dispatchKeyEvent", {"type": "keyDown", "key": "z", "code": "KeyZ", "windowsVirtualKeyCode": 90, "modifiers": 2})
-            await command("Input.dispatchKeyEvent", {"type": "keyUp", "key": "z", "code": "KeyZ", "windowsVirtualKeyCode": 90, "modifiers": 2})
-            await command("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Control", "code": "ControlLeft", "windowsVirtualKeyCode": 17})
-            await wait_for("document.querySelectorAll('.piano-syllable-note')[1].getAttribute('aria-label').includes('F4')")
-            await command("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Control", "code": "ControlLeft", "windowsVirtualKeyCode": 17})
-            await command("Input.dispatchKeyEvent", {"type": "keyDown", "key": "y", "code": "KeyY", "windowsVirtualKeyCode": 89, "modifiers": 2})
-            await command("Input.dispatchKeyEvent", {"type": "keyUp", "key": "y", "code": "KeyY", "windowsVirtualKeyCode": 89, "modifiers": 2})
-            await command("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Control", "code": "ControlLeft", "windowsVirtualKeyCode": 17})
-            await wait_for("document.querySelectorAll('.piano-syllable-note')[1].getAttribute('aria-label').includes('F\u266f4')")
-
+            note_box = await evaluate("(() => {const e=document.querySelectorAll('.piano-syllable-note')[0],r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()")
+            await command("Input.dispatchMouseEvent", {"type": "mousePressed", "x": note_box["x"], "y": note_box["y"], "button": "left"})
+            await command("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": note_box["x"], "y": note_box["y"]-30, "button": "left", "buttons": 1})
+            await command("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": note_box["x"], "y": note_box["y"]-30, "button": "left"})
+            unchanged = await evaluate("(() => {const e=document.querySelectorAll('.piano-syllable-note')[0];return {label:e.getAttribute('aria-label'),top:e.style.top}})()")
+            assert unchanged == baseline, f"Dragging a measured syllable changed its display: {baseline} -> {unchanged}"
+            assert await evaluate("window.__draftWriteCount") == 0, "Dragging measured pitch wrote a draft"
+            assert len(analysis_requests) == 1, "Dragging measured pitch re-ran pitch analysis"
 
             zoom_before = await evaluate("({heights:[...document.querySelectorAll('.piano-syllable-note')].map(e=>e.getBoundingClientRect().height),widths:[...document.querySelectorAll('.piano-syllable-note')].map(e=>e.getBoundingClientRect().width),scrollTop:document.querySelector('.piano-roll-pitch-scroll').scrollTop})")
             await evaluate("(() => {const e=document.querySelectorAll('.piano-roll-toolbar input[type=range]')[1],s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;s.call(e,'7');e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()")
@@ -592,7 +578,7 @@ async def run_smoke() -> None:
             original_preview = preview_requests[-1]
             original = original_preview.get("composition", original_preview)
             assert original.get("pitch_notes") == [], "Original audition retained independent target notes"
-            assert any(region.get("pitch_points") for region in corrected_segment["edit_regions"]), "Corrected audition omitted note pitch points"
+            assert all(not region.get("pitch_points") for region in corrected_segment["edit_regions"]), "Corrected audition applied target notes to measured source regions"
             assert all(not region.get("pitch_points") for region in original["segments"][0]["edit_regions"]), "Original audition retained note pitch points"
 
             await evaluate("document.querySelector('.professional-actions .primary-action').click()")
@@ -603,13 +589,10 @@ async def run_smoke() -> None:
             saved_segment = saved["segments"][0]
             assert len(saved_segment["edit_regions"]) == 6, f"Saved payload lost legacy-derived phone regions: {saved_segment['edit_regions']}"
             regions = saved_segment["edit_regions"]
-            first_regions = [region for region in regions if region["source_start_ms"] >= 100 and region["source_end_ms"] <= 550]
-            second_regions = [region for region in regions if region["source_start_ms"] >= 550 and region["source_end_ms"] <= 1000]
-            assert first_regions and all([point["midi"] for point in region["pitch_points"]] == [60, 60] for region in first_regions), f"First Korean syllable did not save as absolute C4: {first_regions}"
-            assert second_regions and all([point["midi"] for point in region["pitch_points"]] == [66, 66] for region in second_regions), f"Dragging second note did not save snapped F#4: {second_regions}"
-            assert [(region["source_start_ms"], region["source_end_ms"], region["output_duration_ms"]) for region in regions] == [(100 + 150 * index, 250 + 150 * index, 150) for index in range(6)], f"Pitch edits changed source timing: {regions}"
-            assert saved_segment["volume_envelope"] == [{"position": 0, "gain": 0.8}, {"position": 1, "gain": 1.15}], "Pitch edits changed the original volume envelope"
-            assert not any(phone.get("target_pitch_midi") is not None for phone in saved_segment["phone_units"]), "Syllable pitches were stored as unrelated per-phone targets"
+            assert all(not region.get("pitch_points") for region in regions), f"Saving target notes changed measured source pitches: {regions}"
+            assert [(region["source_start_ms"], region["source_end_ms"], region["output_duration_ms"]) for region in regions] == [(100 + 150 * index, 250 + 150 * index, 150) for index in range(6)], f"Target note edits changed source timing: {regions}"
+            assert saved_segment["volume_envelope"] == [{"position": 0, "gain": 0.8}, {"position": 1, "gain": 1.15}], "Target note edits changed the original volume envelope"
+            assert not any(phone.get("target_pitch_midi") is not None for phone in saved_segment["phone_units"]), "Measured pitches were stored as phone targets"
             screenshot = await command("Page.captureScreenshot", {"format": "png", "captureBeyondViewport": True, "fromSurface": True})
             ARTIFACT.write_bytes(base64.b64decode(screenshot["data"]))
             await command("Page.reload")
@@ -635,64 +618,26 @@ async def run_smoke() -> None:
             expected_edges = [(450 * time_scale, 50 * time_scale), (500 * time_scale, 50 * time_scale)]
             assert all(abs(region["left"] - left) < 1 and abs(region["width"] - max(9, width)) < 1 for region, (left, width) in zip(initial_regions, expected_edges, strict=True)), f"Initial residual regions did not cover their source-time spans: {initial_regions}"
             await evaluate("document.querySelectorAll('.piano-syllable-note')[0].click()")
-            analysis_delay_ms = 1000
-            await evaluate("(() => {const e=document.querySelector('.piano-syllable-controls input'),set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(e,'60');e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()")
-            await wait_for("document.querySelectorAll('.piano-syllable-note')[0].getAttribute('aria-label').includes('C4')")
-            edited_regions = await visible_regions()
-            assert [(item["start"], item["end"]) for item in edited_regions] == [(550, 600), (600, 650)], f"Syllable editing changed visible uncovered region coverage: {edited_regions}"
-            assert all(abs(left["left"] - right["left"]) < 1 and abs(left["width"] - right["width"]) < 1 for left, right in zip(initial_regions, edited_regions, strict=True)), f"Syllable editing shifted residual regions: {initial_regions}, {edited_regions}"
-            await wait_for("document.querySelector('.piano-roll-analysis')===null")
-            residual_screenshot = await command("Page.captureScreenshot", {"format": "png", "captureBeyondViewport": True, "fromSurface": True})
-            (ARTIFACT_DIR / "piano-roll-residual-regions-smoke.png").write_bytes(base64.b64decode(residual_screenshot["data"]))
-
-            async def draft_regions() -> list[dict]:
-                return await evaluate("(() => {const key=Object.keys(localStorage).find(item=>item.startsWith('madnolia.professionalDraft.smoke.')&&item.includes('parent%3Aparent-residual'));const draft=JSON.parse(localStorage.getItem(key));return draft.state.segments.find(segment=>segment.segment_id==='segment_residual').edit_regions.map(region=>({start:region.source_start_ms,end:region.source_end_ms,points:(region.pitch_points||[]).map(point=>point.midi)}))})()")
-
-            await wait_for("Object.keys(localStorage).some(key=>key.includes('parent%3Aparent-residual'))")
-            current_regions = await draft_regions()
-            assert [(region["start"], region["end"]) for region in current_regions] == [(100, 550), (550, 600), (600, 650), (650, 1000)], f"Syllable editing did not preserve the clipped source ranges: {current_regions}"
-            assert all(point == 60 for region in current_regions if (region["start"], region["end"]) == (100, 550) for point in region["points"]), f"First syllable target did not stay within its source range: {current_regions}"
-            assert all(not region["points"] for region in current_regions if (region["start"], region["end"]) != (100, 550)), f"Syllable target changed neighboring regions: {current_regions}"
-
+            assert await evaluate("document.querySelector('.piano-syllable-controls input, .piano-syllable-controls button')===null"), "Residual fixture exposed measured pitch editing controls"
             first_residual_selector = '.piano-region-note[data-source-start-ms="550"][data-source-end-ms="600"]'
             second_residual_selector = '.piano-region-note[data-source-start-ms="600"][data-source-end-ms="650"]'
             await evaluate(f"document.querySelector({json.dumps(first_residual_selector)}).click()")
-            residual_input = await evaluate("({value:document.querySelector('[aria-label=\"?? ?? MIDI\"]')?.value,loopDisabled:document.querySelectorAll('.piano-roll-transport button')[1].disabled})")
-            assert residual_input["loopDisabled"] is False, "Selecting an uncovered residual did not set its loop range"
-
-            async def drag_region(selector: str, delta: float, ctrl: bool = False) -> tuple[dict, float]:
-                point = await evaluate(f"(() => {{const e=document.querySelector({json.dumps(selector)}),r=e.getBoundingClientRect(),h=parseFloat(getComputedStyle(document.querySelector('.piano-roll-pitch-content')).getPropertyValue('--semitone-height'));return {{x:r.left+r.width/2,y:r.top+r.height/2,h}}}})()")
-                await command("Input.dispatchMouseEvent", {"type": "mousePressed", "x": point["x"], "y": point["y"], "button": "left"})
-                modifiers = 2 if ctrl else 0
-                await command("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": point["x"], "y": point["y"] - point["h"] * delta, "button": "left", "buttons": 1, "modifiers": modifiers})
-                result = await evaluate(f"parseFloat(document.querySelector({json.dumps(selector)}).style.top)")
-                return point, result
-
+            loop_enabled = await evaluate("document.querySelectorAll('.piano-roll-transport button')[1].disabled===false")
+            assert loop_enabled, "Selecting an uncovered residual did not set its loop range"
+            before_readonly = await visible_regions()
+            analysis_count_before_drag = len(analysis_requests)
             await evaluate("window.__draftWriteCount=0")
-            first_drag, _ = await drag_region(first_residual_selector, 1, ctrl=False)
-            await wait_for("document.querySelector('.piano-roll-drag-badge')!==null")
-            badge_one = await evaluate("document.querySelector('.piano-roll-drag-badge').textContent")
-            await command("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": first_drag["x"], "y": first_drag["y"] - first_drag["h"] * 1.25, "button": "left", "buttons": 1, "modifiers": 2})
-            badge_two = await evaluate("document.querySelector('.piano-roll-drag-badge')?.textContent||''")
-            assert badge_two and badge_two != badge_one, f"Pitch badge did not update during a residual drag: {badge_one}, {badge_two}"
-            assert "+" in badge_two, f"Positive micro-pitch badge omitted its cent sign: {badge_two}"
-            badge_screenshot = await command("Page.captureScreenshot", {"format": "png", "captureBeyondViewport": True, "fromSurface": True})
-            (ARTIFACT_DIR / "piano-roll-drag-badge-smoke.png").write_bytes(base64.b64decode(badge_screenshot["data"]))
-            await command("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": first_drag["x"], "y": first_drag["y"] - first_drag["h"] * 1.25, "button": "left", "modifiers": 2})
-            await wait_for("document.querySelector('.piano-roll-drag-badge')===null")
-            await wait_for("window.__draftWriteCount===1")
-            first_residual_edit = await draft_regions()
-            changed_first = next(region for region in first_residual_edit if (region["start"], region["end"]) == (550, 600))
-            assert changed_first["points"] and all(not region["points"] for region in first_residual_edit if (region["start"], region["end"]) in {(600, 650), (650, 1000)}), f"First residual drag changed another source interval: {first_residual_edit}"
-
-            await evaluate("window.__draftWriteCount=0")
-            second_drag, _ = await drag_region(second_residual_selector, 1, ctrl=False)
-            await command("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": second_drag["x"], "y": second_drag["y"] - second_drag["h"], "button": "left"})
-            await wait_for("window.__draftWriteCount===1")
-            second_residual_edit = await draft_regions()
-            assert next(region for region in second_residual_edit if (region["start"], region["end"]) == (550, 600))["points"] == changed_first["points"], f"Editing the second residual changed the first residual: {second_residual_edit}"
-            assert next(region for region in second_residual_edit if (region["start"], region["end"]) == (600, 650))["points"], f"Second residual drag did not edit its own interval: {second_residual_edit}"
-            assert all(point == 60 for region in second_residual_edit if (region["start"], region["end"]) == (100, 550) for point in region["points"]), f"Repeated residual drags changed the first syllable: {second_residual_edit}"
+            drag_box = await evaluate(f"(() => {{const e=document.querySelector({json.dumps(first_residual_selector)}),r=e.getBoundingClientRect();return {{x:r.left+r.width/2,y:r.top+r.height/2,top:e.style.top}}}})()")
+            await command("Input.dispatchMouseEvent", {"type": "mousePressed", "x": drag_box["x"], "y": drag_box["y"], "button": "left"})
+            await command("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": drag_box["x"], "y": drag_box["y"]-30, "button": "left", "buttons": 1, "modifiers": 2})
+            await command("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": drag_box["x"], "y": drag_box["y"]-30, "button": "left", "modifiers": 2})
+            after_readonly = await visible_regions()
+            assert after_readonly == before_readonly, f"Dragging a measured region changed its display: {before_readonly} -> {after_readonly}"
+            assert await evaluate("window.__draftWriteCount") == 0, "Dragging a measured region wrote a draft"
+            assert len(analysis_requests) == analysis_count_before_drag, "Dragging a measured region re-ran pitch analysis"
+            await wait_for("document.querySelector('.piano-roll-analysis')===null")
+            residual_screenshot = await command("Page.captureScreenshot", {"format": "png", "captureBeyondViewport": True, "fromSurface": True})
+            (ARTIFACT_DIR / "piano-roll-residual-regions-smoke.png").write_bytes(base64.b64decode(residual_screenshot["data"]))
 
             await evaluate("(() => {const scale=document.querySelector('.piano-roll-toolbar input[type=range]'),set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(scale,scale.max);scale.dispatchEvent(new Event('input',{bubbles:true}));scale.dispatchEvent(new Event('change',{bubbles:true}));const bpm=document.querySelector('.piano-roll-grid-controls input[type=number]');bpm.focus();set.call(bpm,'400');bpm.dispatchEvent(new Event('input',{bubbles:true}));bpm.dispatchEvent(new Event('change',{bubbles:true}));bpm.blur()})()")
             await wait_for("document.querySelector('.piano-roll-horizontal-scroll').scrollWidth>document.querySelector('.piano-roll-horizontal-scroll').clientWidth")
@@ -718,37 +663,7 @@ async def run_smoke() -> None:
             assert aligned_scroll["chartRight"] >= aligned_scroll["mainRight"] - 1, f"Blank chart space appeared at the right edge: {aligned_scroll}"
             assert aligned_scroll["chartHit"], f"Chart content was clipped before the visible right edge: {aligned_scroll}"
 
-            hold_view, _ = await drag_region(first_residual_selector, 1, ctrl=False)
-            hold_scroll = await evaluate("document.querySelector('.piano-roll-pitch-scroll').scrollTop")
-            held_top = await evaluate(f"parseFloat(document.querySelector({json.dumps(first_residual_selector)}).style.top)")
-            scroll_pixels = max(1, round(hold_view["h"]))
-            await evaluate(f"document.querySelector('.piano-roll-pitch-scroll').scrollTop={hold_scroll + scroll_pixels}")
-            await wait_for(f"document.querySelector('.piano-roll-pitch-scroll').scrollTop>={hold_scroll + scroll_pixels}")
-            badge_after_scroll = await evaluate("document.querySelector('.piano-roll-drag-badge')?.textContent||''")
-            assert badge_after_scroll, "Pitch badge disappeared during a held-drag scroll"
-            await wait_for(f"parseFloat(document.querySelector({json.dumps(first_residual_selector)}).style.top)!=={held_top}")
-            scrolled_top = await evaluate(f"parseFloat(document.querySelector({json.dumps(first_residual_selector)}).style.top)")
-            scrolled_scroll = await evaluate("document.querySelector('.piano-roll-pitch-scroll').scrollTop")
-            assert scrolled_top != held_top, f"Held pitch drag did not follow the content scroll without pointer movement: top={held_top}/{scrolled_top}, scroll={hold_scroll}/{scrolled_scroll}, pixels={scroll_pixels}"
-            await evaluate(f"document.querySelector('.piano-roll-pitch-scroll').scrollTop={hold_scroll}")
-            await wait_for(f"parseFloat(document.querySelector({json.dumps(first_residual_selector)}).style.top)==={held_top}")
-            returned_top = await evaluate(f"parseFloat(document.querySelector({json.dumps(first_residual_selector)}).style.top)")
-            assert abs(returned_top - held_top) < .01, f"Held pitch drag did not return to its original position after a scroll roundtrip: {held_top}, {returned_top}"
-            await evaluate(f"document.querySelector('.piano-roll-pitch-scroll').scrollTop={hold_scroll + scroll_pixels}")
-            await evaluate("window.dispatchEvent(new PointerEvent('pointercancel',{pointerId:1,bubbles:true}))")
-            await wait_for("document.querySelector('.piano-roll-drag-badge')===null")
-            await wait_for("window.__draftWriteCount===1")
-            held_regions = await draft_regions()
-            await command("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Control", "code": "ControlLeft", "windowsVirtualKeyCode": 17})
-            await command("Input.dispatchKeyEvent", {"type": "keyDown", "key": "z", "code": "KeyZ", "windowsVirtualKeyCode": 90, "modifiers": 2})
-            await command("Input.dispatchKeyEvent", {"type": "keyUp", "key": "z", "code": "KeyZ", "windowsVirtualKeyCode": 90, "modifiers": 2})
-            await command("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Control", "code": "ControlLeft", "windowsVirtualKeyCode": 17})
-            await wait_for("document.querySelector('.piano-roll-drag-badge')===null")
-            await wait_for("window.__draftWriteCount===2")
-            undone_regions = await draft_regions()
-            assert next(region for region in undone_regions if (region["start"], region["end"]) == (550, 600))["points"] == next(region for region in second_residual_edit if (region["start"], region["end"]) == (550, 600))["points"], f"One undo did not restore the residual pitch gesture: {held_regions}, {undone_regions}"
-            assert next(region for region in undone_regions if (region["start"], region["end"]) == (600, 650))["points"] == next(region for region in second_residual_edit if (region["start"], region["end"]) == (600, 650))["points"], f"One undo changed the other residual range: {undone_regions}"
-            assert all(point == 60 for region in undone_regions if (region["start"], region["end"]) == (100, 550) for point in region["points"]), f"One undo removed the prior syllable edit: {undone_regions}"
+            assert await evaluate("document.querySelector('.piano-roll-drag-badge')===null"), "Measured display left an edit badge active"
             assert not runtime_errors, f"Browser runtime errors: {runtime_errors}"
             print(json.dumps({"status": "passed", "syllable_count": 2, "phone_count": 6,
                 "legacy_regions_derived": len(regions), "saved_notes_midi": [60, 66],

@@ -1,5 +1,6 @@
 import {
   PIANO_ROLL_PHONE_CONTIGUITY_TOLERANCE_MS,
+  PIANO_ROLL_CENTS_PER_SEMITONE,
   PITCH_MAX_MIDI,
   PITCH_MIN_MIDI,
   PITCH_VIBRATO_START_DEFAULT_MS,
@@ -37,7 +38,19 @@ export function phonePitchOwnerRef(segment: TimelineSegment, phone: PhoneUnit): 
 
 export function pianoRollDraggedMidi(displayMidi: number, semitoneDelta: number, fine: boolean): number {
   const requestedMidi = displayMidi + semitoneDelta
-  return fine ? requestedMidi : Math.round(requestedMidi)
+  return fine ? pianoRollQuantizeMidiCent(requestedMidi) : Math.round(requestedMidi)
+}
+
+export function pianoRollQuantizeMidiCent(midi: number): number {
+  return Math.round(midi * PIANO_ROLL_CENTS_PER_SEMITONE) / PIANO_ROLL_CENTS_PER_SEMITONE
+}
+
+export function pianoRollDirectionalSemitoneDelta(midi: number, direction: -1 | 1): number {
+  const cents = Math.round(midi * PIANO_ROLL_CENTS_PER_SEMITONE)
+  const targetCents = direction > 0
+    ? (Math.floor(cents / PIANO_ROLL_CENTS_PER_SEMITONE) + 1) * PIANO_ROLL_CENTS_PER_SEMITONE
+    : (Math.ceil(cents / PIANO_ROLL_CENTS_PER_SEMITONE) - 1) * PIANO_ROLL_CENTS_PER_SEMITONE
+  return pianoRollQuantizeMidiCent((targetCents - cents) / PIANO_ROLL_CENTS_PER_SEMITONE)
 }
 
 export function pianoRollSyllableGroups(segments: TimelineSegment[]): PianoRollSyllableGroup[] {

@@ -47,6 +47,7 @@ export const ProfessionalEditor = memo(function ProfessionalEditor(props: Profes
   const gridMs = beatMs * 4 / beatDivision
   const barMs = beatMs * beatsPerBar
   const gridOffsetMs = gridOffsetUnits * beatMs / 24
+  const snapTimelineMs = (timeMs: number) => Math.round(gridOffsetMs + Math.round((timeMs - gridOffsetMs) / gridMs) * gridMs)
   const gridBackgroundSize = `${barMs * scale}px 100%, ${barMs / 2 * scale}px 100%, ${barMs / 4 * scale}px 100%, ${gridMs * scale}px 100%`
   const firstVisibleBar = Math.ceil(Math.max(0, -gridOffsetMs) / barMs)
   const lastVisibleBar = Math.floor((totalMs - gridOffsetMs) / barMs)
@@ -180,14 +181,14 @@ export const ProfessionalEditor = memo(function ProfessionalEditor(props: Profes
     if (event.ctrlKey && event.shiftKey) { dragSegment(event, segment); return }
     dragCleanup.current?.()
     const mode = event.shiftKey ? "shift" : event.ctrlKey ? "ctrl" : "normal"
+    const freeDrag = event.altKey
     onBeginGesture()
     const startX = event.clientX
+    const boundaryStartMs = segment.timeline_start_ms + segment.edit_regions.slice(0, boundaryIndex).reduce((sum, item) => sum + item.output_duration_ms, 0)
     const apply = (pointer: PointerEvent) => {
       const requestedDelta = (pointer.clientX - startX) / scale
-      const boundaryStartMs = segment.timeline_start_ms + segment.edit_regions.slice(0, boundaryIndex).reduce((sum, item) => sum + item.output_duration_ms, 0)
       const requestedBoundaryMs = boundaryStartMs + requestedDelta
-      const snappedBoundaryMs = gridOffsetMs + Math.round((requestedBoundaryMs - gridOffsetMs) / gridMs) * gridMs
-      const delta = pointer.altKey || mode === "shift" ? requestedDelta : snappedBoundaryMs - boundaryStartMs
+      const delta = freeDrag || pointer.altKey ? requestedDelta : snapTimelineMs(requestedBoundaryMs) - boundaryStartMs
       const result = resizeProfessionalHandle(segment, selectedIndex, boundaryIndex, mode, delta)
       onApplyHandleDrag(segment, result.startMs, result.durations)
     }
@@ -198,22 +199,32 @@ export const ProfessionalEditor = memo(function ProfessionalEditor(props: Profes
   }
 
   const dragSegment = (event: React.PointerEvent<HTMLElement>, segment: TimelineSegment) => {
-    if (!timingStep || event.button !== 0 || event.altKey || !event.ctrlKey || !event.shiftKey) return
+    if (!timingStep || event.button !== 0 || !event.ctrlKey || !event.shiftKey) return
     event.preventDefault(); event.stopPropagation(); onSelectSegment(segment.segment_id); dragCleanup.current?.(); onBeginGesture()
     const startX = event.clientX
+    const grabbedStartMs = segment.timeline_start_ms
+    const freeDrag = event.altKey
     const originals = segments
-    const move = (pointer: PointerEvent) => onMoveTimelineSuffix(originals, segment.segment_id, (pointer.clientX - startX) / scale)
+    const move = (pointer: PointerEvent) => {
+      const requestedDelta = (pointer.clientX - startX) / scale
+      const delta = freeDrag || pointer.altKey ? requestedDelta : snapTimelineMs(grabbedStartMs + requestedDelta) - grabbedStartMs
+      onMoveTimelineSuffix(originals, segment.segment_id, delta)
+    }
     const finish = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", finish); window.removeEventListener("pointercancel", finish); dragCleanup.current = null; onEndGesture() }
     dragCleanup.current = finish
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", finish); window.addEventListener("pointercancel", finish)
   }
 
   const dragSyllable = (event: React.PointerEvent<HTMLElement>, segment: TimelineSegment) => {
-    if (!timingStep || event.button !== 0 || event.altKey || event.ctrlKey && event.shiftKey) return
+    if (!timingStep || event.button !== 0 || event.ctrlKey && event.shiftKey) return
     event.preventDefault(); event.stopPropagation(); selectIntervalAt(event, segment); dragCleanup.current?.(); onBeginGesture()
     const startX = event.clientX
+    const grabbedStartMs = segment.timeline_start_ms
+    const freeDrag = event.altKey
     const move = (pointer: PointerEvent) => {
-      const result = resizeProfessionalHandle(segment, 0, 0, "shift", (pointer.clientX - startX) / scale)
+      const requestedDelta = (pointer.clientX - startX) / scale
+      const delta = freeDrag || pointer.altKey ? requestedDelta : snapTimelineMs(grabbedStartMs + requestedDelta) - grabbedStartMs
+      const result = resizeProfessionalHandle(segment, 0, 0, "shift", delta)
       onApplyHandleDrag(segment, result.startMs, result.durations)
     }
     const finish = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", finish); window.removeEventListener("pointercancel", finish); dragCleanup.current = null; onEndGesture() }
@@ -310,7 +321,7 @@ export const ProfessionalEditor = memo(function ProfessionalEditor(props: Profes
   }
 
   return <section className={`vocal-editor professional-editor ${timingStep ? "timing-step" : "correction-step"}`} aria-label="전문 합성 타임라인 편집기" style={{ display: visible ? "flex" : "none" }}>
-    <header className="vocal-timeline-header"><div><strong>{timingStep ? "배치·자르기·길이" : "피치·음량 보정"}</strong><span>{formatTime(playheadMs)} / {formatTime(totalMs)}</span></div><span>{timingStep ? "길이 조절은 눈금에 맞춤 · Alt+드래그: 자유 조절 · Ctrl+Shift+휠: 커서 기준 시간 확대·축소 · 세로 휠: 세로 이동 · Shift+휠: 가로 이동 · 우클릭: 분할점" : "Ctrl+Shift+휠: 커서 기준 시간 확대·축소 · 휠: 타임라인 이동 · 우클릭: 곡선 점 추가·삭제"}</span></header>
+    <header className="vocal-timeline-header"><div><strong>{timingStep ? "배치·자르기·길이" : "피치·음량 보정"}</strong><span>{formatTime(playheadMs)} / {formatTime(totalMs)}</span></div><span>{timingStep ? "길이·Shift 이동·상단 음절 이름 이동은 눈금에 맞춤 · Alt+드래그: 자유 조절·이동 · Ctrl+Shift+휠: 커서 기준 시간 확대·축소 · 세로 휠: 세로 이동 · Shift+휠: 가로 이동 · 우클릭: 분할점" : "Ctrl+Shift+휠: 커서 기준 시간 확대·축소 · 휠: 타임라인 이동 · 우클릭: 곡선 점 추가·삭제"}</span></header>
     {correctionStep && <div className="professional-timeline-tools"><label>피치 표시 범위 (±cent)<select aria-label="피치 그래프 표시 범위" value={pitchDisplayRange} onChange={(event) => setPitchDisplayRange(Number(event.target.value) as ProfessionalPitchDisplayRange)}>{PROFESSIONAL_PITCH_DISPLAY_RANGES_CENTS.map((range) => <option key={range} value={range}>±{range}</option>)}</select></label><span>표시 범위는 그래프 확대만 바꾸며, 피치 값은 cent 단위로 유지됩니다.</span></div>}
     {timingStep && <div className="professional-timeline-tools"><label>BPM<input aria-label="BPM" type="number" min={PROFESSIONAL_TEMPO_MIN_BPM} max={PROFESSIONAL_TEMPO_MAX_BPM} step="1" value={tempoText} onChange={(event) => { const value = event.target.value; setTempoText(value); const parsed = Number(value); if (Number.isInteger(parsed) && parsed >= PROFESSIONAL_TEMPO_MIN_BPM && parsed <= PROFESSIONAL_TEMPO_MAX_BPM) onTempoChange(parsed) }} onBlur={() => { const value = Math.max(PROFESSIONAL_TEMPO_MIN_BPM, Math.min(PROFESSIONAL_TEMPO_MAX_BPM, Math.trunc(Number(tempoText) || PROFESSIONAL_TEMPO_DEFAULT_BPM))); setTempoText(String(value)); onTempoChange(value) }}/></label><label>박자<input aria-label="박자" type="number" min={PROFESSIONAL_BEATS_PER_BAR_MIN} max={PROFESSIONAL_BEATS_PER_BAR_MAX} step="1" value={beatsText} onChange={(event) => { const value = event.target.value; setBeatsText(value); const parsed = Number(value); if (Number.isInteger(parsed) && parsed >= PROFESSIONAL_BEATS_PER_BAR_MIN && parsed <= PROFESSIONAL_BEATS_PER_BAR_MAX) onBeatsPerBarChange(parsed) }} onBlur={() => { const value = Math.max(PROFESSIONAL_BEATS_PER_BAR_MIN, Math.min(PROFESSIONAL_BEATS_PER_BAR_MAX, Math.trunc(Number(beatsText) || PROFESSIONAL_BEATS_PER_BAR_DEFAULT))); setBeatsText(String(value)); onBeatsPerBarChange(value) }}/></label><label>눈금<select aria-label="눈금" value={beatDivision} onChange={(event) => onBeatDivisionChange(Number(event.target.value) as typeof PROFESSIONAL_BEAT_DIVISIONS[number])}>{PROFESSIONAL_BEAT_DIVISIONS.map((value) => <option key={value} value={value}>1/{value}</option>)}</select></label><label>마디 오프셋 (1/96)<input aria-label="마디 오프셋 (1/96)" type="number" step="1" value={gridOffsetUnits} onChange={(event) => { const value = Number(event.target.value); if (Number.isSafeInteger(value)) onGridOffsetChange(value) }}/></label><span>{tempoBpm} BPM · {beatsPerBar}/4 · {formatTime(gridMs)} /눈금</span></div>}
     <div className="professional-timeline-scroll" ref={scrollRef} onPointerDownCapture={(event) => { const target = event.target as HTMLElement; if (event.button !== 0 || !event.ctrlKey || !event.shiftKey) return; const fragment = target.closest<HTMLElement>(".professional-audio-fragment"); const lane = fragment?.parentElement; const index = fragment && lane ? Array.from(lane.querySelectorAll(".professional-audio-fragment")).indexOf(fragment) : -1; const segment = index >= 0 ? segments[index] : undefined; if (segment) dragSegment(event, segment) }}>
@@ -322,7 +333,7 @@ export const ProfessionalEditor = memo(function ProfessionalEditor(props: Profes
         <div className="professional-playhead" style={{ left: PROFESSIONAL_TIMELINE_LABEL_WIDTH + pixelsAt(playheadMs) }}/>
       </div>
     </div>
-    {selected && <div className="professional-selection-tools"><strong>{selected.target_ipa.join(" · ")}</strong><span>{timingStep ? "일반 드래그는 공통 경계를 눈금에 맞추고, Ctrl은 앞이나 뒤 구간 길이를 눈금에 맞춥니다. Alt+드래그는 자유 길이 조절, Shift는 음절 전체 이동, Ctrl+Shift는 뒤 음절들을 함께 이동합니다." : "곡선의 점을 드래그하거나 우클릭하여 추가·삭제합니다."}</span>{correctionStep && (<label>피치 점 (cent)<input aria-label="피치 cent fine adjustment" type="number" min={PROFESSIONAL_PITCH_MIN_CENTS} max={PROFESSIONAL_PITCH_MAX_CENTS} step="1" disabled={selectedPoint?.lane !== "pitch" || selectedPoint.segmentId !== selected.segment_id} value={selected.pitch_envelope?.[selectedPoint?.index ?? -1]?.cents ?? 0} onChange={(event) => { const points = selected.pitch_envelope ?? [{ position: 0, cents: 0 }, { position: 1, cents: 0 }]; const index = selectedPoint?.index ?? -1; if (index >= 0) onUpdatePitchEnvelope(selected.segment_id, points.map((point, item) => item === index ? { ...point, cents: Math.max(PROFESSIONAL_PITCH_MIN_CENTS, Math.min(PROFESSIONAL_PITCH_MAX_CENTS, Math.trunc(Number.isFinite(Number(event.target.value)) ? Number(event.target.value) : 0))) } : point)) }}/></label>)}{correctionStep && (<label>음량 점 (gain)<input aria-label="음량 gain fine adjustment" type="number" min={0} max={2} step="0.01" disabled={selectedPoint?.lane !== "volume" || selectedPoint.segmentId !== selected.segment_id} value={selected.volume_envelope?.[selectedPoint?.index ?? -1]?.gain ?? 1} onChange={(event) => { const points = selected.volume_envelope ?? [{ position: 0, gain: 1 }, { position: 1, gain: 1 }]; const index = selectedPoint?.index ?? -1; if (index >= 0) onUpdateEnvelope(selected.segment_id, points.map((point, item) => item === index ? { ...point, gain: Math.max(PROFESSIONAL_GAIN_MIN, Math.min(PROFESSIONAL_GAIN_MAX, Number.isFinite(Number(event.target.value)) ? Number(event.target.value) : PROFESSIONAL_GAIN_MIN)) } : point)) }}/></label>)}{timingStep && (<label>단편 사이 크로스페이드 (ms)<input type="number" min="0" max={MAX_CROSSFADE_MS} disabled={segments[0]?.segment_id === selected.segment_id} value={selected.crossfade_ms ?? Math.max(0, Math.min(MAX_CROSSFADE_MS, -selected.gap_before_ms))} onChange={(event) => onUpdateSegment(selected.segment_id, { crossfade_ms: Math.max(0, Math.min(MAX_CROSSFADE_MS, Number.isFinite(Number(event.target.value)) ? Math.trunc(Number(event.target.value)) : 0)) })}/></label>)}{timingStep && (<button onClick={() => onDeleteSegment(selected.segment_id)}>단편 삭제</button>)}{hint && <span role="status">{hint}</span>}</div>}
+    {selected && <div className="professional-selection-tools"><strong>{selected.target_ipa.join(" · ")}</strong><span>{timingStep ? "일반 드래그는 공통 경계를 눈금에 맞추고, Ctrl은 앞이나 뒤 구간 길이를 눈금에 맞춥니다. Shift는 잡은 경계를, 상단 음절 이름 이동은 음절 시작점을 눈금에 맞춥니다. Ctrl+Shift는 시작점을 맞추며 뒤 음절들을 함께 이동합니다. Alt+드래그는 길이와 이동을 자유롭게 조절합니다." : "곡선의 점을 드래그하거나 우클릭하여 추가·삭제합니다."}</span>{correctionStep && (<label>피치 점 (cent)<input aria-label="피치 cent fine adjustment" type="number" min={PROFESSIONAL_PITCH_MIN_CENTS} max={PROFESSIONAL_PITCH_MAX_CENTS} step="1" disabled={selectedPoint?.lane !== "pitch" || selectedPoint.segmentId !== selected.segment_id} value={selected.pitch_envelope?.[selectedPoint?.index ?? -1]?.cents ?? 0} onChange={(event) => { const points = selected.pitch_envelope ?? [{ position: 0, cents: 0 }, { position: 1, cents: 0 }]; const index = selectedPoint?.index ?? -1; if (index >= 0) onUpdatePitchEnvelope(selected.segment_id, points.map((point, item) => item === index ? { ...point, cents: Math.max(PROFESSIONAL_PITCH_MIN_CENTS, Math.min(PROFESSIONAL_PITCH_MAX_CENTS, Math.trunc(Number.isFinite(Number(event.target.value)) ? Number(event.target.value) : 0))) } : point)) }}/></label>)}{correctionStep && (<label>음량 점 (gain)<input aria-label="음량 gain fine adjustment" type="number" min={0} max={2} step="0.01" disabled={selectedPoint?.lane !== "volume" || selectedPoint.segmentId !== selected.segment_id} value={selected.volume_envelope?.[selectedPoint?.index ?? -1]?.gain ?? 1} onChange={(event) => { const points = selected.volume_envelope ?? [{ position: 0, gain: 1 }, { position: 1, gain: 1 }]; const index = selectedPoint?.index ?? -1; if (index >= 0) onUpdateEnvelope(selected.segment_id, points.map((point, item) => item === index ? { ...point, gain: Math.max(PROFESSIONAL_GAIN_MIN, Math.min(PROFESSIONAL_GAIN_MAX, Number.isFinite(Number(event.target.value)) ? Number(event.target.value) : PROFESSIONAL_GAIN_MIN)) } : point)) }}/></label>)}{timingStep && (<label>단편 사이 크로스페이드 (ms)<input type="number" min="0" max={MAX_CROSSFADE_MS} disabled={segments[0]?.segment_id === selected.segment_id} value={selected.crossfade_ms ?? Math.max(0, Math.min(MAX_CROSSFADE_MS, -selected.gap_before_ms))} onChange={(event) => onUpdateSegment(selected.segment_id, { crossfade_ms: Math.max(0, Math.min(MAX_CROSSFADE_MS, Number.isFinite(Number(event.target.value)) ? Math.trunc(Number(event.target.value)) : 0)) })}/></label>)}{timingStep && (<button onClick={() => onDeleteSegment(selected.segment_id)}>단편 삭제</button>)}{hint && <span role="status">{hint}</span>}</div>}
   </section>
 })
 

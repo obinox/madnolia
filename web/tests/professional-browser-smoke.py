@@ -3,7 +3,6 @@ import argparse
 import asyncio
 import base64
 import json
-import math
 import shutil
 import sys
 import socket
@@ -390,162 +389,33 @@ async def run_smoke(save_shortcuts: bool = False, piano_roll: bool = False, regi
                     await wait_for("document.querySelector('.piano-roll-analysis[role=status]')!==null")
                     initial_loading_frame = await evaluate("(() => {const r=e=>{const b=e.getBoundingClientRect();return [b.top,b.bottom,b.left,b.right]};const s=document.querySelector('.piano-roll-pitch-scroll');return {pitch:r(s),ruler:r(document.querySelector('.piano-roll-pitch-time')),scrollTop:s.scrollTop}})()")
                     await wait_for("document.querySelectorAll('.piano-region-note').length==="+str(23 if region_first_drag else 25))
-                    await wait_for("document.querySelectorAll('.piano-region-contour-original').length>0 && document.querySelectorAll('.piano-region-contour-corrected').length>0")
+                    await wait_for("document.querySelectorAll('.piano-region-note').length>0 && document.querySelectorAll('.piano-region-pitch-point, .piano-region-pitch-group').length===0")
                     await wait_for("document.querySelector('.piano-roll-analysis')===null")
                     await wait_global_idle()
                     ready_frame = await evaluate("(() => {const r=e=>{const b=e.getBoundingClientRect();return [b.top,b.bottom,b.left,b.right]};const s=document.querySelector('.piano-roll-pitch-scroll');return {pitch:r(s),ruler:r(document.querySelector('.piano-roll-pitch-time')),scrollTop:s.scrollTop}})()")
                     correction_frame = await evaluate("(() => {const r=e=>{const b=e.getBoundingClientRect();return [b.top,b.bottom,b.left,b.right]};return {page:r(document.querySelector('.professional-page')),toolbar:r(document.querySelector('.professional-toolbar')),editor:r(document.querySelector('.piano-roll-editor')),footer:r(document.querySelector('.professional-footer'))}})()")
                     assert all(max(abs(a-b) for a,b in zip(timing_frame[key],correction_frame[key])) <= 1 for key in timing_frame), f"Timing and correction viewport frames differ: {timing_frame} -> {correction_frame}"
                     assert all(max(abs(a-b) for a,b in zip(initial_loading_frame[key],ready_frame[key])) <= 1 for key in ("pitch", "ruler")), f"Initial analysis changed pitch geometry: {initial_loading_frame} -> {ready_frame}"
-                    if region_first_drag:
-                        initial_segment = next(segment for segment in pitch_analysis_requests[-1]["segments"] if segment["segment_id"] == "segment_0")
-                        initial_region = next(region for region in initial_segment["edit_regions"] if region["region_id"] == "region_0")
-                        measured_region = next(region for segment in pitch_analysis_responses[-1]["segments"] if segment["segment_id"] == "segment_0" for region in segment["regions"] if region["region_id"] == "region_0")
-                        original_hz = next(point["hz"] for point in measured_region["original"] if point["hz"] is not None)
-                        original_midi = 69 + 12 * math.log2(original_hz / 440)
-                        assert abs(original_midi - round(original_midi)) < 0.01, f"Fixture original measurement was not a whole MIDI note: {original_hz} Hz -> {original_midi}"
-                        note = await evaluate("(() => {const e=document.querySelector('.piano-region-note[data-segment-id=\"segment_0\"][data-region-id=\"region_0\"]'),r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,height:parseFloat(getComputedStyle(document.querySelector('.piano-roll-pitch-content')).getPropertyValue('--semitone-height'))}})()")
-                        await wait_global_idle()
-                        await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":note["x"],"y":note["y"],"button":"left"})
-                        await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":note["x"]+8,"y":note["y"]-note["height"],"button":"left","buttons":1})
-                        await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":note["x"]+8,"y":note["y"]-note["height"],"button":"left"})
-                        await evaluate("document.querySelector('.professional-actions .primary-action').click()")
-                        await wait_for("document.querySelector('.global-task-dialog')?.innerText.includes('저장')")
-                        await wait_for("document.body.innerText.includes('saved')")
-                        await wait_global_idle()
-                        requested_segment = next(segment for segment in saved_requests[-1]["segments"] if segment["segment_id"] == "segment_0")
-                        requested_region = next(region for region in requested_segment["edit_regions"] if region["region_id"] == "region_0")
-                        expected_midi = round(original_midi) + 1
-                        assert requested_region.get("pitch_points") == [{"position": 0, "midi": expected_midi}, {"position": 1, "midi": expected_midi}], f"First region drag did not apply exactly one semitone from measured MIDI {original_midi}: {requested_region}"
-                        assert requested_region.get("relative_pitch_cents") == 100, f"First region drag changed relative cents: {requested_region}"
-                        assert (requested_region["source_start_ms"], requested_region["source_end_ms"], requested_region["output_duration_ms"]) == (initial_region["source_start_ms"], initial_region["source_end_ms"], initial_region["output_duration_ms"]), f"First region drag changed source bounds or output duration: {initial_region} -> {requested_region}"
-                        artifact = WEB / "tests" / "artifacts" / "region-first-drag-smoke.png"
-                        screenshot = await command("Page.captureScreenshot", {"format":"png","captureBeyondViewport":True,"fromSurface":True})
-                        artifact.write_bytes(base64.b64decode(screenshot["data"]))
-                        print(json.dumps({"status":"passed","flag":"--region-first-drag","source_id":"source","segment_id":"segment_0","region_id":"region_0","original_measured_hz":original_hz,"original_measured_midi":original_midi,"requested_pitch_points":requested_region["pitch_points"],"relative_pitch_cents":requested_region["relative_pitch_cents"],"source_bounds":[requested_region["source_start_ms"],requested_region["source_end_ms"]],"output_duration_ms":requested_region["output_duration_ms"],"screenshot":str(artifact)},ensure_ascii=False))
-                        return
-                    measured = pitch_analysis_requests[-1]
-                    first_segment = next(segment for segment in measured["segments"] if segment["segment_id"] == "segment_0")
-                    region_bounds = [(region["source_start_ms"], region["source_end_ms"]) for region in first_segment["edit_regions"]]
-                    assert region_bounds == [(100, 350), (350, 600), (600, 1100)], f"Pitch analysis changed region boundaries: {region_bounds}"
-                    assert first_segment.get("user_guide_source_ms") == [350], f"User split was not sent for pitch analysis: {first_segment}"
-                    assert all(len(segment.get("edit_regions", [])) == len(pitch_analysis_responses[-1]["segments"][index].get("regions", [])) for index, segment in enumerate(measured["segments"])), "Analysis response did not provide a contour for every region"
-                    time_zoom = await evaluate("(() => {const e=document.querySelectorAll('.piano-roll-toolbar input[type=range]')[0];return {min:Number(e.min),max:Number(e.max),value:Number(e.value),label:e.parentElement.querySelector('small').textContent}})()")
-                    assert time_zoom == {"min": 0.025, "max": 1.5, "value": 0.12, "label": "1.0×"}, f"\uC2DC\uAC04 \uD655\uB300 range or initial value changed: {time_zoom}"
-                    await evaluate("(() => {const e=document.querySelectorAll('.piano-roll-toolbar input[type=range]')[0],s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;s.call(e,'1.5');e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()")
-                    await wait_for("document.querySelectorAll('.piano-roll-toolbar input[type=range]')[0].value==='1.5'")
-                    assert await evaluate("document.querySelectorAll('.piano-roll-toolbar input[type=range]')[0].parentElement.querySelector('small').textContent==='12.5×'") , "Maximum time zoom multiplier was not shown"
-                    await evaluate("(() => {const e=document.querySelectorAll('.piano-roll-toolbar input[type=range]')[0],s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;s.call(e,'0.025');e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()")
-                    await wait_for("document.querySelectorAll('.piano-roll-toolbar input[type=range]')[0].value==='0.025'")
-                    assert await evaluate("document.querySelectorAll('.piano-roll-toolbar input[type=range]')[0].parentElement.querySelector('small').textContent==='0.2×'") , "Minimum time zoom multiplier was not shown"
-                    await evaluate("(() => {const e=document.querySelectorAll('.piano-roll-toolbar input[type=range]')[0],s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;s.call(e,'0.12');e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()")
-                    const_pitch = await evaluate("(() => {const e=document.querySelectorAll('.piano-roll-toolbar input[type=range]')[1];return {min:Number(e.min),max:Number(e.max),value:Number(e.value),label:e.parentElement.querySelector('small').textContent}})()")
-                    assert const_pitch["min"] == 7 and const_pitch["max"] == 28 and const_pitch["value"] == 16 and const_pitch["label"] == "1.0×", f"\uD53C\uCE58 \uD655\uB300 multiplier or range changed: {const_pitch}"
-                    for value, expected_label in ((7, "0.4×"), (28, "1.8×"), (16, "1.0×")):
-                        await evaluate("(() => {const e=document.querySelectorAll('.piano-roll-toolbar input[type=range]')[1],s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;s.call(e,'"+str(value)+"');e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}))})()")
-                        await wait_for("document.querySelectorAll('.piano-roll-toolbar input[type=range]')[1].value==='"+str(value)+"'")
-                        label = await evaluate("document.querySelectorAll('.piano-roll-toolbar input[type=range]')[1].parentElement.querySelector('small').textContent")
-                        assert label == expected_label, f"\uD53C\uCE58 \uD655\uB300 multiplier was not formatted at {value}: {label}"
-                        assert len(label) < 12 and label.endswith("×"), f"\uD53C\uCE58 \uD655\uB300 multiplier is not bounded: {label}"
-                    await evaluate("document.querySelector('.professional-autotune button.primary-action').click()")
-                    await wait_for("document.querySelector('.global-task-dialog')?.innerText.includes('자동 음정 보정')")
-                    await wait_for("document.querySelectorAll('.piano-region-pitch-point').length===50")
-                    await wait_for("document.querySelector('.piano-roll-analysis')===null")
-                    await wait_global_idle()
-                    protected_endpoints = await evaluate("document.querySelectorAll('.piano-region-pitch-point[data-endpoint=\"true\"]').length")
-                    assert protected_endpoints == 50, f"Expected two protected pitch endpoints for each of 25 regions, got {protected_endpoints}"
-                    endpoint_groups = await evaluate("[...document.querySelectorAll('.piano-region-pitch-group')].map(group=>group.querySelectorAll('.piano-region-pitch-point[data-endpoint=\"true\"]').length)")
-                    assert len(endpoint_groups) == 25 and all(count == 2 for count in endpoint_groups), f"Each region must keep two protected endpoints: {endpoint_groups}"
-                    await evaluate("(() => {const e=document.querySelector('.piano-region-pitch-point[data-endpoint=\"true\"]');e.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}))})()")
-                    assert await evaluate("document.querySelectorAll('.piano-region-pitch-point').length===50"), "Right-click removed a protected region endpoint"
-                    chart_point = await evaluate("(() => {const c=document.querySelector('.piano-roll-chart'),r=c.getBoundingClientRect();return {x:r.left+12,y:r.top+90}})()")
-                    await wait_global_idle()
-                    await evaluate("(() => {const c=document.querySelector('.piano-roll-chart'),r=c.getBoundingClientRect();c.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:r.left+12,clientY:r.top+90,button:2}))})()")
-                    await wait_for("document.querySelectorAll('.piano-region-pitch-point').length===51")
-                    await wait_for("document.querySelector('.global-task-dialog')?.innerText.includes('피치 분석')")
-                    await wait_global_idle()
-                    await evaluate("document.querySelector('.piano-roll-pitch-scroll').scrollTop=0")
-                    new_point = await evaluate("(() => {const e=[...document.querySelectorAll('.piano-region-pitch-point')].find(point=>point.dataset.endpoint==='false'),r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,cx:Number(e.getAttribute('cx')),cy:Number(e.getAttribute('cy')),region:e.dataset.regionId}})()")
-                    assert new_point["region"], f"Inserted point did not belong to a region: {new_point}"
-                    await wait_global_idle()
-                    await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":new_point["x"],"y":new_point["y"],"button":"left"})
-                    await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":new_point["x"],"y":new_point["y"]-18,"button":"left","buttons":1})
-                    await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":new_point["x"],"y":new_point["y"]-18,"button":"left"})
-                    await wait_for("document.querySelector('.global-task-dialog')?.innerText.includes('피치 분석')")
-                    await wait_global_idle()
-                    moved_point = await evaluate("(() => {const e=[...document.querySelectorAll('.piano-region-pitch-point')].find(point=>point.dataset.endpoint==='false');return {cx:Number(e.getAttribute('cx')),cy:Number(e.getAttribute('cy')),index:e.dataset.pointIndex}})()")
-                    assert moved_point["cx"] == new_point["cx"] and moved_point["cy"] != new_point["cy"], f"Pitch drag changed time position or did not change pitch: {new_point} -> {moved_point}"
-                    await wait_global_idle()
-                    await evaluate("(() => {const e=[...document.querySelectorAll('.piano-region-pitch-point')].find(point=>point.dataset.endpoint==='false');e.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}))})()")
-                    await wait_for("document.querySelector('.global-task-dialog')?.innerText.includes('피치 분석')")
-                    await wait_for("document.querySelector('.piano-roll-analysis[role=alert]')!==null && document.querySelector('.global-task-dialog')===null")
-                    await wait_for("document.querySelectorAll('.piano-region-pitch-point').length===50")
-                    error_frame = await evaluate("(() => {const r=e=>{const b=e.getBoundingClientRect();return [b.top,b.bottom,b.left,b.right]};const s=document.querySelector('.piano-roll-pitch-scroll');return {pitch:r(s),ruler:r(document.querySelector('.piano-roll-pitch-time')),slot:r(document.querySelector('.piano-roll-analysis-slot')),scrollTop:s.scrollTop}})()")
-                    await evaluate("document.querySelector('.piano-roll-analysis[role=alert] button').click()")
-                    await wait_for("document.querySelector('.global-task-dialog')?.innerText.includes('피치 분석')")
-                    await wait_for("document.querySelector('.piano-roll-analysis[role=status]')!==null")
-                    await wait_for("document.querySelector('.piano-roll-analysis')===null")
-                    await wait_global_idle()
-                    retry_frame = await evaluate("(() => {const r=e=>{const b=e.getBoundingClientRect();return [b.top,b.bottom,b.left,b.right]};const s=document.querySelector('.piano-roll-pitch-scroll');return {pitch:r(s),ruler:r(document.querySelector('.piano-roll-pitch-time')),slot:r(document.querySelector('.piano-roll-analysis-slot')),scrollTop:s.scrollTop}})()")
-                    assert all(max(abs(a-b) for a,b in zip(error_frame[key],retry_frame[key])) <= 1 for key in ("pitch", "ruler", "slot")) and abs(error_frame["scrollTop"]-retry_frame["scrollTop"]) <= 1, f"Analysis error/retry changed editor geometry or scroll: {error_frame} -> {retry_frame}"
-                    await evaluate("window.__smokeTotalDurationMs="+str(max(segment["timeline_end_ms"] for segment in measured["segments"])) )
-                    await evaluate("window.__smokeRegionDurations="+json.dumps({region["region_id"]: region["output_duration_ms"] for segment in measured["segments"] for region in segment["edit_regions"]}))
-                    wheel_pitch = await evaluate("(() => {const e=document.querySelector('.piano-roll-pitch-scroll'),r=e.getBoundingClientRect(),h=parseFloat(getComputedStyle(document.querySelector('.piano-roll-pitch-content')).getPropertyValue('--semitone-height')),y=r.top+r.height*.4,midi=108-(e.scrollTop+y-r.top-h/2)/h,t=Number(document.querySelectorAll('.piano-roll-toolbar input[type=range]')[0].value);e.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,ctrlKey:true,deltaY:-120,clientX:r.left+80,clientY:y}));return {midi,timeZoom:t}})()")
-                    await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
-                    after_pitch_wheel = await evaluate("(() => {const e=document.querySelector('.piano-roll-pitch-scroll'),r=e.getBoundingClientRect(),h=parseFloat(getComputedStyle(document.querySelector('.piano-roll-pitch-content')).getPropertyValue('--semitone-height')),y=r.top+r.height*.4,midi=108-(e.scrollTop+y-r.top-h/2)/h,t=Number(document.querySelectorAll('.piano-roll-toolbar input[type=range]')[0].value);return {midi,timeZoom:t}})()")
-                    assert abs(wheel_pitch["midi"]-after_pitch_wheel["midi"]) < .2 and wheel_pitch["timeZoom"] == after_pitch_wheel["timeZoom"], f"Ctrl-wheel did not anchor pitch zoom independently: {wheel_pitch} -> {after_pitch_wheel}"
-                    before_time_wheel = await evaluate("(() => {const t=document.querySelector('.piano-roll-pitch-time'),r=t.getBoundingClientRect(),h=parseFloat(getComputedStyle(document.querySelector('.piano-roll-pitch-content')).getPropertyValue('--semitone-height')),x=r.left+r.width*.55,n=[...document.querySelectorAll('.piano-region-note')].map(e=>({width:e.getBoundingClientRect().width,duration:Number(window.__smokeRegionDurations?.[e.dataset.regionId])})).find(item=>item.duration&&item.width>20),scale=n.width/n.duration;return {time:(t.scrollLeft+x-r.left-60)/scale,height:h,x,scale}})()")
-                    await evaluate("(() => {const e=document.querySelector('.piano-roll-pitch-time'),r=e.getBoundingClientRect();e.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,ctrlKey:true,shiftKey:true,deltaY:-120,clientX:r.left+r.width*.55,clientY:r.top+r.height/2}))})()")
-                    await wait_for("Number(document.querySelectorAll('.piano-roll-toolbar input[type=range]')[0].value)>"+str(wheel_pitch["timeZoom"]))
-                    await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
-                    after_time_wheel = await evaluate("(() => {const t=document.querySelector('.piano-roll-pitch-time'),r=t.getBoundingClientRect(),h=parseFloat(getComputedStyle(document.querySelector('.piano-roll-pitch-content')).getPropertyValue('--semitone-height')),x=r.left+r.width*.55,n=[...document.querySelectorAll('.piano-region-note')].map(e=>({width:e.getBoundingClientRect().width,duration:Number(window.__smokeRegionDurations?.[e.dataset.regionId])})).find(item=>item.duration&&item.width>20),scale=n.width/n.duration;return {time:(t.scrollLeft+x-r.left-60)/scale,height:h,zoom:Number(document.querySelectorAll('.piano-roll-toolbar input[type=range]')[0].value),scrolls:[t.scrollLeft,document.querySelector('.piano-roll-pitch-scroll').scrollLeft,document.querySelector('.piano-volume-scroll').scrollLeft],scale}})()")
-                    assert abs(before_time_wheel["time"]-after_time_wheel["time"]) < 25 and before_time_wheel["height"] == after_time_wheel["height"] and max(after_time_wheel["scrolls"])-min(after_time_wheel["scrolls"]) <= 1, f"Ctrl+Shift-wheel did not anchor synchronized time zoom: {before_time_wheel} -> {after_time_wheel}"
-                    await evaluate("(() => {const e=document.querySelector('.piano-roll-pitch-scroll');e.scrollLeft=120;e.scrollTop=80})()")
-                    await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
-                    scroll_sync = await evaluate("(() => ({xs:[document.querySelector('.piano-roll-pitch-time').scrollLeft,document.querySelector('.piano-roll-pitch-scroll').scrollLeft,document.querySelector('.piano-volume-scroll').scrollLeft],pitchTop:document.querySelector('.piano-roll-pitch-scroll').scrollTop,volumeTop:document.querySelector('.piano-volume-panel').getBoundingClientRect().top}))()")
-                    assert max(scroll_sync["xs"])-min(scroll_sync["xs"]) <= 1 and scroll_sync["pitchTop"] > 0, f"Region editor axes did not scroll together: {scroll_sync}"
-                    await evaluate("(() => {const e=document.querySelector('.piano-roll-pitch-scroll');e.scrollLeft=0;e.scrollTop=0})()")
-                    chart_point = await evaluate("(() => {const c=document.querySelector('.piano-roll-chart'),r=c.getBoundingClientRect();return {x:r.left+12,y:r.top+90}})()")
-                    await wait_global_idle()
-                    await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":chart_point["x"],"y":chart_point["y"],"button":"right"})
-                    await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":chart_point["x"],"y":chart_point["y"],"button":"right"})
-                    await wait_for("document.querySelectorAll('.piano-region-pitch-point').length===51")
-                    await wait_global_idle()
-                    retained_region = await evaluate("(() => {const e=[...document.querySelectorAll('.piano-region-pitch-point')].find(point=>point.dataset.endpoint==='false');return {regionId:e.dataset.regionId,points:[...document.querySelectorAll('.piano-region-pitch-point')].filter(point=>point.dataset.regionId===e.dataset.regionId).map(point=>({position:Number(point.getAttribute('cx')),endpoint:point.dataset.endpoint,midi:Number(point.getAttribute('cy'))}))}})()")
-                    retained_region_id = retained_region["regionId"]
-                    old_preview_src = await evaluate("document.querySelector('audio')?.src||''")
-                    await evaluate("document.querySelectorAll('.piano-roll-transport button')[3].click()")
-                    await wait_for("document.querySelector('.global-task-dialog')?.innerText.includes('미리보기')")
-                    await wait_for("document.querySelector('audio')?.src && document.querySelector('audio').src!=="+json.dumps(old_preview_src))
-                    await wait_global_idle()
-                    original_request = preview_requests[-1]
-                    assert all(not region.get("pitch_points") and region.get("source_f0_hz") is None and region.get("relative_pitch_cents", 0) == 0 for segment in original_request["segments"] for region in segment["edit_regions"]), f"Original audition retained region pitch edits: {original_request}"
-                    assert all(phone.get("target_pitch_midi") is None for segment in original_request["segments"] for phone in segment["phone_units"]), "Original audition retained phone pitch targets"
-                    await evaluate("document.querySelector('.professional-actions .primary-action').click()")
-                    await wait_for("document.querySelector('.global-task-dialog')?.innerText.includes('저장')")
-                    await wait_for("document.body.innerText.includes('saved')")
-                    await wait_global_idle()
-                    saved_segment = next(segment for segment in saved_requests[-1]["segments"] if segment["segment_id"] == "segment_0")
-                    saved_bounds = [(region["source_start_ms"], region["source_end_ms"]) for region in saved_segment["edit_regions"]]
-                    assert saved_bounds == region_bounds and saved_segment.get("user_guide_source_ms") == [350], f"Save lost exact region boundaries or user split: {saved_segment}"
-                    saved_curves = {region["region_id"]: region.get("pitch_points", []) for segment in saved_requests[-1]["segments"] for region in segment["edit_regions"]}
-                    assert all(len(points) == (3 if region_id == retained_region_id else 2) and points[0]["position"] == 0 and points[-1]["position"] == 1 for region_id, points in saved_curves.items()), f"Saved region curves lost protected endpoints or the inserted interior point: {saved_curves}"
-                    await evaluate("(() => {const e=document.querySelectorAll('.professional-file-controls select')[0];e.value='parent';e.dispatchEvent(new Event('change',{bubbles:true}))})()")
-                    await wait_global_idle()
-                    await wait_for("document.querySelectorAll('.professional-file-controls select')[1].value==='' ")
-                    await evaluate("(() => {const e=document.querySelectorAll('.professional-file-controls select')[1];e.value='saved';e.dispatchEvent(new Event('change',{bubbles:true}))})()")
-                    await evaluate("document.querySelector('.professional-footer > button').click()")
-                    await wait_for("document.querySelector('.global-task-dialog')?.innerText.includes('피치 분석')")
-                    await wait_for("document.querySelectorAll('.piano-region-pitch-point').length===51")
-                    await wait_global_idle()
-                    reopened = await evaluate("(() => {const s=[...document.querySelectorAll('.piano-region-note')].filter(e=>e.dataset.segmentId==='segment_0');return {notes:s.length,bounds:s.map(e=>e.dataset.regionId),points:document.querySelectorAll('.piano-region-pitch-point').length,endpoints:document.querySelectorAll('.piano-region-pitch-point[data-endpoint=\"true\"]').length}})()")
-                    assert reopened["notes"] == 3 and reopened["points"] == 51 and reopened["endpoints"] == 50, f"Reopened editor lost region curves: {reopened}"
-                    reopened_curve = await evaluate("[...document.querySelectorAll('.piano-region-pitch-group')].find(e=>e.dataset.regionId==="+json.dumps(retained_region_id)+")?.querySelectorAll('.piano-region-pitch-point').length??0")
-                    assert reopened_curve == 3, f"Reopened editor lost the saved interior region point: {retained_region_id} -> {reopened_curve}"
-                    artifact = WEB / "tests" / "artifacts" / "region-pitch-smoke.png"
+                    measured_response = pitch_analysis_responses[-1]
+                    region_data = next(region for segment in measured_response["segments"] if segment["segment_id"] == "segment_0" for region in segment.get("regions", []) if region["region_id"] == "region_0")
+                    assert any(point["hz"] is not None for point in region_data["original"]), f"Pitch analysis returned no original measurement: {region_data}"
+                    before_display = await evaluate("(() => {const e=document.querySelector('.piano-region-note[data-segment-id=\"segment_0\"][data-region-id=\"region_0\"]');return {top:e.style.top,left:e.style.left,width:e.style.width}})()")
+                    assert await evaluate("document.querySelector('.piano-roll-controls input, .piano-syllable-controls input, .piano-region-pitch-point')===null"), "Measured source display exposed pitch editing controls"
+                    await evaluate("window.__draftWriteCount=0")
+                    analysis_count_before_drag = len(pitch_analysis_requests)
+                    drag_point = await evaluate("(() => {const r=document.querySelector('.piano-region-note[data-segment-id=\"segment_0\"][data-region-id=\"region_0\"]').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()")
+                    await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":drag_point["x"],"y":drag_point["y"],"button":"left"})
+                    await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":drag_point["x"]+8,"y":drag_point["y"]-18,"button":"left","buttons":1})
+                    await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":drag_point["x"]+8,"y":drag_point["y"]-18,"button":"left"})
+                    after_display = await evaluate("(() => {const e=document.querySelector('.piano-region-note[data-segment-id=\"segment_0\"][data-region-id=\"region_0\"]');return {top:e.style.top,left:e.style.left,width:e.style.width}})()")
+                    assert after_display == before_display, f"Dragging a measured source region changed its display: {before_display} -> {after_display}"
+                    assert await evaluate("window.__draftWriteCount") == 0, "Dragging a measured source region wrote a draft"
+                    assert len(pitch_analysis_requests) == analysis_count_before_drag, "Dragging a measured source region re-ran pitch analysis"
+                    assert not saved_requests, f"Read-only pitch display triggered a save: {saved_requests}"
+                    artifact = WEB / "tests" / "artifacts" / "piano-roll-measured-display-smoke.png"
                     screenshot = await command("Page.captureScreenshot", {"format":"png","captureBeyondViewport":True,"fromSurface":True})
                     artifact.write_bytes(base64.b64decode(screenshot["data"]))
-                    print(json.dumps({"status":"passed","regions":25,"user_split_source_ms":350,"pitch_zoom":const_pitch,"time_zoom":time_zoom,"analysis_error_retry_geometry":True,"original_audition_clears_region_curves":True,"save_reopen":True,"screenshot":str(artifact)},ensure_ascii=False))
+                    print(json.dumps({"status":"passed","flag":"--piano-roll","measured_original_points":len(region_data["original"]),"region_drag_unchanged":True,"screenshot":str(artifact)},ensure_ascii=False))
                     return
                 if save_shortcuts:
                     await wait_for("document.querySelector('.professional-waveform polygon')?.getAttribute('points').trim().split(/\\s+/).length>800")
@@ -691,12 +561,13 @@ async def run_smoke(save_shortcuts: bool = False, piano_roll: bool = False, regi
                 assert await evaluate("document.querySelector('.professional-audio-fragment').querySelectorAll('.professional-guides i').length") == split_count and await evaluate("document.querySelector('.professional-range-selection')?.dataset.sourceStartMs==='600' && document.querySelector('.professional-range-selection')?.dataset.sourceEndMs==='1100'"), "Dragging the interval created a range or source split"
                 assert await evaluate("document.querySelector('.professional-timeline-content').dataset.playheadMs") == playhead_before_click, "Selecting audio sought the playhead"
 
-                async def drag_boundary(modifiers: int = 0, dx: float = 12):
+                async def drag_boundary(modifiers: int = 0, dx: float = 12, move_modifiers: int | None = None):
                     boundary = await evaluate("(() => {const e=document.querySelector('.professional-guides i'),r=e.getBoundingClientRect(),s=document.querySelector('.professional-range-selection');return {x:r.left+r.width/2,y:r.top+r.height/2,selected:s?{start:s.dataset.sourceStartMs,end:s.dataset.sourceEndMs}:null,hit:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===e}})()")
                     assert boundary["hit"], f"Guide did not receive the drag: {boundary}"
+                    active_modifiers = modifiers if move_modifiers is None else move_modifiers
                     await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":boundary["x"],"y":boundary["y"],"button":"left","modifiers":modifiers})
-                    await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":boundary["x"]+dx,"y":boundary["y"],"button":"left","buttons":1,"modifiers":modifiers})
-                    await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":boundary["x"]+dx,"y":boundary["y"],"button":"left","modifiers":modifiers})
+                    await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":boundary["x"]+dx,"y":boundary["y"],"button":"left","buttons":1,"modifiers":active_modifiers})
+                    await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":boundary["x"]+dx,"y":boundary["y"],"button":"left","modifiers":active_modifiers})
                     await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
                     return boundary
 
@@ -735,51 +606,101 @@ async def run_smoke(save_shortcuts: bool = False, piano_roll: bool = False, regi
                 await wait_for("parseFloat(document.querySelector('.professional-audio-fragment').style.width)>"+str(ctrl_rear_before["width"]))
                 ctrl_rear_after = await evaluate("(() => {const f=document.querySelector('.professional-audio-fragment');return {left:parseFloat(f.style.left),width:parseFloat(f.style.width),next:document.querySelectorAll('.professional-audio-fragment')[1].style.left}})()")
                 assert ctrl_rear_after["left"] == ctrl_rear_before["left"] and ctrl_rear_after["width"] > ctrl_rear_before["width"] and ctrl_rear_after["next"] == ctrl_rear_before["next"], f"CTRL rear did not move only the suffix boundary: selected={ctrl_rear_selection['selected']} ctrl={ctrl_rear_before} after={ctrl_rear_after}"
-                shift_before = await evaluate("(() => {const f=document.querySelector('.professional-audio-fragment');return {left:parseFloat(f.style.left),width:parseFloat(f.style.width),next:document.querySelectorAll('.professional-audio-fragment')[1].style.left}})()")
-                shift_selection = await drag_boundary(8)
+                shift_before = await evaluate("(() => {const f=document.querySelector('.professional-audio-fragment'),g=document.querySelector('.professional-guides i'),next=document.querySelectorAll('.professional-audio-fragment')[1],scale=parseFloat(next.style.width)/1000,total=parseFloat(f.style.width)/scale,boundary=(parseFloat(f.style.left)-96)/scale+Number(g.style.left.replace('%',''))*total/100,offset=Number(document.querySelectorAll('.professional-timeline-tools input[type=number]')[2].value)*(60000/Number(document.querySelector('[aria-label=\"BPM\"]').value))/24,grid=60000/Number(document.querySelector('[aria-label=\"BPM\"]').value)*4/Number(document.querySelector('.professional-timeline-tools select').value);return {left:parseFloat(f.style.left),width:parseFloat(f.style.width),next:next.style.left,boundary,offset,grid,scale}})()")
+                shift_selection = await drag_boundary(8, 50)
                 await wait_for("parseFloat(document.querySelector('.professional-audio-fragment').style.left)>"+str(shift_before["left"]))
-                shift_after = await evaluate("(() => {const f=document.querySelector('.professional-audio-fragment');return {left:parseFloat(f.style.left),width:parseFloat(f.style.width),next:document.querySelectorAll('.professional-audio-fragment')[1].style.left}})()")
-                assert shift_after["left"] > shift_before["left"] and shift_after["width"] == shift_before["width"] and shift_after["next"] == shift_before["next"], f"SHIFT did not move the syllable as a unit: selected={shift_selection['selected']} {shift_before} {shift_after}"
+                shift_after = await evaluate("(() => {const f=document.querySelector('.professional-audio-fragment'),g=document.querySelector('.professional-guides i'),next=document.querySelectorAll('.professional-audio-fragment')[1],scale=parseFloat(next.style.width)/1000,total=parseFloat(f.style.width)/scale,boundary=(parseFloat(f.style.left)-96)/scale+Number(g.style.left.replace('%',''))*total/100;return {left:parseFloat(f.style.left),width:parseFloat(f.style.width),next:next.style.left,boundary}})()")
+                assert shift_after["left"] > shift_before["left"] and shift_after["width"] == shift_before["width"] and shift_after["next"] == shift_before["next"] and abs((shift_after["boundary"]-shift_before["offset"])/shift_before["grid"]-round((shift_after["boundary"]-shift_before["offset"])/shift_before["grid"])) < .01, f"SHIFT did not move the grabbed boundary to the offset grid as a unit: selected={shift_selection['selected']} {shift_before} {shift_after}"
+
+                shift_free_before = shift_after
+                await drag_boundary(9, 8, 8)
+                shift_free_after = await evaluate("(() => {const f=document.querySelector('.professional-audio-fragment'),g=document.querySelector('.professional-guides i'),next=document.querySelectorAll('.professional-audio-fragment')[1],scale=parseFloat(next.style.width)/1000,total=parseFloat(f.style.width)/scale,boundary=(parseFloat(f.style.left)-96)/scale+Number(g.style.left.replace('%',''))*total/100;return {left:parseFloat(f.style.left),width:parseFloat(f.style.width),next:next.style.left,boundary}})()")
+                assert abs((shift_free_after["boundary"]-shift_free_before["boundary"])-8/shift_before["scale"]) < 2 and abs((shift_free_after["boundary"]-shift_before["offset"])/shift_before["grid"]-round((shift_free_after["boundary"]-shift_before["offset"])/shift_before["grid"])) > .1, f"Alt-held SHIFT handle did not remain free after Alt release: {shift_free_before} -> {shift_free_after}"
+                await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"z","code":"KeyZ","modifiers":2})
+                await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"z","code":"KeyZ","modifiers":2})
+                await wait_for("Math.abs(parseFloat(document.querySelector('.professional-audio-fragment').style.left)-"+str(shift_after["left"])+")<1")
+                await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"z","code":"KeyZ","modifiers":2})
+                await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"z","code":"KeyZ","modifiers":2})
+                await wait_for("Math.abs(parseFloat(document.querySelector('.professional-audio-fragment').style.left)-"+str(shift_before["left"])+")<1")
+
+                async def drag_label(index: int, dx: float, modifiers: int = 0, move_modifiers: int | None = None):
+                    point = await evaluate("(() => {const r=document.querySelectorAll('.professional-fragment-label')["+str(index)+"].getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()")
+                    active_modifiers = modifiers if move_modifiers is None else move_modifiers
+                    await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":point["x"],"y":point["y"],"button":"left","modifiers":modifiers})
+                    await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":point["x"]+dx,"y":point["y"],"button":"left","buttons":1,"modifiers":active_modifiers})
+                    await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":point["x"]+dx,"y":point["y"],"button":"left","modifiers":active_modifiers})
+                    await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
+
+                await scroll_to_fragment('.professional-audio-fragment:nth-of-type(3) .professional-fragment-label')
+                label_before = await evaluate("(() => {const f=[...document.querySelectorAll('.professional-audio-fragment')],scale=parseFloat(f[1].style.width)/1000,offset=Number(document.querySelectorAll('.professional-timeline-tools input[type=number]')[2].value)*(60000/Number(document.querySelector('[aria-label=\"BPM\"]').value))/24,grid=60000/Number(document.querySelector('[aria-label=\"BPM\"]').value)*4/Number(document.querySelector('.professional-timeline-tools select').value);return {starts:f.map(e=>(parseFloat(e.style.left)-96)/scale),widths:f.map(e=>parseFloat(e.style.width)),scale,offset,grid}})()")
+                await drag_label(2, 50)
+                label_snapped = await evaluate("(() => {const f=[...document.querySelectorAll('.professional-audio-fragment')],scale=parseFloat(f[1].style.width)/1000;return {starts:f.map(e=>(parseFloat(e.style.left)-96)/scale),widths:f.map(e=>parseFloat(e.style.width))}})()")
+                label_delta = label_snapped["starts"][2]-label_before["starts"][2]
+                assert label_delta > 0 and abs((label_snapped["starts"][2]-label_before["offset"])/label_before["grid"]-round((label_snapped["starts"][2]-label_before["offset"])/label_before["grid"])) < .01 and label_snapped["widths"] == label_before["widths"], f"Dragging the upper fragment label did not snap its start while preserving durations: {label_before} -> {label_snapped}"
+                assert all(abs(label_snapped["starts"][index]-label_before["starts"][index]) < 1 for index in range(len(label_before["starts"])) if index != 2), f"Dragging an upper fragment label moved other syllables: {label_before} -> {label_snapped}"
+                await drag_label(2, 8, 1, 0)
+                label_free = await evaluate("(() => {const f=[...document.querySelectorAll('.professional-audio-fragment')],scale=parseFloat(f[1].style.width)/1000;return {starts:f.map(e=>(parseFloat(e.style.left)-96)/scale),widths:f.map(e=>parseFloat(e.style.width))}})()")
+                label_free_delta = label_free["starts"][2]-label_snapped["starts"][2]
+                assert abs(label_free_delta-8/label_before["scale"]) < 2 and abs((label_free["starts"][2]-label_before["offset"])/label_before["grid"]-round((label_free["starts"][2]-label_before["offset"])/label_before["grid"])) > .1 and label_free["widths"] == label_before["widths"], f"Alt held at upper-label pointerdown did not preserve free movement: {label_snapped} -> {label_free}"
+                await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"z","code":"KeyZ","modifiers":2})
+                await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"z","code":"KeyZ","modifiers":2})
+                await wait_for("Math.abs((parseFloat(document.querySelectorAll('.professional-audio-fragment')[2].style.left)-96)/(parseFloat(document.querySelectorAll('.professional-audio-fragment')[1].style.width)/1000)-"+str(label_snapped["starts"][2])+")<1")
+                await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"z","code":"KeyZ","modifiers":2})
+                await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"z","code":"KeyZ","modifiers":2})
+                await wait_for("Math.abs((parseFloat(document.querySelectorAll('.professional-audio-fragment')[2].style.left)-96)/(parseFloat(document.querySelectorAll('.professional-audio-fragment')[1].style.width)/1000)-"+str(label_before["starts"][2])+")<1")
 
                 await scroll_to_fragment('.professional-audio-fragment:first-of-type')
-                suffix_before = await evaluate("[...document.querySelectorAll('.professional-audio-fragment')].map(e=>[parseFloat(e.style.left),parseFloat(e.style.width)])")
+                suffix_before = await evaluate("(() => {const f=[...document.querySelectorAll('.professional-audio-fragment')],scale=parseFloat(f[1].style.width)/1000,offset=Number(document.querySelectorAll('.professional-timeline-tools input[type=number]')[2].value)*(60000/Number(document.querySelector('[aria-label=\"BPM\"]').value))/24,grid=60000/Number(document.querySelector('[aria-label=\"BPM\"]').value)*4/Number(document.querySelector('.professional-timeline-tools select').value);return {fragments:f.map(e=>[parseFloat(e.style.left),parseFloat(e.style.width)]),starts:f.map(e=>(parseFloat(e.style.left)-96)/scale),widths:f.map(e=>parseFloat(e.style.width)),scale,offset,grid}})()")
                 grabbedIndex = 1
                 suffix_drag = await evaluate("(() => {const e=document.querySelectorAll('.professional-fragment-body')[1],r=e.getBoundingClientRect();return {x:r.left+r.width*.35,y:r.top+r.height/2}})()")
                 await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":suffix_drag["x"],"y":suffix_drag["y"],"button":"left","modifiers":10})
                 await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":suffix_drag["x"]+15,"y":suffix_drag["y"],"button":"left","buttons":1,"modifiers":10})
                 await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":suffix_drag["x"]+30,"y":suffix_drag["y"],"button":"left","buttons":1,"modifiers":10})
                 await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":suffix_drag["x"]+30,"y":suffix_drag["y"],"button":"left","modifiers":10})
-                await wait_for("parseFloat(document.querySelectorAll('.professional-audio-fragment')[1].style.left)>"+str(suffix_before[grabbedIndex][0]))
+                await wait_for("parseFloat(document.querySelectorAll('.professional-audio-fragment')[1].style.left)>"+str(suffix_before["fragments"][grabbedIndex][0]))
                 suffix_after = await evaluate("[...document.querySelectorAll('.professional-audio-fragment')].map(e=>[parseFloat(e.style.left),parseFloat(e.style.width)])")
-                moved_delta = suffix_after[grabbedIndex][0]-suffix_before[grabbedIndex][0]
-                assert all(abs((after[0]-before[0])-moved_delta)<1 for before,after in zip(suffix_before,suffix_after) if before[0]>suffix_before[grabbedIndex][0]), f"Ctrl+Shift did not move the strict suffix equally: {suffix_before} {suffix_after}"
-                assert all(abs(after[0]-before[0])<1 for index,(before,after) in enumerate(zip(suffix_before,suffix_after)) if index != grabbedIndex and before[0]<=suffix_before[grabbedIndex][0]), f"Ctrl+Shift moved an earlier or same-start syllable: {suffix_before} {suffix_after}"
+                moved_delta = suffix_after[grabbedIndex][0]-suffix_before["fragments"][grabbedIndex][0]
+                assert all(abs((after[0]-before[0])-moved_delta)<1 for before,after in zip(suffix_before["fragments"],suffix_after) if before[0]>suffix_before["fragments"][grabbedIndex][0]), f"Ctrl+Shift did not move the strict suffix equally: {suffix_before} {suffix_after}"
+                assert all(abs(after[0]-before[0])<1 for index,(before,after) in enumerate(zip(suffix_before["fragments"],suffix_after)) if index != grabbedIndex and before[0]<=suffix_before["fragments"][grabbedIndex][0]), f"Ctrl+Shift moved an earlier or same-start syllable: {suffix_before} {suffix_after}"
                 assert abs(moved_delta)>0, f"Ctrl+Shift did not move the grabbed syllable: {suffix_before} {suffix_after}"
-                assert [width for _,width in suffix_after] == [width for _,width in suffix_before], f"Ctrl+Shift changed syllable durations: {suffix_before} {suffix_after}"
+                suffix_after_starts = await evaluate("(() => {const f=[...document.querySelectorAll('.professional-audio-fragment')],scale=parseFloat(f[1].style.width)/1000;return f.map(e=>(parseFloat(e.style.left)-96)/scale)})()")
+                assert abs((suffix_after_starts[grabbedIndex]-suffix_before["offset"])/suffix_before["grid"]-round((suffix_after_starts[grabbedIndex]-suffix_before["offset"])/suffix_before["grid"])) < .01, f"Ctrl+Shift did not snap the grabbed syllable start to the offset grid: {suffix_before} {suffix_after_starts}"
+                assert [width for _,width in suffix_after] == suffix_before["widths"], f"Ctrl+Shift changed syllable durations: {suffix_before} {suffix_after}"
                 await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"z","code":"KeyZ","modifiers":2})
                 await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"z","code":"KeyZ","modifiers":2})
-                await wait_for("[...document.querySelectorAll('.professional-audio-fragment')].every((e,i)=>Math.abs(parseFloat(e.style.left)-"+str([start for start,_ in suffix_before])+"[i])<1)")
+                await wait_for("[...document.querySelectorAll('.professional-audio-fragment')].every((e,i)=>Math.abs(parseFloat(e.style.left)-"+str([start for start,_ in suffix_before["fragments"]])+"[i])<1)")
                 suffix_undo = await evaluate("[...document.querySelectorAll('.professional-audio-fragment')].map(e=>[parseFloat(e.style.left),parseFloat(e.style.width)])")
-                assert [start for start,_ in suffix_undo] == [start for start,_ in suffix_before], "Ctrl+Z did not undo all pointer moves as one gesture"
-                assert [width for _,width in suffix_undo] == [width for _,width in suffix_before], "Ctrl+Z changed syllable durations"
+                assert [start for start,_ in suffix_undo] == [start for start,_ in suffix_before["fragments"]], "Ctrl+Z did not undo all pointer moves as one gesture"
+                assert [width for _,width in suffix_undo] == suffix_before["widths"], "Ctrl+Z changed syllable durations"
                 await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"y","code":"KeyY","modifiers":2})
                 await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"y","code":"KeyY","modifiers":2})
                 await wait_for("[...document.querySelectorAll('.professional-audio-fragment')].every((e,i)=>Math.abs(parseFloat(e.style.left)-"+str([start for start,_ in suffix_after])+"[i])<1)")
                 suffix_redo = await evaluate("[...document.querySelectorAll('.professional-audio-fragment')].map(e=>[parseFloat(e.style.left),parseFloat(e.style.width)])")
                 assert [start for start,_ in suffix_redo] == [start for start,_ in suffix_after], "Ctrl+Y did not redo all pointer moves"
-                assert [width for _,width in suffix_redo] == [width for _,width in suffix_before], "Ctrl+Y changed syllable durations"
+                assert [width for _,width in suffix_redo] == suffix_before["widths"], "Ctrl+Y changed syllable durations"
                 await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"z","code":"KeyZ","modifiers":2})
                 await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"z","code":"KeyZ","modifiers":2})
-                await wait_for("[...document.querySelectorAll('.professional-audio-fragment')].every((e,i)=>Math.abs(parseFloat(e.style.left)-"+str([start for start,_ in suffix_before])+"[i])<1)")
+                await wait_for("[...document.querySelectorAll('.professional-audio-fragment')].every((e,i)=>Math.abs(parseFloat(e.style.left)-"+str([start for start,_ in suffix_before["fragments"]])+"[i])<1)")
+                await command("Input.dispatchMouseEvent", {"type":"mousePressed","x":suffix_drag["x"],"y":suffix_drag["y"],"button":"left","modifiers":11})
+                await command("Input.dispatchMouseEvent", {"type":"mouseMoved","x":suffix_drag["x"]+8,"y":suffix_drag["y"],"button":"left","buttons":1,"modifiers":10})
+                await command("Input.dispatchMouseEvent", {"type":"mouseReleased","x":suffix_drag["x"]+8,"y":suffix_drag["y"],"button":"left","modifiers":10})
+                await evaluate("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
+                suffix_free = await evaluate("(() => {const f=[...document.querySelectorAll('.professional-audio-fragment')],scale=parseFloat(f[1].style.width)/1000;return {starts:f.map(e=>(parseFloat(e.style.left)-96)/scale),widths:f.map(e=>parseFloat(e.style.width))}})()")
+                suffix_free_delta = suffix_free["starts"][grabbedIndex]-suffix_before["starts"][grabbedIndex]
+                assert abs(suffix_free_delta-8/suffix_before["scale"]) < 2 and abs((suffix_free["starts"][grabbedIndex]-suffix_before["offset"])/suffix_before["grid"]-round((suffix_free["starts"][grabbedIndex]-suffix_before["offset"])/suffix_before["grid"])) > .1 and suffix_free["widths"] == suffix_before["widths"], f"Alt held at Ctrl+Shift pointerdown did not keep suffix movement free: {suffix_before} -> {suffix_free}"
+                assert all(abs(suffix_free["starts"][index]-suffix_before["starts"][index]) < 1 for index in range(grabbedIndex)), f"Alt+Ctrl+Shift moved a syllable before the grabbed one: {suffix_before} -> {suffix_free}"
+                await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"z","code":"KeyZ","modifiers":2})
+                await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"z","code":"KeyZ","modifiers":2})
+                await wait_for("[...document.querySelectorAll('.professional-audio-fragment')].every((e,i)=>Math.abs((parseFloat(e.style.left)-96)/(parseFloat(document.querySelectorAll('.professional-audio-fragment')[1].style.width)/1000)-"+str(suffix_before["starts"])+"[i])<1)")
                 await evaluate("(() => {const e=document.querySelector('[aria-label=\"BPM\"]'),setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(e,'137');e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));e.blur()})()")
                 await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"y","code":"KeyY","modifiers":2})
                 await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"y","code":"KeyY","modifiers":2})
                 assert await evaluate("document.querySelector('[aria-label=\"BPM\"]').value==='137'")
-                assert await evaluate("[...document.querySelectorAll('.professional-audio-fragment')].map(e=>parseFloat(e.style.left))") == [start for start,_ in suffix_before], "A new tempo edit did not invalidate redo"
+                assert await evaluate("[...document.querySelectorAll('.professional-audio-fragment')].map(e=>parseFloat(e.style.left))") == [start for start,_ in suffix_before["fragments"]], "A new tempo edit did not invalidate redo"
                 await evaluate("document.querySelector('[aria-label=\"BPM\"]').focus()")
                 await command("Input.dispatchKeyEvent", {"type":"rawKeyDown","key":"z","code":"KeyZ","modifiers":2})
                 await command("Input.dispatchKeyEvent", {"type":"keyUp","key":"z","code":"KeyZ","modifiers":2})
-                assert await evaluate("parseFloat(document.querySelector('.professional-audio-fragment').style.left)") == suffix_before[0][0], "Ctrl+Z in a number input changed the composition"
+                assert await evaluate("parseFloat(document.querySelector('.professional-audio-fragment').style.left)") == suffix_before["fragments"][0][0], "Ctrl+Z in a number input changed the composition"
                 await evaluate("document.activeElement.blur()")
 
                 await scroll_to_fragment('.professional-audio-fragment:last-of-type')
