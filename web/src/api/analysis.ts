@@ -9,45 +9,29 @@ import type {
   JobIdResponse,
 } from "../types"
 import { request } from "./client"
+import { runtimeFetch } from "./transport"
 
 export const fetchVideos = (): Promise<string[]> => request("/api/videos")
 
-export const uploadVideo = (
+export const uploadVideo = async (
   file: File,
   onProgress: (percent: number) => void,
   onUploadComplete?: () => void,
   signal?: AbortSignal,
-): Promise<VideoUploadResult> => new Promise((resolve, reject) => {
+): Promise<VideoUploadResult> => {
+  if (signal?.aborted) throw new DOMException("Upload cancelled", "AbortError")
   const form = new FormData()
   form.append("file", file)
-  const xhr = new XMLHttpRequest()
-  xhr.open("POST", "/api/videos")
-  xhr.upload.onprogress = (event) => {
-    if (event.lengthComputable) onProgress(Math.round(event.loaded / event.total * 100))
-  }
-  xhr.upload.onload = () => onUploadComplete?.()
-  xhr.onerror = () => reject(new Error("업로드 중 연결이 끊겼습니다. 다시 시도해 주세요."))
-  xhr.onabort = () => reject(new Error("업로드가 취소되었습니다."))
-  xhr.onload = () => {
-    let body: VideoUploadResult | ApiErrorResponse
-    try { body = JSON.parse(xhr.responseText) as VideoUploadResult | ApiErrorResponse }
-    catch { reject(new Error(`${xhr.status} ${xhr.statusText}`)); return }
-    if (xhr.status < 200 || xhr.status >= 300) {
-      reject(new Error("detail" in body && typeof body.detail === "string"
-        ? body.detail : `${xhr.status} ${xhr.statusText}`))
-      return
-    }
-    resolve(body as VideoUploadResult)
-  }
-  if (signal?.aborted) {
-    reject(new Error("업로드가 취소되었습니다."))
-    return
-  }
-  const abort = () => xhr.abort()
-  signal?.addEventListener("abort", abort, { once: true })
-  xhr.onloadend = () => signal?.removeEventListener("abort", abort)
-  xhr.send(form)
-})
+  onProgress(0)
+  const response = await runtimeFetch("/api/videos", { method: "POST", body: form, signal })
+  let body: VideoUploadResult | ApiErrorResponse
+  try { body = await response.json() as VideoUploadResult | ApiErrorResponse }
+  catch { throw new Error(`${response.status} ${response.statusText}`) }
+  if (!response.ok) throw new Error("detail" in body && typeof body.detail === "string" ? body.detail : `${response.status} ${response.statusText}`)
+  onProgress(100)
+  onUploadComplete?.()
+  return body as VideoUploadResult
+}
 
 export const fetchAnalysisHardware = (): Promise<DetectedAnalysisHardware> =>
   request("/api/analysis-hardware")
@@ -63,7 +47,7 @@ export const startAnalysis = (settings: AnalysisSettings): Promise<JobIdResponse
   request("/api/analyses", undefined, { method: "POST", body: JSON.stringify(settings) })
 
 export const fetchAnalysisJob = async (jobId: string): Promise<AnalysisJob> => {
-  const response = await fetch(`/api/analysis-jobs/${encodeURIComponent(jobId)}`)
+  const response = await runtimeFetch(`/api/analysis-jobs/${encodeURIComponent(jobId)}`)
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`
     try {

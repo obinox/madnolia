@@ -5,10 +5,16 @@ import App from "./App"
 import { GlobalTaskProvider } from "./globalTask"
 import "./styles.css"
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <GlobalTaskProvider>
-      <App />
-    </GlobalTaskProvider>
-  </StrictMode>,
-)
+const root = createRoot(document.getElementById("root")!)
+
+void import("./components/BrowserWorkspace").then(({ BrowserWorkspace }) => {
+  root.render(
+    <StrictMode>
+      <GlobalTaskProvider>
+        <BrowserWorkspace>
+          <App />
+        </BrowserWorkspace>
+      </GlobalTaskProvider>
+    </StrictMode>,
+  )
+})

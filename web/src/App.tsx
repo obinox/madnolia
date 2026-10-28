@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import { fetchCollage, fetchProject, fetchProjects, fetchTimeline, fetchWaveform, audioUrl, fetchAudioBlob } from "./api/projects"
+import { fetchCollage, fetchProject, fetchProjects, fetchTimeline, fetchWaveform, fetchAudioBlob } from "./api/projects"
 import {
   PHONE_DETAIL_MAX_MS,
   PLAYBACK_LOOP_EPSILON_MS,
@@ -35,7 +35,7 @@ export default function App() {
   const loopSelectionRef = useRef(false)
   const selectionRef = useRef<TimelineSelection | null>(null)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
-  const [page, setPage] = useState<WorkflowPage>("analysis")
+  const [page, setPage] = useState<WorkflowPage>("projects")
   const [projectId, setProjectId] = useState("")
   const [requestedCollageId, setRequestedCollageId] = useState("")
   const [project, setProject] = useState<ProjectDetail | null>(null)
@@ -65,7 +65,7 @@ export default function App() {
   const [error, setError] = useState("")
   const audioObjectUrlsRef = useRef<string[]>([])
   const audioObjectUrlBySourceRef = useRef<Record<string, string>>({})
-  const lastAllowedHashRef = useRef(window.location.hash || "#/analysis")
+  const lastAllowedHashRef = useRef(window.location.hash || "#/projects")
   const initialRoutePendingRef = useRef(true)
   const syncPageRef = useRef<((initial?: boolean) => void) | null>(null)
   const previousTaskActiveRef = useRef(taskActive)
@@ -118,7 +118,7 @@ export default function App() {
         return
       }
       initialRoutePendingRef.current = false
-      lastAllowedHashRef.current = hash || "#/analysis"
+      lastAllowedHashRef.current = hash || "#/projects"
       try {
       if (hash.startsWith("#/collages/")) {
         const id = decodeURIComponent(hash.slice("#/collages/".length))
@@ -156,11 +156,15 @@ export default function App() {
         setSavedDetailState("idle")
         setSavedDetailError("")
         setPage("projects")
-      } else {
+      } else if (hash === "#/analysis") {
         setSavedDetailState("idle")
         setSavedDetailError("")
         setPage("analysis")
-        if (hash !== "#/analysis") window.location.hash = "#/analysis"
+      } else {
+        setSavedDetailState("idle")
+        setSavedDetailError("")
+        setPage("projects")
+        if (hash !== "#/projects") window.location.hash = "#/projects"
       }
       } catch {
         setSavedDetailState("idle")
@@ -712,7 +716,7 @@ export default function App() {
                   const bufferedSourceId = bufferedSource.source_id
                   const cachedAudioUrl = audioObjectUrls[bufferedSourceId]
                   const attachedAudioUrl = cachedAudioUrl ?? (
-                    bufferedSourceId === sourceId ? audioUrl(projectId, bufferedSourceId) : undefined
+                    bufferedSourceId === sourceId ? audioObjectUrls[bufferedSourceId] : undefined
                   )
                   return (
                   <audio

@@ -4,9 +4,6 @@ import { controlAnalysisJob, fetchAnalysisHardware, fetchAnalysisJob, fetchVideo
 import {
   VIDEO_UPLOAD_ACCEPT,
   ANALYSIS_MODEL_DOWNLOAD_STAGE,
-  ANALYSIS_MODEL_OPTIONS,
-  QWEN_ASR_MODEL_OPTIONS,
-  ANALYSIS_DEVICE_OPTIONS,
   ANALYSIS_NICKNAME_MAX_LENGTH,
   ANALYSIS_JOB_STORAGE_KEY,
   ANALYSIS_PROGRESS_ANIMATION_MAX_MS,
@@ -14,13 +11,8 @@ import {
   ANALYSIS_PROGRESS_ANIMATION_PER_PERCENT_MS,
   ANALYSIS_PROGRESS_POLL_MS,
   DEFAULT_ANALYSIS_ACOUSTIC_UNITS,
-  DEFAULT_ANALYSIS_ALIGNMENT,
-  DEFAULT_ANALYSIS_BACKEND,
-  DEFAULT_ANALYSIS_DEVICE,
-  DEFAULT_ANALYSIS_MODEL,
-  FALLBACK_ANALYSIS_BACKEND,
-  FALLBACK_ANALYSIS_DEVICE,
 } from "../constants"
+import { BROWSER_ASR_DEFAULT_MODEL, BROWSER_ASR_MODELS } from "../browserAnalysisConstants"
 import type { AnalysisAction, AnalysisJob, AnalysisPageProps, AnalysisSettings, DetectedAnalysisHardware, GlobalTaskAction } from "../types"
 import { useGlobalTask } from "../globalTask"
 
@@ -36,8 +28,8 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
   const [videos, setVideos] = useState<string[]>([])
   const [filename, setFilename] = useState("")
   const [settings, setSettings] = useState<AnalysisSettings>({
-    filename: "", nickname: "", model_name: DEFAULT_ANALYSIS_MODEL, backend: DEFAULT_ANALYSIS_BACKEND,
-    device: DEFAULT_ANALYSIS_DEVICE, alignment_mode: DEFAULT_ANALYSIS_ALIGNMENT,
+    filename: "", nickname: "", model_name: BROWSER_ASR_DEFAULT_MODEL, backend: "transformers-js",
+    device: "wasm", alignment_mode: "estimated",
     candidate_models: [], acoustic_units: DEFAULT_ANALYSIS_ACOUSTIC_UNITS,
   })
   const [jobId, setJobId] = useState(() => {
@@ -55,7 +47,7 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [hardware, setHardware] = useState<DetectedAnalysisHardware | null>(null)
   const deviceChangedRef = useRef(false)
-  const modelOptions = settings.backend === "qwen3-asr" ? QWEN_ASR_MODEL_OPTIONS : ANALYSIS_MODEL_OPTIONS
+  const modelOptions = BROWSER_ASR_MODELS
   const clearStoredJob = () => { try { window.localStorage.removeItem(ANALYSIS_JOB_STORAGE_KEY) } catch { } }
 
   const ensureAnalysisTask = (label: string, stage: string, percent: number | null = null) => {
@@ -85,13 +77,13 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
         let storedJob = ""
         try { storedJob = window.localStorage.getItem(ANALYSIS_JOB_STORAGE_KEY) ?? "" } catch { }
         if (!deviceChangedRef.current && !storedJob) {
-          setSettings((current) => ({ ...current, backend: detected.backend, device: detected.device }))
+          setSettings((current) => ({ ...current, backend: "transformers-js", device: detected.device }))
         }
       })
       .catch(() => {
-        setHardware({ backend: FALLBACK_ANALYSIS_BACKEND, device: FALLBACK_ANALYSIS_DEVICE, gpu_vendor: null })
+        setHardware({ backend: "transformers-js", device: "wasm", gpu_vendor: null })
         if (!deviceChangedRef.current) {
-          setSettings((current) => ({ ...current, backend: FALLBACK_ANALYSIS_BACKEND, device: FALLBACK_ANALYSIS_DEVICE }))
+          setSettings((current) => ({ ...current, backend: "transformers-js", device: "wasm" }))
         }
       })
   }, [])
@@ -371,60 +363,35 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
               ...settings, model_name: event.target.value,
               candidate_models: settings.candidate_models.filter((item) => item !== event.target.value),
             })}>
-              {modelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
-            </select>
-          </label>
-          <label>실행 방식
-            <select value={settings.backend} disabled={!!jobId} onChange={(event) => {
-              deviceChangedRef.current = true
-              setSettings({
-                ...settings, backend: event.target.value as AnalysisSettings["backend"],
-                device: ANALYSIS_DEVICE_OPTIONS[event.target.value as AnalysisSettings["backend"]][0],
-                model_name: event.target.value === "qwen3-asr" ? QWEN_ASR_MODEL_OPTIONS[0] : DEFAULT_ANALYSIS_MODEL,
-                candidate_models: [],
-              })
-            }}>
-              <option value="openvino">Intel GPU (OpenVINO)</option>
-              <option value="faster-whisper">NVIDIA CUDA / CPU (faster-whisper)</option>
-              <option value="qwen3-asr">Qwen3-ASR (PyTorch)</option>
+              {modelOptions.map((model) => <option key={model.id} value={model.id}>{model.label} ({model.size_label})</option>)}
             </select>
           </label>
           <label>실행 장치
-            <select value={settings.device} disabled={!!jobId}
-              onChange={(event) => {
-                deviceChangedRef.current = true
-                setSettings({ ...settings, device: event.target.value as AnalysisSettings["device"] })
-              }}>
-              {ANALYSIS_DEVICE_OPTIONS[settings.backend].map((device) => (
-                <option key={device} value={device}>{device}</option>
-              ))}
+            <select value={settings.device} disabled={!!jobId} onChange={(event) => {
+              deviceChangedRef.current = true
+              setSettings({ ...settings, device: event.target.value as AnalysisSettings["device"] })
+            }}>
+              <option value="webgpu">WebGPU</option><option value="wasm">WebAssembly CPU</option>
             </select>
           </label>
-          <label>발음 정렬
-            <select value={settings.alignment_mode} disabled={!!jobId} onChange={(event) => setSettings({
-              ...settings, alignment_mode: event.target.value as AnalysisSettings["alignment_mode"],
-            })}>
-              <option value="ctc">CTC 정밀 정렬</option><option value="estimated">단어 시간으로 추정</option>
-            </select>
-          </label>
+          <label>음소 시간 (추정)<span>음성 에너지 변화로 추정합니다.</span></label>
           <label>추가 전사 모델
             <select value={settings.candidate_models[0] ?? ""} disabled={!!jobId} onChange={(event) => setSettings({
               ...settings, candidate_models: event.target.value ? [event.target.value] : [],
             })}>
               <option value="">사용 안 함</option>
-              {modelOptions.filter((model) => model !== settings.model_name).map((model) => (
-                <option key={model} value={model}>{model}</option>
+              {modelOptions.filter((model) => model.id !== settings.model_name).map((model) => (
+                <option key={model.id} value={model.id}>{model.label} ({model.size_label})</option>
               ))}
             </select>
           </label>
           <label className="analysis-checkbox">
             <input type="checkbox" checked={settings.acoustic_units} disabled={!!jobId}
               onChange={(event) => setSettings({ ...settings, acoustic_units: event.target.checked })} />
-            음향 단위 분석 (HuBERT)
+            음향 단위 분석 (스펙트럼 특징 군집화)
           </label>
         </div>
-        {hardware && <p>자동 감지: {hardware.gpu_vendor ?? "GPU 없음"} · {hardware.device}. 필요하면 실행 방식을 변경하세요.</p>}
-        <p>전사는 선택한 장치에서 실행하며, NVIDIA에서는 CTC·HuBERT를 CPU에서 실행합니다.</p>
+        {hardware && <p>감지된 실행 장치: {hardware.device === "webgpu" ? "WebGPU" : "WebAssembly CPU"}{hardware.gpu_vendor ? ` · ${hardware.gpu_vendor}` : ""}. 음소 시간은 음성 에너지로 추정하며, 음향 단위는 스펙트럼 특징을 군집화합니다.</p>}
         <button disabled={!filename || !hardware || !!jobId || busy} onClick={() => void analyze()}>
           {jobId ? "분석 진행 중" : "분석 시작"}
         </button>

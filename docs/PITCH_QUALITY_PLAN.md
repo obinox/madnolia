@@ -1,5 +1,7 @@
 # 노래 합성의 피치 품질 개선
 
+이 문서는 `legacy/python` 커밋 `5528ab02b63338ce59bf049f7596d5e50657b53b`에 보존된 역사적 Python/WORLD 구현과 검증 기록이다. 아래 구현 설명, 명령 및 테스트 참조는 해당 아카이브의 기록이며 현재 `main`의 실행 방법이 아니다. 현재 브라우저 엔진은 [docs/static-web.md](static-web.md)에 설명되어 있다.
+
 상태: WORLD 기반 음절 음정 편집 구현 단계. 제품 음질 평가는 별도 청취와 실측으로 진행한다.
 
 ## 목표
@@ -14,7 +16,7 @@
 
 이후 자동 보정 경로의 초기 진단에서는 EditRegion 하나를 사용해 강도 0% 출력이 원음과 다르고, 속도 0ms와 200ms의 출력도 같음을 확인했다. 고정 음정 이동의 0cent 경로는 원음과 같았다. 이 문제들은 당시 자동 보정 구현의 결함으로 기록하며 현재 구현의 동작과 혼동하지 않는다. 이후 진단에서는 세 합성에서 각 4초 원음을 추출해 36개 출력을 만들었고 길이, 유한값, 클리핑을 검사했다.
 
-비교 결과와 청취 자료는 `.runtime-audit/pitch-target-comparison/report/` 및 `.runtime-audit/pitch-quality-comparison/report/`에 있다. 재현 도구는 `scripts/compare_pitch_targets.py`와 `scripts/compare_pitch_engines.py`다. 초기 cent 이동 실험은 최신 음절별 목표 음표 평가와 다른 진단 기록이다.
+비교 결과와 청취 자료는 `.runtime-audit/pitch-target-comparison/report/` 및 `.runtime-audit/pitch-quality-comparison/report/`에 있다. 재현 도구는 `legacy/python/scripts/compare_pitch_targets.py`와 `legacy/python/scripts/compare_pitch_engines.py`다. 초기 cent 이동 실험은 최신 음절별 목표 음표 평가와 다른 진단 기록이다.
 
 ## 현재 구현
 
@@ -41,8 +43,8 @@ WORLD 분석은 원음 구간에 문맥을 덧붙여 원래 F0, 스펙트럼 포
 
 2026-10-08 최종 코드에서 다음 집중 검증을 통과했다.
 
-- `.venv\Scripts\pytest.exe tests\test_autotune.py tests\test_autotune_api.py tests\test_piano_pitch.py -q`: 39 passed. 합성 chirp를 legacy phone 경로와 EditRegion/WORLD 경로에서 재생성해 길이와 측정 음정을 확인하고, 자동 보정 API의 요청·응답 곡선과 입력값 검증을 확인한다.
-- `.venv\Scripts\python.exe web\tests\piano-note-browser-smoke.py`: 2개 한국어 음절 및 6개 음소 fixture에서 음절 note, 구간 fallback, 목표 MIDI 입력, drag snap, reset, undo/redo, 분석 응답, 원본·보정 audition 요청, 저장 payload를 확인했다. 소스 경계, 출력 길이, volume envelope가 보존됐다. 이 브라우저 테스트의 API와 오디오는 fixture로 응답하므로 WORLD 음질을 검증하지 않는다.
+- `legacy/python/tests/test_autotune.py`, `legacy/python/tests/test_autotune_api.py`, and `legacy/python/tests/test_piano_pitch.py` (historical validation in the legacy/python archive; not a command for current main): 39 passed. 합성 chirp를 legacy phone 경로와 EditRegion/WORLD 경로에서 재생성해 길이와 측정 음정을 확인하고, 자동 보정 API의 요청·응답 곡선과 입력값 검증을 확인한다.
+- `legacy/python/web/tests/piano-note-browser-smoke.py` (historical harness validation in the legacy/python archive; not a command for current main): 2개 한국어 음절 및 6개 음소 fixture에서 음절 note, 구간 fallback, 목표 MIDI 입력, drag snap, reset, undo/redo, 분석 응답, 원본·보정 audition 요청, 저장 payload를 확인했다. 소스 경계, 출력 길이, volume envelope가 보존됐다. 이 브라우저 테스트의 API와 오디오는 fixture로 응답하므로 WORLD 음질을 검증하지 않는다.
 
 기존 자동 보정 결함 진단은 당시 코드의 과거 기록이다. 현재 강도 0% 우회와 속도 평활화는 집중 백엔드 테스트에서 검증했다. 청취 품질 비교는 별도 작업이다.
 

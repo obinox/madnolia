@@ -7,6 +7,7 @@ import type {
   WaveformData,
 } from "../types"
 import { request } from "./client"
+import { runtimeFetch } from "./transport"
 
 export const fetchProjects = (): Promise<ProjectSummary[]> => request("/api/projects")
 
@@ -63,7 +64,7 @@ export const fetchAudioBlob = async (
   sourceId: string,
   signal?: AbortSignal,
 ): Promise<Blob> => {
-  const response = await fetch(audioUrl(projectId, sourceId), { signal })
+  const response = await runtimeFetch(audioUrl(projectId, sourceId), { signal })
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
   return response.blob()
 }

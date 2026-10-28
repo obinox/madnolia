@@ -2,6 +2,7 @@ import type { ApiError, CompositionProject, ExportJob, ExportTarget, JobIdRespon
 import { request } from "./client"
 import { clearRemoteTask, pollExportJob, remoteTaskStage, saveRemoteTask, updateRemoteTask } from "./remoteTasks"
 import { REMOTE_TASK_SCHEMA_VERSION } from "../constants"
+import { runtimeFetch } from "./transport"
 
 export const fetchCompositions = (projectId: string): Promise<CompositionProject[]> =>
   request(`/api/projects/${encodeURIComponent(projectId)}/compositions`)
@@ -29,7 +30,7 @@ export const previewComposition = async (
   body: SaveCompositionRequest,
   signal: AbortSignal,
 ): Promise<Blob> => {
-  const response = await fetch(
+  const response = await runtimeFetch(
     `/api/projects/${encodeURIComponent(projectId)}/compositions/preview`,
     {
       method: "POST",
@@ -107,7 +108,7 @@ export const exportComposition = async (
 export async function downloadExportArtifact(jobId: string, target: ExportTarget, fallbackFilename?: string, signal?: AbortSignal): Promise<void> {
   let response: Response
   try {
-    response = await fetch(`/api/export-jobs/${encodeURIComponent(jobId)}/download`, { signal })
+    response = await runtimeFetch(`/api/export-jobs/${encodeURIComponent(jobId)}/download`, { signal })
     if (!response.ok) {
       const error = new Error(`${response.status} ${response.statusText}`) as ApiError
       error.status = response.status

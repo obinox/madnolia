@@ -1,59 +1,37 @@
 # Madnolia project structure
 
-This guide describes current source responsibilities and verification entry points. User media, saved project data, model caches, virtual environments, build output, and runtime audit assets remain in their existing locations and are not source modules.
+## Supported application
 
-## Backend
-
-| Path | Responsibility |
-| --- | --- |
-| `src/madnolia/pipeline.py` | Stateful ingest and realignment orchestration. |
-| `src/madnolia/analysis_versions.py` | Pure finalized-version manifest construction and active-version file discovery, re-exported through the existing pipeline API. |
-| `src/madnolia/storage.py`, `projects.py` | Database, analysis, project, media path, and persistence operations. |
-| `src/madnolia/compositions.py` | Composition storage, loading, project-bound parent/source checks, and compatibility exports. |
-| `src/madnolia/services/composition_validation.py` | Pure request and professional-segment schema validation. |
-| `src/madnolia/exporters.py` | Stateful audio/video rendering and export dispatch; retains its established helper import paths. |
-| `src/madnolia/services/export_formats.py` | Pure EDL, FCPXML, and timecode formatting helpers. |
-| `src/madnolia/viewer.py` | FastAPI routes, job coordination, and response assembly. |
-| `src/madnolia/services/media_waveform.py` | Cached waveform data extraction, re-exported at the existing viewer helper path. |
-| `src/madnolia/types/common.py`, `constants.py` | Shared backend schemas and constants. |
-
-## Frontend
+The supported application is the static browser app in `web/`. It runs analysis, editing, search, and exports locally in Chrome or Edge and stores workspace files in a user-selected folder. Build and deployment use only the web app; the GitHub Pages artifact contains `web/dist`.
 
 | Path | Responsibility |
 | --- | --- |
-| `web/src/api/client.ts`, `api/*.ts`, `api.ts` | Shared HTTP request behavior, feature API modules, and compatibility exports. |
-| `web/src/features/composition/timeline.ts` | Timeline retiming, segment duration, and pure segment reordering. |
-| `web/src/features/composition/waveform.ts` | Source-mapped waveform polygon generation. |
-| `web/src/features/composition/regions.ts` | Professional region editing and envelope mapping calculations. |
-| `web/src/features/composition/history.ts` | Pure professional editor undo/redo history. |
-| `web/src/composition.ts`, `professionalHistory.ts` | Compatibility exports for the established module paths. |
-| `web/src/components/` | Stateful React routes, timeline and professional editor UI. |
-| `web/src/types/index.ts`, `constants.ts` | Shared frontend API, editor types, and constants. |
-| `web/src/styles.css` | Main stylesheet entry, importing the ordered partitions in `styles/`. |
-| `web/src/styles/base.css`, `layout.css`, `timeline.css`, `analysis.css`, `composition.css`, `professional.css` | Contiguous stylesheet partitions imported in source order to preserve the cascade. |
+| `web/src/App.tsx`, `main.tsx` | Browser app entry and routing. |
+| `web/src/browser/` | Local folder access, model cache, analysis, audio processing, search, project storage, and exports. |
+| `web/src/components/` | React screens and browser workspace UI. |
+| `web/src/browserConstants.ts`, `browserAnalysisConstants.ts`, `browserAudioConstants.ts` | Browser workspace, model, analysis, and audio limits. |
+| `web/src/types/` | Shared browser, analysis, audio, and UI types. |
+| `web/tests/` | Node tests and the static browser smoke test. |
+| `web/vite.config.ts` | Relative asset base for subpath hosting on GitHub Pages. |
 
-## Packaging and tool entry points
+The browser workspace stores `madnolia-browser.json` and uses `analyses/`, `projects/`, `collages/`, `media/`, `models/`, and `jobs/`. Its format is not compatible with the Python application's `data/` layout.
 
-The six comparison and benchmark scripts under `scripts/` keep their existing direct invocation paths and bootstrap behavior. Installer build and payload scripts under `installer/`, the root `Madnolia.spec`, and the Windows release workflow also retain their established locations and invocation paths. The refactor changes none of those interfaces.
+## Retained Python application
+
+All 78 approved Python source, test, installer, tooling, config, and legacy note files have been removed from `main` and are preserved at `legacy/python`, commit `5528ab02b63338ce59bf049f7596d5e50657b53b`. The Python archive is not invoked by the supported web build or Pages deployment and is not included in `web/dist`. Local data, models, downloads, caches, environments, and binaries remain untouched.
 
 ## Development and verification
 
-Use the supported Python 3.11 development environment at the repository root:
-
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev,web]"
-python -m pytest
-.venv\Scripts\ruff.exe check src tests installer scripts
-```
-
-Run frontend checks from `web/`:
+Run commands from `web/`:
 
 ```powershell
 npm ci
+npm run dev
 npm test
-npm run build -- --configLoader native
+npm run build
+npm run preview
 ```
 
-The browser smoke script is `py -3.11 web/tests/professional-browser-smoke.py` when FastAPI and Chrome are available. Installer tests run with `python -m pytest tests/test_installer.py -q`; full portable release bundles are not part of routine development verification.
+The browser smoke test is `node tests/browser-static-smoke.mjs` after building. It serves the output below a simulated Pages subpath and checks folder access, persistence, and that the app makes no API network requests. It locates installed Chrome or Edge automatically; set `CHROME_PATH` to a browser executable when it is installed elsewhere.
+
+See [docs/static-web.md](docs/static-web.md) for browser requirements, local storage, engine differences, and manual Pages deployment.

@@ -1,5 +1,25 @@
 import type { PROFESSIONAL_BEAT_DIVISIONS } from "../constants"
 
+export type {
+  BrowserAnalysisRecord,
+  BrowserAudioData,
+  BrowserCompositionCreateBody,
+  BrowserDirectoryPickerWindow,
+  BrowserExportArtifact,
+  BrowserPronunciation,
+  BrowserProjectRecord,
+  BrowserProjectCreateRequest,
+  BrowserProjectCreateResponse,
+  BrowserRankedSearchPath,
+  BrowserSearchMatchPath,
+  BrowserSearchRequest,
+  BrowserVideoIndexEntry,
+  BrowserGpuNavigator,
+  BrowserWorkspaceModelSummary,
+  BrowserWorkspaceManifest,
+  BrowserWorkspaceProps,
+} from "./browser"
+
 export type ProfessionalBeatDivision = typeof PROFESSIONAL_BEAT_DIVISIONS[number]
 export type SavedDetailLoadState = "idle" | "loading" | "error"
 
@@ -726,9 +746,9 @@ export interface AnalysisSettings {
   filename: string
   nickname: string
   model_name: string
-  backend: "openvino" | "faster-whisper" | "qwen3-asr"
-  device: "GPU" | "CPU" | "CUDA" | "XPU"
-  alignment_mode: "ctc" | "estimated"
+  backend: "transformers-js"
+  device: "webgpu" | "wasm"
+  alignment_mode: "estimated"
   candidate_models: string[]
   acoustic_units: boolean
 }

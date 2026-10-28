@@ -12,20 +12,7 @@ export const SEARCH_STAGE_LABELS: Record<string, string> = {
   approximate: "유사 검색 중",
   sorting: "결과 정렬 중",
 }
-export const ANALYSIS_MODEL_OPTIONS = ["large-v3", "large-v3-turbo", "small"] as const
-export const QWEN_ASR_MODEL_OPTIONS = ["qwen3-asr-0.6b", "qwen3-asr-1.7b"] as const
 export const ANALYSIS_NICKNAME_MAX_LENGTH = 80
-export const DEFAULT_ANALYSIS_MODEL = "large-v3"
-export const DEFAULT_ANALYSIS_BACKEND = "openvino"
-export const DEFAULT_ANALYSIS_DEVICE = "GPU"
-export const FALLBACK_ANALYSIS_BACKEND = "faster-whisper"
-export const FALLBACK_ANALYSIS_DEVICE = "CPU"
-export const ANALYSIS_DEVICE_OPTIONS = {
-  openvino: ["GPU", "CPU"],
-  "faster-whisper": ["CUDA", "CPU"],
-  "qwen3-asr": ["CPU", "XPU", "CUDA"],
-} as const
-export const DEFAULT_ANALYSIS_ALIGNMENT = "ctc"
 export const DEFAULT_ANALYSIS_ACOUSTIC_UNITS = true
 export const VIDEO_UPLOAD_ACCEPT = ".mp4,.mov,.mkv,.avi,.webm,.m4v,.mts,.m2ts"
 export const ANALYSIS_PROGRESS_POLL_MS = 900
@@ -163,3 +150,5 @@ export const COLORS = {
   mutedText: "#8091a3",
   selected: "#ffffff",
 } as const
+
+export * from "./browserConstants"

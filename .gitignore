@@ -337,3 +337,5 @@ reports/
 # Keep common project metadata and dependency lockfiles tracked by default.
 # Add an explicit rule above if this project intentionally generates one.
 .python311/
+/web/.smoke-edge-profile/
+/web/.smoke-chrome-profile/

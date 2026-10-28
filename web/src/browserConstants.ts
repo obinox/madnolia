@@ -1,0 +1,15 @@
+export const BROWSER_WORKSPACE_DB_NAME = "madnolia-browser-workspace"
+export const BROWSER_WORKSPACE_DB_VERSION = 1
+export const BROWSER_WORKSPACE_OBJECT_STORE = "handles"
+export const BROWSER_WORKSPACE_HANDLE_KEY = "active-workspace"
+export const BROWSER_WORKSPACE_MANIFEST_PATH = "madnolia-browser.json"
+export const BROWSER_WORKSPACE_SCHEMA_VERSION = 1
+export const BROWSER_WORKSPACE_DIRECTORIES = ["analyses", "projects", "collages", "media", "models", "jobs"] as const
+export const BROWSER_ANALYSIS_RECORD_FILENAME = "analysis.json"
+export const BROWSER_PROJECT_RECORD_FILENAME = "project.json"
+export const BROWSER_COMPOSITION_RECORD_FILENAME = "collage.json"
+export const BROWSER_BROWSER_ANALYSIS_STAGE = "Browser runtime"
+export const BROWSER_LOCAL_JOB_SCHEMA_VERSION = 1
+export const BROWSER_STATIC_MODELS_PATH = "models"
+export const BROWSER_WORKSPACE_BROWSER_SUPPORT = "Chrome or Edge over HTTPS is required for local folder access."
+export const BROWSER_WAVEFORM_BINS_MAX = 10_000

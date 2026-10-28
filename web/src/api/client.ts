@@ -1,4 +1,5 @@
 import type { ApiError, ApiErrorResponse } from "../types"
+import { runtimeFetch } from "./transport"
 
 export const responseError = async (response: Response): Promise<ApiError> => {
   let message = `${response.status} ${response.statusText}`
@@ -11,12 +12,16 @@ export const responseError = async (response: Response): Promise<ApiError> => {
   return error
 }
 
+let requestTransport: typeof runtimeFetch = runtimeFetch
+
+export const setRequestTransport = (transport: typeof runtimeFetch): void => { requestTransport = transport }
+
 export const request = async <T>(
   path: string,
   signal?: AbortSignal,
   init?: RequestInit,
 ): Promise<T> => {
-  const response = await fetch(path, {
+  const response = await requestTransport(path, {
     ...init,
     signal,
     headers: init?.body ? { "Content-Type": "application/json", ...init.headers } : init?.headers,

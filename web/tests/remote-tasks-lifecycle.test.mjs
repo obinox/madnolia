@@ -12,6 +12,9 @@ registerHooks({
 })
 
 const { pollSearchJob, readRemoteTask, saveRemoteTask } = await import("../src/api/remoteTasks.ts")
+const { setRequestTransport } = await import("../src/api/client.ts")
+let sequence = []
+setRequestTransport(async () => sequence.shift() ?? jsonResponse(job("running")))
 const { REMOTE_TASK_SCHEMA_VERSION, REMOTE_TASK_STORAGE_KEY } = await import("../src/constants.ts")
 
 const storage = new Map()
@@ -33,13 +36,14 @@ globalThis.window = {
     timers.delete(id)
   },
 }
+const testWindow = globalThis.window
 
 const job = (status, percent = 37) => ({ job_id: "search-1", status, stage: status, percent, result: null, error: null })
 const jsonResponse = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, statusText: "fixture", json: async () => body })
 
 test("search polling retains progress through HTTP 500 and reaches completion", async () => {
-  const sequence = [jsonResponse(job("running")), jsonResponse({ detail: "temporary" }, 500), jsonResponse(job("running")), jsonResponse({ ...job("complete", 100), result: { candidates: [], target_phones: [] } })]
-  globalThis.fetch = async () => sequence.shift()
+  globalThis.window = testWindow
+  sequence = [jsonResponse(job("running")), jsonResponse({ detail: "temporary" }, 500), jsonResponse(job("running")), jsonResponse({ ...job("complete", 100), result: { candidates: [], target_phones: [] } })]
   const progress = []
   const result = await pollSearchJob("search-1", (status) => progress.push(status?.percent ?? null))
   assert.equal(result.status, "complete")
@@ -47,12 +51,12 @@ test("search polling retains progress through HTTP 500 and reaches completion", 
 })
 
 test("invalid JSON and unknown statuses retry until a valid completion arrives", async () => {
-  const sequence = [
+  globalThis.window = testWindow
+  sequence = [
     { ok: true, status: 200, json: async () => { throw new SyntaxError("bad JSON") } },
     jsonResponse(job("mystery")),
     jsonResponse({ ...job("complete", 100), result: { candidates: [], target_phones: [] } }),
   ]
-  globalThis.fetch = async () => sequence.shift()
   const statuses = []
   const result = await pollSearchJob("search-1", (status) => statuses.push(status?.status ?? "retry"))
   assert.equal(result.status, "complete")
@@ -60,12 +64,14 @@ test("invalid JSON and unknown statuses retry until a valid completion arrives",
 })
 
 test("only a confirmed 404 rejects polling as a disappeared job", async () => {
-  globalThis.fetch = async () => jsonResponse({ detail: "missing" }, 404)
+  globalThis.window = testWindow
+  sequence = [jsonResponse({ detail: "missing" }, 404)]
   await assert.rejects(pollSearchJob("search-1", () => {}), (error) => error.status === 404)
 })
 
 test("abort clears an outstanding retry timer", async () => {
-  globalThis.fetch = async () => jsonResponse(job("running"))
+  globalThis.window = testWindow
+  sequence = [jsonResponse(job("running"))]
   const controller = new AbortController()
   let received = false
   const polling = pollSearchJob("search-1", () => { received = true; setTimeout(() => controller.abort(), 1) }, controller.signal)
@@ -75,6 +81,7 @@ test("abort clears an outstanding retry timer", async () => {
 })
 
 test("remote descriptor guard accepts a valid search and removes malformed versions and export targets", () => {
+  globalThis.window = testWindow
   const valid = {
     version: REMOTE_TASK_SCHEMA_VERSION, job_id: "search-1", kind: "search", project_id: "project-1",
     label: "Exact search", search: { text: "hello", tab: "EXACT", input_language: "EN", pronunciation: "həˈloʊ" },

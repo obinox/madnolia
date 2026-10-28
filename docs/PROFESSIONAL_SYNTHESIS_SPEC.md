@@ -390,7 +390,7 @@ Part의 길이, 순서, 원본 구간 또는 앞 간격이 바뀌면 이후 모�
 - 전환 중심
 - 전환 곡선
 
-Python과 TypeScript의 타입, 열거형, 제한값은 각각 지정된 공통 타입 및 공통 상수 파일에서 관리한다. 기능 파일 내부에 별도 타입이나 공통 제한값을 정의하지 않는다.
+For the web app, shared TypeScript types belong in `web/src/types/`; shared constants belong in `web/src/constants.ts` and `web/src/browser*Constants.ts`. Feature files should not define duplicate shared types or limits.
 
 ## 18. 검증 규칙
 
