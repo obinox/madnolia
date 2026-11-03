@@ -4,8 +4,10 @@ import type {
   AnalysisSettings,
   AnalysisSummary,
   AudioRegion,
+  BrowserAnalysisMediaIdentity,
   BrowserGpuNavigator,
   BrowserVideoIndexEntry,
+  BrowserProjectRecord,
   PhoneAcousticFeatures,
   PhoneOccurrence,
   TranscriptCandidate,
@@ -13,29 +15,77 @@ import type {
   TranscriptWord,
 } from "../types"
 import type { BrowserAnalysisRecord } from "../types"
-import type { BrowserAnalysisNicknameRequest, BrowserAnalysisWorkerComplete, BrowserAnalysisWorkerEvent, BrowserAnalysisWorkerProgress } from "../types/browserAnalysis"
-import { BROWSER_ANALYSIS_JOB_PREFIX, BROWSER_ANALYSIS_JOB_PROGRESS_WRITE_INTERVAL_MS, BROWSER_ANALYSIS_PAUSE_STAGE, BROWSER_ANALYSIS_STORAGE_DIRECTORY, BROWSER_ASR_MODELS, BROWSER_MEDIA_STORAGE_DIRECTORY, BROWSER_VIDEO_INDEX } from "../browserAnalysisConstants"
-import { BROWSER_ANALYSIS_RECORD_FILENAME } from "../browserConstants"
+import type { BrowserAcousticUnitCentroids, BrowserAnalysisActiveLease, BrowserAnalysisNicknameRequest, BrowserAnalysisReprocessJob, BrowserAnalysisReprocessRequest, BrowserAnalysisReprocessResult, BrowserAnalysisWorkerComplete, BrowserAnalysisWorkerEvent, BrowserAnalysisWorkerProgress, BrowserAnalysisWorkerRequest, BrowserIndexedPronunciation, BrowserReprocessPublishUpdate, BrowserReprocessedPhones } from "../types/browserAnalysis"
+import { BROWSER_ACOUSTIC_UNIT_CENTROIDS_FILENAME, BROWSER_ANALYSIS_ACTIVE_LEASE_KEY, BROWSER_ANALYSIS_ACTIVE_LEASE_RENEW_MS, BROWSER_ANALYSIS_ACTIVE_LEASE_TTL_MS, BROWSER_ANALYSIS_INTERRUPTED_STAGE, BROWSER_ANALYSIS_JOB_PREFIX, BROWSER_ANALYSIS_JOB_PROGRESS_WRITE_INTERVAL_MS, BROWSER_ANALYSIS_PAUSE_STAGE, BROWSER_ANALYSIS_STORAGE_DIRECTORY, BROWSER_ASR_DEFAULT_LANGUAGE, BROWSER_ASR_LANGUAGES, BROWSER_ASR_MODELS, BROWSER_ASR_SAMPLE_RATE, BROWSER_HUBERT_CLUSTER_COUNT, BROWSER_HUBERT_CLUSTER_PASSES, BROWSER_HUBERT_EMBEDDING_DIMENSIONS, BROWSER_HUBERT_MODEL, BROWSER_HUBERT_REVISION, BROWSER_MEDIA_STORAGE_DIRECTORY, BROWSER_VIDEO_INDEX } from "../browserAnalysisConstants"
+import { BROWSER_ANALYSIS_RECORD_FILENAME, BROWSER_PROJECT_RECORD_FILENAME } from "../browserConstants"
 import { decodeMedia } from "./audio"
-import { encodeWav, estimatePitch } from "./audioDsp"
-import { pronounceBrowserText } from "./phonetics"
-import { buildBrowserSentences, classifyBrowserAudio } from "./speechAnalysis"
+import { encodeWav, resampleLinear } from "./audioDsp"
+import { analyzePhoneAcousticFeatures } from "./phoneAcousticFeatures"
+import { pronounceBrowserWords } from "./phonetics"
+import { browserAnalysisLeaseAllowsJob, browserAnalysisLeaseIsLiveForJob, indexStablePhoneOccurrences, mayCommitReprocessing, takeStableOccurrenceId, updateProjectAnalysisSnapshot, withBrowserReprocessingMetadata } from "./analysisReprocessing"
+import { buildBrowserSentences } from "./speechAnalysis"
+import { detectSileroSpeech } from "./sileroVad"
+import { getOrProbeSourceVideoMetadata } from "./videoMetadata"
+import { hubertLinspaceSeeds } from "./hubertClustering"
 import { deleteCachedModel, listCachedModels } from "./modelCache"
+import { analysisModelSelections, analysisReprocessModelSelections, getModelFolderHandle, getModelReadiness } from "./modelStorage"
 import { getWorkspaceHandle, listWorkspaceDirectories, readWorkspaceFile, readWorkspaceJson, writeWorkspaceFile, writeWorkspaceJson } from "./workspace"
+import { recoverReprocessTransaction, transactionalPublish } from "./reprocessTransactions"
+export { recoverReprocessTransaction } from "./reprocessTransactions"
 
 const jobs = new Map<string, AnalysisJob>()
 const workers = new Map<string, Worker>()
 const preparation = new Map<string, AbortController>()
 const jobWrites = new Map<string, Promise<void>>()
 const jobWriteTimes = new Map<string, number>()
+const reprocessJobs = new Map<string, BrowserAnalysisReprocessJob>()
+const reprocessWorkers = new Map<string, Worker>()
+const reprocessControllers = new Map<string, AbortController>()
+const reprocessJobWrites = new Map<string, Promise<void>>()
+const leaseTimers = new Map<string, number>()
+const leaseOwnerId = crypto.randomUUID()
+let analysisMutationActive = false
 const jsonResponse = (value: unknown, status = 200): Response => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } })
 const errorResponse = (error: unknown, status = 400): Response => jsonResponse({ detail: error instanceof Error ? error.message : String(error) }, status)
 
+function activeLease(): BrowserAnalysisActiveLease | null {
+  try {
+    const raw = localStorage.getItem(BROWSER_ANALYSIS_ACTIVE_LEASE_KEY)
+    if (!raw) return null
+    const lease = JSON.parse(raw) as BrowserAnalysisActiveLease
+    return typeof lease.job_id === "string" && Number.isFinite(lease.expires_at) && lease.expires_at > Date.now() ? { ...lease, owner_id: typeof lease.owner_id === "string" ? lease.owner_id : "legacy" } : null
+  } catch { return null }
+}
+
+function acquireActiveLease(jobId: string): boolean {
+  try {
+    const current = activeLease()
+    if (!browserAnalysisLeaseAllowsJob(current, jobId, leaseOwnerId, Date.now())) return false
+    const renew = () => {
+      const latest = activeLease()
+      if (latest && (latest.job_id !== jobId || latest.owner_id !== leaseOwnerId)) return
+      localStorage.setItem(BROWSER_ANALYSIS_ACTIVE_LEASE_KEY, JSON.stringify({ job_id: jobId, owner_id: leaseOwnerId, expires_at: Date.now() + BROWSER_ANALYSIS_ACTIVE_LEASE_TTL_MS } satisfies BrowserAnalysisActiveLease))
+    }
+    renew()
+    const claimed = activeLease()
+    if (claimed?.job_id !== jobId || claimed.owner_id !== leaseOwnerId) return false
+    if (!leaseTimers.has(jobId)) leaseTimers.set(jobId, window.setInterval(renew, BROWSER_ANALYSIS_ACTIVE_LEASE_RENEW_MS))
+  } catch { }
+  return true
+}
+
+function releaseActiveLease(jobId: string): void {
+  const timer = leaseTimers.get(jobId)
+  if (timer !== undefined) window.clearInterval(timer)
+  leaseTimers.delete(jobId)
+  try { const lease = activeLease(); if (lease?.job_id === jobId && lease.owner_id === leaseOwnerId) localStorage.removeItem(BROWSER_ANALYSIS_ACTIVE_LEASE_KEY) } catch { }
+}
+
 function updateJob(job: AnalysisJob): Promise<void> {
+  const prior = jobs.get(job.job_id)
   jobs.set(job.job_id, job)
   const previous = jobWrites.get(job.job_id) ?? Promise.resolve()
   const terminal = ["complete", "failed", "stopped"].includes(job.status)
-  const prior = jobs.get(job.job_id)
   const lastWrite = jobWriteTimes.get(job.job_id) ?? 0
   if (!terminal && prior && prior.status === job.status && prior.stage === job.stage
     && Date.now() - lastWrite < BROWSER_ANALYSIS_JOB_PROGRESS_WRITE_INTERVAL_MS) return previous
@@ -43,105 +93,119 @@ function updateJob(job: AnalysisJob): Promise<void> {
   const next = previous.catch(() => undefined).then(() => writeWorkspaceJson(`jobs/analysis-${job.job_id}.json`, job))
   jobWrites.set(job.job_id, next)
   void next.catch(() => undefined)
-  if (terminal) return next
+  if (terminal) return next.then(() => { if (["complete", "failed", "stopped"].includes(jobs.get(job.job_id)?.status ?? "")) releaseActiveLease(job.job_id) })
   return next
 }
 
-function phoneBoundaries(samples: Float32Array, sampleRate: number, startMs: number, endMs: number, count: number): number[] {
-  const bounds = [startMs]
-  const span = Math.max(0, endMs - startMs)
-  const frameMs = 10
-  const minimumMs = Math.min(frameMs, span / Math.max(1, count))
-  for (let boundary = 1; boundary < count; boundary += 1) {
-    const expected = startMs + span * boundary / count
-    const radius = Math.max(frameMs, Math.min(40, span / count * 0.35))
-    const from = Math.max(bounds.at(-1)! + minimumMs, expected - radius)
-    const to = Math.min(endMs - minimumMs * (count - boundary), expected + radius)
-    let bestMs = expected
-    let bestEnergy = Infinity
-    for (let candidate = from; candidate <= to; candidate += frameMs) {
-      const first = Math.max(0, Math.floor(candidate * sampleRate / 1000))
-      const last = Math.min(samples.length, Math.ceil((candidate + frameMs) * sampleRate / 1000))
-      let energy = 0
-      for (let index = first; index < last; index += 1) energy += (samples[index] ?? 0) ** 2
-      energy /= Math.max(1, last - first)
-      if (energy < bestEnergy) {
-        bestEnergy = energy
-        bestMs = candidate
+function assignAcousticUnits(features: PhoneAcousticFeatures[], vectors: number[][]): number[][] {
+  const validIndices = vectors.flatMap((vector, index) => vector.length && vector.every(Number.isFinite) && vector.some((value) => value !== 0) ? [index] : [])
+  if (!features.length || !validIndices.length) return []
+  const dimensions = vectors[validIndices[0]].length
+  const count = Math.min(BROWSER_HUBERT_CLUSTER_COUNT, validIndices.length)
+  const centroids = hubertLinspaceSeeds(validIndices.length, count).map((offset) => [...vectors[validIndices[offset]]])
+  const totals = new Array(count).fill(1) as number[]
+  const assign = (vector: number[]): number => centroids.reduce((best, centroid, candidate) => {
+    let distance = 0
+    let bestDistance = 0
+    for (let dimension = 0; dimension < dimensions; dimension += 1) {
+      distance += (vector[dimension] - centroid[dimension]) ** 2
+      bestDistance += (vector[dimension] - centroids[best][dimension]) ** 2
+    }
+    return distance < bestDistance ? candidate : best
+  }, 0)
+  for (let pass = 0; pass < BROWSER_HUBERT_CLUSTER_PASSES; pass += 1) {
+    for (let start = 0; start < validIndices.length; start += 1024) {
+      const batch = validIndices.slice(start, start + 1024)
+      const groups = new Map<number, number[][]>()
+      for (const index of batch) {
+        const group = assign(vectors[index])
+        groups.set(group, [...(groups.get(group) ?? []), vectors[index]])
+      }
+      for (const [group, members] of groups) {
+        const nextTotal = totals[group] + members.length
+        for (let dimension = 0; dimension < dimensions; dimension += 1) {
+          centroids[group][dimension] = (centroids[group][dimension] * totals[group] + members.reduce((sum, vector) => sum + vector[dimension], 0)) / nextTotal
+        }
+        totals[group] = nextTotal
       }
     }
-    bounds.push(Math.max(bounds.at(-1)! + minimumMs, Math.min(endMs, bestMs)))
   }
-  bounds.push(endMs)
-  return bounds
-}
-
-function acousticVector(samples: Float32Array, sampleRate: number, startMs: number, endMs: number): number[] {
-  const first = Math.max(0, Math.floor(startMs * sampleRate / 1000))
-  const last = Math.min(samples.length, Math.ceil(endMs * sampleRate / 1000))
-  let energy = 0
-  let peak = 0
-  let crossings = 0
-  let previous = samples[first] ?? 0
-  for (let index = first; index < last; index += 1) {
-    const value = samples[index] ?? 0
-    energy += value * value
-    peak = Math.max(peak, Math.abs(value))
-    if ((value < 0) !== (previous < 0)) crossings += 1
-    previous = value
-  }
-  const length = Math.max(1, last - first)
-  const rms = Math.sqrt(energy / length)
-  const bins = 24
-  let weightedFrequency = 0
-  let totalMagnitude = 0
-  const windowLength = Math.min(256, length)
-  if (windowLength > 1) {
-    for (let bin = 1; bin <= bins; bin += 1) {
-      let real = 0
-      let imaginary = 0
-      for (let index = 0; index < windowLength; index += 1) {
-        const value = samples[first + index] ?? 0
-        const angle = 2 * Math.PI * bin * index / windowLength
-        real += value * Math.cos(angle)
-        imaginary -= value * Math.sin(angle)
-      }
-      const magnitude = Math.hypot(real, imaginary)
-      weightedFrequency += bin * sampleRate / windowLength * magnitude
-      totalMagnitude += magnitude
-    }
-  }
-  return [20 * Math.log10(Math.max(1e-6, rms)), 20 * Math.log10(Math.max(1e-6, peak)), crossings / length, weightedFrequency / Math.max(1e-9, totalMagnitude)]
-}
-
-function assignAcousticUnits(features: PhoneAcousticFeatures[], vectors: number[][]): void {
-  if (!features.length) return
-  const dimensions = vectors[0].length
-  const minima = Array.from({ length: dimensions }, (_, column) => Math.min(...vectors.map((vector) => vector[column])))
-  const maxima = Array.from({ length: dimensions }, (_, column) => Math.max(...vectors.map((vector) => vector[column])))
-  const normalized = vectors.map((vector) => vector.map((value, column) => (value - minima[column]) / Math.max(1e-9, maxima[column] - minima[column])))
-  const count = Math.min(8, features.length)
-  const centroids = Array.from({ length: count }, (_, index) => [...normalized[Math.floor(index * normalized.length / count)]])
-  const groups = new Array(features.length).fill(0) as number[]
-  for (let iteration = 0; iteration < 6; iteration += 1) {
-    for (const [index, vector] of normalized.entries()) {
-      groups[index] = centroids.reduce((best, centroid, candidate) => {
-        const distance = vector.reduce((sum, value, column) => sum + (value - centroid[column]) ** 2, 0)
-        const bestDistance = vector.reduce((sum, value, column) => sum + (value - centroids[best][column]) ** 2, 0)
-        return distance < bestDistance ? candidate : best
-      }, 0)
-    }
-    for (let cluster = 0; cluster < count; cluster += 1) {
-      const members = normalized.filter((_, index) => groups[index] === cluster)
-      if (members.length) centroids[cluster] = Array.from({ length: dimensions }, (_, column) => members.reduce((sum, vector) => sum + vector[column], 0) / members.length)
-    }
-  }
-  features.forEach((feature, index) => { feature.acoustic_unit_id = groups[index] })
+  const valid = new Set(validIndices)
+  features.forEach((feature, index) => { feature.acoustic_unit_id = valid.has(index) ? assign(vectors[index]) : null })
+  return centroids
 }
 
 async function readVideoIndex(): Promise<Record<string, BrowserVideoIndexEntry>> {
   try { return await readWorkspaceJson(BROWSER_VIDEO_INDEX) }
   catch { return {} }
+}
+
+function buildReprocessedPhones(record: BrowserAnalysisRecord, result: BrowserAnalysisReprocessResult, audio: Awaited<ReturnType<typeof decodeMedia>>): BrowserReprocessedPhones {
+  const pronunciations = result.phones
+  const words = record.overview.words
+  const sentences = record.overview.sentences
+  const sentenceByWord = new Map<number, number>()
+  for (const sentence of sentences) for (let index = sentence.word_start_index; index < sentence.word_end_index; index += 1) sentenceByWord.set(index, sentence.sentence_index)
+  const priorByIdentity = indexStablePhoneOccurrences(record.phones)
+  const byWord = new Map<number, BrowserIndexedPronunciation[]>()
+  pronunciations.forEach((phone, phone_index) => byWord.set(phone.word_index, [...(byWord.get(phone.word_index) ?? []), { phone, phone_index }]))
+  const phones: PhoneOccurrence[] = []
+  const vectors: number[][] = []
+  for (const [wordIndex, word] of words.entries()) {
+    const wordPhones = byWord.get(wordIndex) ?? []
+    const weights = wordPhones.map(({ phone }) => phone.phone_id.includes(".vowel.") ? 1 : 0.65)
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0)
+    let accumulatedWeight = 0
+    const estimates = [word.start_ms]
+    for (const weight of weights.slice(0, -1)) { accumulatedWeight += weight; estimates.push(word.start_ms + Math.round((word.end_ms - word.start_ms) * accumulatedWeight / Math.max(1e-9, totalWeight))) }
+    estimates.push(word.end_ms)
+    for (const [offset, { phone, phone_index: phoneIndex }] of wordPhones.entries()) {
+      const alignment = result.phone_alignments.find((item) => item.phone_index === phoneIndex)
+      const aligned = typeof alignment?.start_ms === "number" && typeof alignment.end_ms === "number"
+      const startMs = aligned ? alignment.start_ms! : estimates[offset]
+      const endMs = Math.max(startMs + 1, aligned ? alignment.end_ms! : estimates[offset + 1])
+      phones.push({ occurrence_id: takeStableOccurrenceId(priorByIdentity, phone) ?? crypto.randomUUID(), source_id: record.source.source_id, sentence_index: sentenceByWord.get(wordIndex) ?? 0, word_index: wordIndex, grapheme: phone.grapheme, pronunciation: phone.ipa, phone_id: phone.phone_id, ipa: phone.ipa, start_ms: startMs, end_ms: endMs, confidence: aligned ? alignment!.confidence : null, alignment_method: "CTC_FORCED", alignment_status: alignment?.status ?? "MISSING" })
+      vectors.push(result.hubert_embeddings[phoneIndex] ?? [])
+    }
+  }
+  const acousticFeatures = analyzePhoneAcousticFeatures(audio.samples, audio.sampleRate, phones)
+  const centroids = result.inference.acoustic_units.enabled ? assignAcousticUnits(acousticFeatures, vectors) : []
+  return { phones, acousticFeatures, centroids }
+}
+
+async function publishReprocessed(record: BrowserAnalysisRecord, result: BrowserAnalysisReprocessResult, audio: Awaited<ReturnType<typeof decodeMedia>>): Promise<void> {
+  const { phones, acousticFeatures, centroids } = buildReprocessedPhones(record, result, audio)
+  const transactionId = crypto.randomUUID()
+  const backupArchivePath = (path: string): string => {
+    const [collection, id, ...rest] = path.split("/")
+    return `${collection}/${id}/reprocess-backups/${transactionId}/${rest.join("/")}`
+  }
+  const updated: BrowserAnalysisRecord = {
+    ...withBrowserReprocessingMetadata(record, result, new Date().toISOString()),
+    phones,
+    overview: { ...record.overview, phone_count: phones.length },
+    acoustic_features: acousticFeatures,
+    acoustic_units_path: result.inference.acoustic_units.enabled ? `${BROWSER_ANALYSIS_STORAGE_DIRECTORY}/${record.summary.analysis_id}/${BROWSER_ACOUSTIC_UNIT_CENTROIDS_FILENAME}` : null,
+  }
+  const recordPath = `analyses/${record.summary.analysis_id}/${BROWSER_ANALYSIS_RECORD_FILENAME}`
+  const updates: BrowserReprocessPublishUpdate[] = [{ path: recordPath, backup_archive_path: backupArchivePath(recordPath), data: new Blob([JSON.stringify(updated, null, 2)], { type: "application/json" }) }]
+  if (result.inference.acoustic_units.enabled) {
+    const centroidRecord: BrowserAcousticUnitCentroids = { model_name: BROWSER_HUBERT_MODEL, model_revision: BROWSER_HUBERT_REVISION, dimensions: BROWSER_HUBERT_EMBEDDING_DIMENSIONS, cluster_count: centroids.length, centroids }
+    updates.push({ path: updated.acoustic_units_path!, backup_archive_path: backupArchivePath(updated.acoustic_units_path!), data: new Blob([JSON.stringify(centroidRecord, null, 2)], { type: "application/json" }) })
+  } else if (record.acoustic_units_path) updates.push({ path: record.acoustic_units_path, backup_archive_path: backupArchivePath(record.acoustic_units_path), delete_after: true })
+  const projects = await listWorkspaceDirectories("projects")
+  for (const projectId of projects) {
+    try {
+      const project = await readWorkspaceJson<BrowserProjectRecord>(`projects/${projectId}/${BROWSER_PROJECT_RECORD_FILENAME}`)
+      if (!project.analysis_ids.includes(record.summary.analysis_id)) continue
+      const projectPath = `projects/${projectId}/${BROWSER_PROJECT_RECORD_FILENAME}`
+      const updatedProject = updateProjectAnalysisSnapshot(project, updated)
+      updates.push({ path: projectPath, backup_archive_path: backupArchivePath(projectPath), data: new Blob([JSON.stringify(updatedProject, null, 2)], { type: "application/json" }) })
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "NotFoundError") && !(error instanceof SyntaxError)) throw error
+    }
+  }
+  await transactionalPublish(transactionId, updates)
 }
 
 async function readVideoDimensions(file: File, signal?: AbortSignal): Promise<[number | null, number | null]> {
@@ -172,14 +236,22 @@ async function readVideoDimensions(file: File, signal?: AbortSignal): Promise<[n
 }
 
 async function listAnalyses(): Promise<BrowserAnalysisRecord[]> {
+  await recoverReprocessTransaction()
   const ids = await listWorkspaceDirectories(BROWSER_ANALYSIS_STORAGE_DIRECTORY)
   const records = await Promise.all(ids.map((id) => readWorkspaceJson<BrowserAnalysisRecord>(`${BROWSER_ANALYSIS_STORAGE_DIRECTORY}/${id}/${BROWSER_ANALYSIS_RECORD_FILENAME}`)))
   return records.sort((left, right) => right.summary.created_at.localeCompare(left.summary.created_at))
 }
 
-async function writeRecord(result: BrowserAnalysisWorkerComplete): Promise<AnalysisSummary> {
+async function writeRecord(result: BrowserAnalysisWorkerComplete, audioRegions: AudioRegion[], videoFps: number | null = null): Promise<AnalysisSummary> {
   const filePath = result.media_path
   const analysisId = result.record_id
+  try {
+    const existing = await readWorkspaceJson<BrowserAnalysisRecord>(`analyses/${analysisId}/${BROWSER_ANALYSIS_RECORD_FILENAME}`)
+    if (existing?.summary?.analysis_id === analysisId && existing.source?.source_id === analysisId
+      && Array.isArray(existing.overview?.words) && Array.isArray(existing.phones)) return existing.summary
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "NotFoundError") && !(error instanceof SyntaxError)) throw error
+  }
   const sourceId = analysisId
   const durationMs = result.duration_ms
   const source = {
@@ -190,7 +262,7 @@ async function writeRecord(result: BrowserAnalysisWorkerComplete): Promise<Analy
     audio_channels: 1,
     video_width: result.video_width,
     video_height: result.video_height,
-    video_fps: null,
+    video_fps: videoFps,
   }
   const words: TranscriptWord[] = result.words.map((word) => ({ ...word }))
   const transcript = result.transcript.trim()
@@ -200,15 +272,27 @@ async function writeRecord(result: BrowserAnalysisWorkerComplete): Promise<Analy
   const phones: PhoneOccurrence[] = []
   const acousticFeatures: PhoneAcousticFeatures[] = []
   const vectors: number[][] = []
-  const pronunciations = result.phones.length ? result.phones : transcript ? pronounceBrowserText(transcript, "AUTO") : []
-  const phoneByWord = new Map<number, typeof pronunciations>()
-  for (const phone of pronunciations) phoneByWord.set(phone.word_index, [...(phoneByWord.get(phone.word_index) ?? []), phone])
+  const pronunciations = result.phones.length ? result.phones : transcript ? await pronounceBrowserWords(words.map((word) => word.text), "AUTO") : []
+  const phoneByWord = new Map<number, BrowserIndexedPronunciation[]>()
+  pronunciations.forEach((phone, phoneIndex) => phoneByWord.set(phone.word_index, [...(phoneByWord.get(phone.word_index) ?? []), { phone, phone_index: phoneIndex }]))
   for (const [wordIndex, word] of words.entries()) {
     const wordPhones = phoneByWord.get(wordIndex) ?? []
-    const boundaries = phoneBoundaries(result.audio.samples, result.audio.sampleRate, word.start_ms, word.end_ms, wordPhones.length)
-    for (const [phoneIndex, phone] of wordPhones.entries()) {
-      const startMs = Math.max(word.start_ms, Math.round(boundaries[phoneIndex]))
-      const endMs = Math.min(word.end_ms, Math.max(startMs + 1, Math.round(boundaries[phoneIndex + 1])))
+    const weights = wordPhones.map(({ phone }) => phone.phone_id.includes(".vowel.") ? 1 : 0.65)
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0)
+    let accumulatedWeight = 0
+    const estimates = [word.start_ms]
+    for (const weight of weights.slice(0, -1)) {
+      accumulatedWeight += weight
+      estimates.push(word.start_ms + Math.round((word.end_ms - word.start_ms) * accumulatedWeight / Math.max(1e-9, totalWeight)))
+    }
+    estimates.push(word.end_ms)
+    for (const [phoneOffset, { phone, phone_index: phoneIndex }] of wordPhones.entries()) {
+      const alignment = result.phone_alignments.find((item) => item.phone_index === phoneIndex)
+      const alignedStart = alignment?.start_ms
+      const alignedEnd = alignment?.end_ms
+      const aligned = typeof alignedStart === "number" && typeof alignedEnd === "number"
+      const startMs = aligned ? alignedStart : estimates[phoneOffset]
+      const endMs = Math.max(startMs + 1, aligned ? alignedEnd : estimates[phoneOffset + 1])
       const occurrenceId = crypto.randomUUID()
       phones.push({
         occurrence_id: occurrenceId,
@@ -221,23 +305,32 @@ async function writeRecord(result: BrowserAnalysisWorkerComplete): Promise<Analy
         ipa: phone.ipa,
         start_ms: startMs,
         end_ms: endMs,
-        confidence: null,
-        alignment_method: "ESTIMATED_WORD",
-        alignment_status: "LOW_CONFIDENCE",
+        confidence: alignment?.confidence ?? null,
+        alignment_method: result.phone_alignments.length ? "CTC_FORCED" : "ESTIMATED_WORD",
+        alignment_status: alignment?.status ?? (result.phone_alignments.length ? "MISSING" : "LOW_CONFIDENCE"),
       })
-      const first = Math.max(0, Math.floor(startMs * result.audio.sampleRate / 1000))
-      const last = Math.min(result.audio.samples.length, Math.max(first + 1, Math.ceil(endMs * result.audio.sampleRate / 1000)))
-      const vector = acousticVector(result.audio.samples, result.audio.sampleRate, startMs, endMs)
-      vectors.push(vector)
-      const pitchFrames = estimatePitch(result.audio.samples.slice(first, last), result.audio.sampleRate).filter((frame) => frame.hz !== null)
-      const pitches = pitchFrames.map((frame) => frame.hz as number).sort((left, right) => left - right)
-      acousticFeatures.push({ occurrence_id: occurrenceId, rms_db: vector[0], peak_db: vector[1], f0_hz: pitches.length ? pitches[Math.floor(pitches.length / 2)] : null, voiced_probability: pitchFrames.length / Math.max(1, estimatePitch(result.audio.samples.slice(first, last), result.audio.sampleRate).length), acoustic_unit_id: null })
+      vectors.push(result.hubert_embeddings[phoneIndex] ?? [])
     }
   }
-  if (result.acoustic_units) assignAcousticUnits(acousticFeatures, vectors)
+  acousticFeatures.push(...analyzePhoneAcousticFeatures(result.audio.samples, result.audio.sampleRate, phones))
+  const centroids = result.acoustic_units ? assignAcousticUnits(acousticFeatures, vectors) : []
+  const acousticUnitsPath = result.acoustic_units ? `${BROWSER_ANALYSIS_STORAGE_DIRECTORY}/${analysisId}/${BROWSER_ACOUSTIC_UNIT_CENTROIDS_FILENAME}` : null
+  if (acousticUnitsPath) {
+    const centroidRecord: BrowserAcousticUnitCentroids = {
+      model_name: BROWSER_HUBERT_MODEL,
+      model_revision: BROWSER_HUBERT_REVISION,
+      dimensions: BROWSER_HUBERT_EMBEDDING_DIMENSIONS,
+      cluster_count: centroids.length,
+      centroids,
+    }
+    await writeWorkspaceJson(acousticUnitsPath, centroidRecord)
+  }
   const candidates: TranscriptCandidate[] = result.candidates.map((item) => ({
     candidate_id: crypto.randomUUID(),
     model_name: item.model_name,
+    model_revision: item.model_revision,
+    model_dtype: item.model_dtype,
+    inference_device: item.inference_device,
     transcript: item.transcript,
     language_probability: null,
     words: item.words,
@@ -246,7 +339,7 @@ async function writeRecord(result: BrowserAnalysisWorkerComplete): Promise<Analy
   const overview: AnalysisOverview = {
     source_id: sourceId,
     transcript,
-    audio_regions: classifyBrowserAudio(result.audio.samples, result.audio.sampleRate, durationMs),
+    audio_regions: audioRegions,
     sentences,
     words,
     transcript_candidates: candidates,
@@ -266,6 +359,8 @@ async function writeRecord(result: BrowserAnalysisWorkerComplete): Promise<Analy
     overview,
     phones,
     acoustic_features: acousticFeatures,
+    acoustic_units_path: acousticUnitsPath,
+    inference_metadata: result.inference_metadata,
     audio_path: `analyses/${analysisId}/audio.wav`,
     media_path: filePath,
   }
@@ -278,19 +373,39 @@ async function prepareJob(job: AnalysisJob, settings: AnalysisSettings): Promise
   const controller = new AbortController()
   preparation.set(job.job_id, controller)
   try {
+    const modelFolder = getModelFolderHandle()
     const videoIndex = await readVideoIndex()
     const entry = videoIndex[settings.filename]
     if (!entry) throw new Error("The selected media file is missing from the workspace.")
     const file = await readWorkspaceFile(entry.path)
     updateJob({ ...job, stage: "Preparing audio", percent: 1 })
-    const [video_width, video_height] = await readVideoDimensions(file, controller.signal)
+    const isVideo = file.type.startsWith("video/") || /\.(mp4|mov|webm|mkv|avi)$/iu.test(file.name)
+    const metadata = isVideo ? await getOrProbeSourceVideoMetadata(file, controller.signal) : null
+    const fallbackDimensions = metadata ? [metadata.width, metadata.height] as [number | null, number | null] : await readVideoDimensions(file, controller.signal)
+    const [video_width, video_height] = fallbackDimensions
     if (controller.signal.aborted) return
     const audio = await decodeMedia(file, controller.signal, (percent, stage) => {
       const current = jobs.get(job.job_id)
       if (current && current.status !== "stopped") updateJob({ ...current, stage, percent: Math.max(1, Math.round(percent * 0.08)) })
     })
     if (controller.signal.aborted || jobs.get(job.job_id)?.status === "stopped") return
+    updateJob({ ...job, stage: "Detecting speech", percent: 7 })
+    const speechIntervals = await detectSileroSpeech(audio.samples, {}, {
+      signal: controller.signal,
+      onProgress: ({ completedSamples, totalSamples }) => {
+        const current = jobs.get(job.job_id)
+        if (!current || current.status === "stopped") return
+        const ratio = totalSamples > 0 ? completedSamples / totalSamples : 1
+        updateJob({ ...current, stage: "Detecting speech", percent: Math.min(8, 7 + Math.round(ratio)) })
+      },
+    })
+    if (controller.signal.aborted || jobs.get(job.job_id)?.status === "stopped") return
     preparation.delete(job.job_id)
+    const audioRegions: AudioRegion[] = speechIntervals.map((interval) => ({
+      region_type: interval.type === "speech" ? "SPEECH" : "NON_SPEECH",
+      start_ms: interval.start_ms,
+      end_ms: interval.end_ms,
+    }))
     const worker = new Worker(new URL("./analysis.worker.ts", import.meta.url), { type: "module" })
     workers.set(job.job_id, worker)
     worker.onmessage = (event: MessageEvent<BrowserAnalysisWorkerEvent>) => {
@@ -298,10 +413,14 @@ async function prepareJob(job: AnalysisJob, settings: AnalysisSettings): Promise
         const progress = event.data.progress
         const paused = progress.stage === BROWSER_ANALYSIS_PAUSE_STAGE
         const current = jobs.get(job.job_id)!
-        updateJob({ ...current, status: paused ? "paused" : current.status === "stopping" ? "stopping" : "running", stage: progress.stage, percent: Math.max(8, progress.percent), download_model: progress.download_model, download_percent: progress.download_percent })
+        updateJob({ ...current, status: paused ? "paused" : current.status === "stopping" ? "stopping" : "running", stage: progress.stage, percent: Math.max(8, progress.percent), download_model: progress.download_model, download_percent: progress.download_percent,
+          completed_windows: progress.completed_windows ?? current.completed_windows,
+          total_windows: progress.total_windows ?? current.total_windows,
+          reused_windows: progress.reused_windows ?? current.reused_windows,
+        })
       }
       if (event.data.kind === "complete" && event.data.result) {
-        void writeRecord(event.data.result).then(async (summary) => {
+        void writeRecord(event.data.result, audioRegions, metadata?.fps ?? null).then(async (summary) => {
           const current = jobs.get(job.job_id)
           if (!current || ["stopped", "failed"].includes(current.status)) return
           await updateJob({ ...current, status: "complete", stage: "Complete", percent: 100, analysis_id: summary.analysis_id, error: null, download_model: null, download_percent: null })
@@ -320,9 +439,33 @@ async function prepareJob(job: AnalysisJob, settings: AnalysisSettings): Promise
       }
     }
     worker.onerror = (event) => failJob(job.job_id, new Error(event.message || "Analysis worker failed"))
-    worker.postMessage({ kind: "start", settings: { job_id: job.job_id, filename: settings.filename, nickname: settings.nickname, model_name: settings.model_name, candidate_models: settings.candidate_models, acoustic_units: settings.acoustic_units, device: settings.device as "webgpu" | "wasm", audio, workspace: getWorkspaceHandle(), video_width, video_height } })
+    const request: BrowserAnalysisWorkerRequest = {
+      kind: "start",
+      settings: {
+        job_id: job.job_id,
+        record_id: job.record_id!,
+        filename: settings.filename,
+        nickname: settings.nickname,
+        model_name: settings.model_name,
+        asr_diagnostics: new URLSearchParams(location.search).has("asr-diagnostics"),
+        asr_language: settings.asr_language ?? BROWSER_ASR_DEFAULT_LANGUAGE,
+        candidate_models: settings.candidate_models,
+        acoustic_units: settings.acoustic_units,
+        alignment_mode: settings.alignment_mode,
+        precision: settings.precision,
+        device: settings.device as "webgpu" | "wasm",
+        audio,
+        audio_regions: audioRegions,
+        workspace: getWorkspaceHandle(),
+        model_directory: getModelFolderHandle(),
+        video_width,
+        video_height,
+      },
+    }
+    worker.postMessage(request)
   } catch (error) {
     if (jobs.get(job.job_id)?.status !== "stopped") failJob(job.job_id, error)
+  } finally {
     preparation.delete(job.job_id)
   }
 }
@@ -340,13 +483,53 @@ async function savedJob(jobId: string): Promise<AnalysisJob | null> {
   try {
     const job = await readWorkspaceJson<AnalysisJob>(`jobs/analysis-${jobId}.json`)
     if (["running", "pausing", "paused", "stopping"].includes(job.status)) {
-      const interrupted = { ...job, status: "failed" as const, stage: "Interrupted when the page closed", error: "The browser tab closed before analysis completed.", download_model: null, download_percent: null }
+      const lease = activeLease()
+      if (browserAnalysisLeaseIsLiveForJob(lease, jobId, Date.now())) return job
+      const interrupted = { ...job, status: "failed" as const, interrupted_stage: job.stage, stage: BROWSER_ANALYSIS_INTERRUPTED_STAGE, error: "페이지가 닫히기 전에 분석이 완료되지 않았습니다.", download_model: null, download_percent: null }
       updateJob(interrupted)
       return interrupted
     }
     return job
   }
-  catch { return null }
+  catch (error) {
+    if (error instanceof DOMException && error.name === "NotFoundError") return null
+    if (error instanceof SyntaxError) return null
+    throw error
+  }
+}
+
+function validSettings(settings: AnalysisSettings): boolean {
+  const validModels = new Set<string>(BROWSER_ASR_MODELS.map((model) => model.id))
+  return !!settings.filename && validModels.has(settings.model_name)
+    && (settings.asr_language === undefined || BROWSER_ASR_LANGUAGES.includes(settings.asr_language))
+    && ["webgpu", "wasm"].includes(settings.device) && ["estimated", "ctc"].includes(settings.alignment_mode)
+    && ["baseline", "compact"].includes(settings.precision)
+    && (settings.candidate_models ?? []).every((model) => validModels.has(model) && model !== settings.model_name)
+}
+
+async function validateResumeResources(job: AnalysisJob): Promise<AnalysisSettings> {
+  const settings = job.settings
+  if (!settings || !job.record_id || !job.media_identity) throw new Error("This saved job does not contain resumable settings.")
+  if (!validSettings(settings)) throw new Error("Saved analysis settings are invalid. Dismiss this job and start a new analysis.")
+  const index = await readVideoIndex()
+  const media = index[settings.filename]
+  if (!media || media.path !== job.media_identity.path || media.size !== job.media_identity.size || media.type !== job.media_identity.type) {
+    throw new Error("The saved media file is missing or has changed in the workspace.")
+  }
+  const file = await readWorkspaceFile(media.path)
+  if (file.size !== job.media_identity.size || file.lastModified !== job.media_identity.last_modified || (file.type || media.type) !== job.media_identity.type) throw new Error("The saved media file is missing or has changed in the workspace.")
+  const folder = getModelFolderHandle()
+  if (!folder) throw new Error("Connect the model folder and prepare the saved models before resuming.")
+  const readiness = await Promise.all(analysisModelSelections(settings).map((selection) => getModelReadiness(selection, folder)))
+  const unavailable = readiness.findIndex((status) => !status.ready)
+  if (unavailable >= 0) throw new Error(`Selected model is not ready. ${readiness[unavailable].message} Prepare the saved models before resuming.`)
+  return settings
+}
+
+async function hasActiveJob(): Promise<boolean> {
+  if (activeLease()) return true
+  if (workers.size || preparation.size || reprocessWorkers.size || reprocessControllers.size) return true
+  return [...jobs.values()].some((job) => ["running", "pausing", "paused", "stopping"].includes(job.status) && (workers.has(job.job_id) || preparation.has(job.job_id)))
 }
 
 async function detectAnalysisDevice(): Promise<"webgpu" | "wasm"> {
@@ -354,6 +537,112 @@ async function detectAnalysisDevice(): Promise<"webgpu" | "wasm"> {
   if (!gpu) return "wasm"
   try { return await gpu.requestAdapter() ? "webgpu" : "wasm" }
   catch { return "wasm" }
+}
+
+function updateReprocessJob(job: BrowserAnalysisReprocessJob): Promise<void> {
+  reprocessJobs.set(job.job_id, job)
+  const previous = reprocessJobWrites.get(job.job_id) ?? Promise.resolve()
+  const next = previous.catch(() => undefined).then(() => writeWorkspaceJson(`jobs/reprocess-${job.job_id}.json`, job))
+  reprocessJobWrites.set(job.job_id, next)
+  return next.then(() => {
+    if (reprocessJobWrites.get(job.job_id) === next) reprocessJobWrites.delete(job.job_id)
+    if (job.status !== "running" && reprocessJobs.get(job.job_id)?.status !== "running") releaseActiveLease(job.job_id)
+  }, (error) => {
+    if (reprocessJobWrites.get(job.job_id) === next) reprocessJobWrites.delete(job.job_id)
+    throw error
+  })
+}
+
+async function startReprocess(body: BrowserAnalysisReprocessRequest): Promise<BrowserAnalysisReprocessJob> {
+  if (!body.analysis_id || !["baseline", "compact"].includes(body.precision) || !["webgpu", "wasm"].includes(body.device) || typeof body.acoustic_units !== "boolean") throw new Error("재처리 설정이 올바르지 않습니다.")
+  if ([...reprocessJobs.values()].some((job) => job.status === "running")) throw new Error("이미 분석 재처리가 실행 중입니다.")
+  if (await hasActiveJob()) throw new Error("기존 분석 작업이 실행 중입니다.")
+  const record = await readWorkspaceJson<BrowserAnalysisRecord>(`analyses/${body.analysis_id}/${BROWSER_ANALYSIS_RECORD_FILENAME}`)
+  if (record.summary.analysis_id !== body.analysis_id || !Array.isArray(record.overview.words) || !record.audio_path) throw new Error("재처리할 저장 분석이 올바르지 않습니다.")
+  const folder = getModelFolderHandle()
+  if (!folder) throw new Error("모델 폴더를 연결한 뒤 CTC 및 선택한 HuBERT 모델을 준비하세요.")
+  const selections = analysisReprocessModelSelections(body.precision, body.device, body.acoustic_units)
+  for (const selection of selections) {
+    const readiness = await getModelReadiness(selection, folder)
+    if (!readiness.ready) throw new Error(`필요한 모델이 준비되지 않았습니다. ${readiness.message}`)
+  }
+  const jobId = crypto.randomUUID()
+  if (!acquireActiveLease(jobId)) throw new Error("다른 탭에서 분석 작업이 실행 중입니다.")
+  const job: BrowserAnalysisReprocessJob = { job_id: jobId, analysis_id: body.analysis_id, status: "running", stage: "저장 오디오 준비", percent: 1, error: null }
+  try { await updateReprocessJob(job) }
+  catch (error) { reprocessJobs.delete(jobId); releaseActiveLease(jobId); throw error }
+  const controller = new AbortController()
+  reprocessControllers.set(jobId, controller)
+  void (async () => {
+    let worker: Worker | null = null
+    try {
+      const file = await readWorkspaceFile(record.audio_path)
+      const decoded = await decodeMedia(file, controller.signal)
+      const samples = decoded.sampleRate === BROWSER_ASR_SAMPLE_RATE ? decoded.samples : resampleLinear(decoded.samples, decoded.sampleRate, BROWSER_ASR_SAMPLE_RATE)
+      if (controller.signal.aborted) throw new DOMException("재처리가 취소되었습니다.", "AbortError")
+      const current = reprocessJobs.get(jobId)
+      if (!current || current.status !== "running") return
+      await updateReprocessJob({ ...current, stage: "CTC/HuBERT 모델 실행", percent: 5 })
+      if (controller.signal.aborted || reprocessJobs.get(jobId)?.status !== "running") return
+      worker = new Worker(new URL("./analysis.worker.ts", import.meta.url), { type: "module" })
+      reprocessWorkers.set(jobId, worker)
+      worker.onmessage = (event: MessageEvent<BrowserAnalysisWorkerEvent>) => {
+        if (event.data.kind === "progress" && event.data.progress) {
+          const progress = event.data.progress
+          const currentJob = reprocessJobs.get(jobId)
+          if (currentJob?.status === "running" && !currentJob.stage.startsWith("원본 저장")) void updateReprocessJob({ ...currentJob, stage: progress.stage, percent: Math.max(5, Math.round(progress.percent)) })
+        }
+        if (event.data.kind === "reprocessed" && event.data.reprocess_result) {
+          const currentJob = reprocessJobs.get(jobId)
+          if (!currentJob || !mayCommitReprocessing(currentJob)) return
+          const committing = { ...currentJob, stage: "원본 저장 및 프로젝트 갱신", percent: 95 }
+          reprocessJobs.set(jobId, committing)
+          void updateReprocessJob(committing).then(async () => {
+            if (reprocessJobs.get(jobId)?.status !== "running") return
+            await publishReprocessed(record, event.data.reprocess_result!, { samples, sampleRate: BROWSER_ASR_SAMPLE_RATE })
+          }).then(async () => {
+            const currentJob = reprocessJobs.get(jobId)
+            if (currentJob?.status === "running") await updateReprocessJob({ ...currentJob, status: "complete", stage: "재처리 완료", percent: 100 })
+          }).catch(async (error: unknown) => {
+            const currentJob = reprocessJobs.get(jobId)
+            if (currentJob) await updateReprocessJob({ ...currentJob, status: "failed", stage: "저장 실패", error: error instanceof Error ? error.message : String(error) })
+          }).finally(() => {
+            worker?.terminate()
+            reprocessWorkers.delete(jobId)
+            reprocessControllers.delete(jobId)
+          })
+        }
+        if (event.data.kind === "failure") {
+          const currentJob = reprocessJobs.get(jobId)
+          if (currentJob?.status === "running" && !currentJob.stage.startsWith("원본 저장")) void updateReprocessJob({ ...currentJob, status: event.data.message?.includes("stopped") || controller.signal.aborted ? "stopped" : "failed", stage: controller.signal.aborted ? "재처리 취소" : "재처리 실패", error: controller.signal.aborted ? null : event.data.message ?? "재처리에 실패했습니다." })
+          worker?.terminate()
+          reprocessWorkers.delete(jobId)
+          reprocessControllers.delete(jobId)
+        }
+      }
+      worker.onerror = (event) => {
+        const currentJob = reprocessJobs.get(jobId)
+        if (currentJob?.status === "running" && !currentJob.stage.startsWith("원본 저장")) void updateReprocessJob({ ...currentJob, status: "failed", stage: "재처리 실패", error: event.message || "재처리 작업자가 실패했습니다." })
+        worker?.terminate()
+        reprocessWorkers.delete(jobId)
+        reprocessControllers.delete(jobId)
+      }
+      const request: BrowserAnalysisWorkerRequest = { kind: "reprocess", settings: {
+        job_id: jobId, record_id: body.analysis_id, transcript: record.overview.transcript,
+        words: record.overview.words, precision: body.precision, device: body.device,
+        acoustic_units: body.acoustic_units, audio: { samples, sampleRate: BROWSER_ASR_SAMPLE_RATE },
+        workspace: getWorkspaceHandle(), model_directory: folder,
+      } }
+      worker.postMessage(request)
+    } catch (error) {
+      const currentJob = reprocessJobs.get(jobId)
+      if (currentJob?.status === "running") await updateReprocessJob({ ...currentJob, status: controller.signal.aborted ? "stopped" : "failed", stage: controller.signal.aborted ? "재처리 취소" : "재처리 실패", error: controller.signal.aborted ? null : error instanceof Error ? error.message : String(error) })
+      worker?.terminate()
+      reprocessWorkers.delete(jobId)
+      reprocessControllers.delete(jobId)
+    }
+  })()
+  return job
 }
 
 async function handleUpload(init?: RequestInit): Promise<Response> {
@@ -373,11 +662,15 @@ async function handleUpload(init?: RequestInit): Promise<Response> {
 }
 
 export async function handleBrowserAnalysisRequest(path: string, init?: RequestInit): Promise<Response | null> {
+  await recoverReprocessTransaction()
   const url = new URL(path, window.location.origin)
   const pathname = url.pathname
   const method = (init?.method ?? "GET").toUpperCase()
   const parts = pathname.split("/").filter(Boolean)
   const decode = (value: string) => decodeURIComponent(value)
+  const mutatingAnalysis = method === "POST" && (pathname === "/api/analyses" || (parts[1] === "analysis-jobs" && parts[3] === "retry") || (parts[1] === "analyses" && parts[3] === "reprocess") || (parts[1] === "analysis-reprocess" && parts[3] === "stop"))
+  if (mutatingAnalysis && analysisMutationActive) return jsonResponse({ detail: "An analysis is already starting or resuming." }, 409)
+  if (mutatingAnalysis) analysisMutationActive = true
   try {
     if (method === "POST" && pathname === "/api/videos") return await handleUpload(init)
     if (method === "GET" && pathname === "/api/videos") return jsonResponse(Object.keys(await readVideoIndex()).sort())
@@ -388,6 +681,28 @@ export async function handleBrowserAnalysisRequest(path: string, init?: RequestI
       return jsonResponse({ ok: true })
     }
     if (method === "GET" && pathname === "/api/analyses") return jsonResponse((await listAnalyses()).map((record) => record.summary))
+    if (method === "POST" && parts[1] === "analyses" && parts[3] === "reprocess") {
+      if (typeof init?.body !== "string") throw new Error("재처리 설정이 필요합니다.")
+      const body = JSON.parse(init.body) as BrowserAnalysisReprocessRequest
+      const job = await startReprocess({ ...body, analysis_id: decode(parts[2]) })
+      return jsonResponse(job)
+    }
+    if (parts[1] === "analysis-reprocess" && parts[2]) {
+      const jobId = decode(parts[2])
+      const job = reprocessJobs.get(jobId)
+      if (!job) return jsonResponse({ detail: "재처리 작업을 찾을 수 없습니다." }, 404)
+      if (method === "GET") return jsonResponse(job)
+      if (method === "POST" && parts[3] === "stop" && job.status === "running") {
+        if (job.stage.startsWith("원본 저장")) return jsonResponse({ detail: "원본 분석을 저장하는 중에는 취소할 수 없습니다." }, 409)
+        reprocessControllers.get(jobId)?.abort()
+        reprocessWorkers.get(jobId)?.terminate()
+        reprocessWorkers.delete(jobId)
+        reprocessControllers.delete(jobId)
+        const stopped = { ...job, status: "stopped" as const, stage: "재처리 취소", error: null }
+        await updateReprocessJob(stopped)
+        return jsonResponse(stopped)
+      }
+    }
     if (method === "PUT" && parts[1] === "analyses" && parts[3] === "nickname") {
       const id = decode(parts[2])
       const record = await readWorkspaceJson<BrowserAnalysisRecord>(`analyses/${id}/${BROWSER_ANALYSIS_RECORD_FILENAME}`)
@@ -400,16 +715,28 @@ export async function handleBrowserAnalysisRequest(path: string, init?: RequestI
     if (method === "POST" && pathname === "/api/analyses") {
       if (typeof init?.body !== "string") throw new Error("Analysis settings are required.")
       const settings = JSON.parse(init.body) as AnalysisSettings
-    const validModels = new Set<string>(BROWSER_ASR_MODELS.map((model) => model.id))
-      if (!settings.filename || !validModels.has(settings.model_name) || !["webgpu", "wasm"].includes(settings.device)
-        || (settings.candidate_models ?? []).some((model) => !validModels.has(model) || model === settings.model_name)) {
+      if (!validSettings(settings)) {
         throw new Error("Invalid browser analysis settings.")
       }
-      const active = [...jobs.values()].some((job) => ["running", "pausing", "paused", "stopping"].includes(job.status))
-      if (active) return jsonResponse({ detail: "An analysis is already running." }, 409)
+      const modelFolder = getModelFolderHandle()
+      if (!modelFolder) throw new Error("Connect the model folder and prepare the selected models before analysis.")
+      const readiness = await Promise.all(analysisModelSelections(settings).map((selection) => getModelReadiness(selection, modelFolder)))
+      const unavailable = readiness.findIndex((status) => !status.ready)
+      if (unavailable >= 0) throw new Error(`Selected model is not ready. ${readiness[unavailable].message} Prepare the selected models before analysis.`)
+      if (await hasActiveJob() || [...reprocessJobs.values()].some((job) => job.status === "running")) return jsonResponse({ detail: "An analysis or reprocessing job is already running." }, 409)
       const jobId = `${BROWSER_ANALYSIS_JOB_PREFIX}${crypto.randomUUID()}`
-      const job: AnalysisJob = { job_id: jobId, status: "running", filename: settings.filename, percent: 0, stage: "Queued", analysis_id: null, error: null, download_model: settings.model_name, download_percent: 0 }
-      updateJob(job)
+      const media = (await readVideoIndex())[settings.filename]
+      if (!media) throw new Error("The selected media file is missing from the workspace.")
+      const mediaFile = await readWorkspaceFile(media.path)
+      const media_identity: BrowserAnalysisMediaIdentity = { path: media.path, type: mediaFile.type || media.type, size: mediaFile.size, last_modified: mediaFile.lastModified }
+      if (!acquireActiveLease(jobId)) return jsonResponse({ detail: "다른 탭에서 분석 작업이 실행 중입니다." }, 409)
+      const job: AnalysisJob = {
+        job_id: jobId, status: "running", filename: settings.filename, percent: 0, stage: "Queued", analysis_id: null,
+        error: null, download_model: null, download_percent: null, settings: { ...settings, candidate_models: [...settings.candidate_models] },
+        record_id: crypto.randomUUID(), media_identity,
+      }
+      try { await updateJob(job) }
+      catch (error) { jobs.delete(jobId); releaseActiveLease(jobId); throw error }
       void prepareJob(job, settings)
       return jsonResponse({ job_id: jobId })
     }
@@ -420,6 +747,27 @@ export async function handleBrowserAnalysisRequest(path: string, init?: RequestI
       if (method === "GET") return jsonResponse(job)
       if (method === "POST" && parts[3]) {
         const action = parts[3]
+        if (action === "retry" && ["failed", "stopped"].includes(job.status)) {
+          try {
+            const record = await readWorkspaceJson<BrowserAnalysisRecord>(`analyses/${job.record_id}/${BROWSER_ANALYSIS_RECORD_FILENAME}`)
+            if (record.summary.analysis_id === job.record_id) {
+              const complete = { ...job, status: "complete" as const, stage: "Complete", percent: 100, analysis_id: job.record_id, error: null }
+              await updateJob(complete)
+              return jsonResponse(complete)
+            }
+          } catch (error) {
+            if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error
+          }
+          const settings = await validateResumeResources(job)
+          if (await hasActiveJob()) return jsonResponse({ detail: "An analysis is already running." }, 409)
+          const retry: AnalysisJob = { ...job, status: "running", stage: "Queued for resume", error: null, download_model: null, download_percent: null }
+          if (!acquireActiveLease(retry.job_id)) return jsonResponse({ detail: "다른 탭에서 분석 작업이 실행 중입니다." }, 409)
+          try { await updateJob(retry) }
+          catch (error) { jobs.delete(retry.job_id); releaseActiveLease(retry.job_id); throw error }
+          void prepareJob(retry, settings)
+          return jsonResponse(retry)
+        }
+        if (action === "retry" && job.status === "complete") return jsonResponse(job)
         const worker = workers.get(jobId)
         if (!worker && !(action === "stop" && preparation.has(jobId)) || !["running", "pausing", "paused", "stopping"].includes(job.status)) return jsonResponse({ detail: "Job cannot be controlled in this state." }, 409)
         if (action === "pause" && job.status === "running") {
@@ -438,7 +786,6 @@ export async function handleBrowserAnalysisRequest(path: string, init?: RequestI
           if (worker) worker.postMessage({ kind: "stop" })
           else {
             preparation.get(jobId)?.abort()
-            preparation.delete(jobId)
             const stopped = { ...job, status: "stopped" as const, stage: "Stopped", error: null }
             updateJob(stopped)
             return jsonResponse(stopped)
@@ -458,5 +805,7 @@ export async function handleBrowserAnalysisRequest(path: string, init?: RequestI
     return null
   } catch (error) {
     return errorResponse(error)
+  } finally {
+    if (mutatingAnalysis) analysisMutationActive = false
   }
 }

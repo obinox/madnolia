@@ -1,5 +1,27 @@
 import type { CompositionProject, TimelineSegment } from "../types"
 import type { BrowserCompositionSource, BrowserVideoClip } from "../types/browserAudio"
+import type { BrowserVideoOutputSpec } from "../types/browserVideoMetadata"
+import type { BrowserAnalysisRecord } from "../types/browser"
+
+export const sourceAnalysisRecordId = (
+  sourceId: string,
+  sourceAnalyses: Record<string, string>,
+  analysisIds: string[],
+  records: Map<string, BrowserAnalysisRecord>,
+): string | null => {
+  const mapped = sourceAnalyses[sourceId]
+  if (mapped) return mapped
+  return analysisIds.find((id) => records.get(id)?.source.source_id === sourceId) ?? null
+}
+
+export const browserVideoBaseInputArgs = (spec: BrowserVideoOutputSpec, duration: number): string[] =>
+  ["-f", "lavfi", "-i", `color=c=black:s=${spec.width}x${spec.height}:r=${spec.fps}:d=${duration}`]
+
+export const browserVideoScalePadFilter = (spec: BrowserVideoOutputSpec): string =>
+  `scale=${spec.sourceWidth ?? spec.width}:${spec.sourceHeight ?? spec.height}:force_original_aspect_ratio=decrease,pad=${spec.width}:${spec.height}:(ow-iw)/2:(oh-ih)/2`
+
+export const browserVideoEncoderArgs = (spec: BrowserVideoOutputSpec): string[] =>
+  ["-r", String(spec.fps), "-c:v", "libx264", "-threads:v", "1", "-preset", "ultrafast", "-crf", "23", "-pix_fmt", "yuv420p"]
 
 const timelineKey = (left: TimelineSegment, right: TimelineSegment): number =>
   left.timeline_start_ms - right.timeline_start_ms || left.segment_id.localeCompare(right.segment_id)
@@ -45,10 +67,11 @@ const seconds = (milliseconds: number, fps: number): string => `${Math.round(mil
 export const edlText = (
   composition: CompositionProject,
   sources: Map<string, BrowserCompositionSource>,
-  defaultFps: number,
+  spec: BrowserVideoOutputSpec,
 ): string => {
   const clips = videoClips(composition)
-  const fps = Math.max(1, Math.round(clips.map((clip) => sources.get(clip.sourceId)?.source.video_fps).find((value) => value && value > 0) ?? defaultFps))
+  if (!clips.length) throw new Error("EDL export requires at least one video clip.")
+  const fps = spec.fps
   const lines = [`TITLE: ${composition.name}`, "FCM: NON-DROP FRAME", ""]
   for (const [index, clip] of clips.entries()) {
     const source = sources.get(clip.sourceId)
@@ -68,16 +91,14 @@ export const edlText = (
 export const fcpxmlText = (
   composition: CompositionProject,
   sources: Map<string, BrowserCompositionSource>,
-  defaultFps: number,
-  defaultWidth: number,
-  defaultHeight: number,
+  spec: BrowserVideoOutputSpec,
 ): string => {
   const clips = videoClips(composition)
+  if (!clips.length) throw new Error("FCPXML export requires at least one video clip.")
   const usedSourceIds = [...new Set(clips.map((clip) => clip.sourceId))]
-  const first = usedSourceIds.map((id) => sources.get(id)).find(Boolean)
-  const fps = Math.max(1, Math.round(first?.source.video_fps ?? defaultFps))
-  const width = first?.source.video_width ?? defaultWidth
-  const height = first?.source.video_height ?? defaultHeight
+  const fps = spec.fps
+  const width = spec.width
+  const height = spec.height
   const assetRefs = new Map(usedSourceIds.map((sourceId, index) => [sourceId, `r${index + 2}`]))
   const resources = usedSourceIds.map((sourceId) => {
     const source = sources.get(sourceId)

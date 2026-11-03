@@ -1,12 +1,54 @@
+import type { BrowserAsrModelConfig } from "./types/browserAnalysis"
+import type { BrowserAsrLanguage } from "./types"
+
 export const BROWSER_UNKNOWN_PHONE_ID = "und.approximate.unknown"
 export const BROWSER_UNKNOWN_PHONE_IPA = "?"
-export const BROWSER_ASR_MODELS = [
-  { id: "Xenova/whisper-tiny", label: "Whisper tiny", size_label: "~150 MB" },
-  { id: "Xenova/whisper-base", label: "Whisper base", size_label: "~290 MB" },
-  { id: "Xenova/whisper-small", label: "Whisper small", size_label: "~950 MB" },
+export const BROWSER_ASR_MODELS: readonly BrowserAsrModelConfig[] = [
+  { id: "onnx-community/whisper-large-v3-ONNX", label: "Whisper large-v3", size_label: "Large (varies by device)", timestamps: "word", dtype: { webgpu: "q4", wasm: "q4" }, artifacts: {
+    baseline: { model_id: "Xenova/whisper-large-v3", revision: "67bf02d92b7754a1ff82a7f8545f8b8c378b2ef0", dtype: { webgpu: "fp32", wasm: "fp32" }, external_data_format: { encoder_model: true, decoder_model_merged: true } },
+    compact: { model_id: "musetric/whisper-large-v3-onnx", revision: "228b20358cc86d1f8cc30299dc940438a3a7e4a0", subfolder: "", dtype: { webgpu: "q4", wasm: "q4" } },
+  } },
+  { id: "onnx-community/whisper-large-v3-turbo_timestamped", label: "Whisper large-v3-turbo", size_label: "Large (varies by device)", timestamps: "word", dtype: { webgpu: "q8", wasm: "q8" }, artifacts: {
+    baseline: { model_id: "onnx-community/whisper-large-v3-turbo_timestamped", revision: "b3f77bf9a8c4d5ea3415827033d1ffea7955fd9a", dtype: { webgpu: "fp32", wasm: "fp32" }, external_data_format: { encoder_model: true } },
+    compact: { model_id: "onnx-community/whisper-large-v3-turbo_timestamped", revision: "b3f77bf9a8c4d5ea3415827033d1ffea7955fd9a", dtype: { webgpu: "q8", wasm: "q8" } },
+  } },
+  { id: "Xenova/whisper-small", label: "Whisper small", size_label: "~950 MB", timestamps: "word", dtype: { webgpu: "fp32", wasm: "q8" }, artifacts: {
+    baseline: { model_id: "Xenova/whisper-small", revision: "2d67713f236afa48a18992566e7647f6ca848e13", dtype: { webgpu: "fp32", wasm: "fp32" } },
+    compact: { model_id: "Xenova/whisper-small", revision: "2d67713f236afa48a18992566e7647f6ca848e13", dtype: { webgpu: "fp32", wasm: "q8" } },
+  } },
+  { id: "Xenova/whisper-base", label: "Whisper base", size_label: "~290 MB", timestamps: "word", dtype: { webgpu: "fp32", wasm: "q8" }, artifacts: {
+    baseline: { model_id: "Xenova/whisper-base", revision: "64da57285918e20ea79ea5c88eed7197933abaa8", dtype: { webgpu: "fp32", wasm: "fp32" } },
+    compact: { model_id: "Xenova/whisper-base", revision: "64da57285918e20ea79ea5c88eed7197933abaa8", dtype: { webgpu: "fp32", wasm: "q8" } },
+  } },
+  { id: "Xenova/whisper-tiny", label: "Whisper tiny", size_label: "~150 MB", timestamps: "word", dtype: { webgpu: "fp32", wasm: "q8" }, artifacts: {
+    baseline: { model_id: "Xenova/whisper-tiny", revision: "5332fcc35e32a33b86612b9a57a89be7906102b1", dtype: { webgpu: "fp32", wasm: "fp32" } },
+    compact: { model_id: "Xenova/whisper-tiny", revision: "5332fcc35e32a33b86612b9a57a89be7906102b1", dtype: { webgpu: "fp32", wasm: "q8" } },
+  } },
 ] as const
 
-export const BROWSER_ASR_DEFAULT_MODEL = BROWSER_ASR_MODELS[0].id
+export const BROWSER_ASR_DEFAULT_MODEL = "onnx-community/whisper-large-v3-ONNX"
+export const BROWSER_ASR_DEFAULT_LANGUAGE = "ko" as const
+export const BROWSER_ASR_LANGUAGES: readonly BrowserAsrLanguage[] = ["ko", "en"]
+export const BROWSER_ASR_TASK = "transcribe" as const
+export const BROWSER_ASR_CHECKPOINT_POLICY_VERSION = 1
+export const BROWSER_ASR_CHECKPOINT_VERSION = 1
+export const BROWSER_CTC_MODEL = "qnighy/wav2vec2-xlsr-53-espeak-cv-ft-ONNX"
+export const BROWSER_CTC_REVISION = "d2987af7ae07d53eafee15dc7190479062faa1e8"
+export const BROWSER_CTC_VOCAB_URL = `https://huggingface.co/${BROWSER_CTC_MODEL}/resolve/${BROWSER_CTC_REVISION}/vocab.json`
+export const BROWSER_CTC_MIN_INPUT_SAMPLES = 248_000
+export const BROWSER_CTC_CHUNK_MS = 15_000
+export const BROWSER_CTC_PADDING_MS = 250
+export const BROWSER_CTC_LOW_CONFIDENCE_THRESHOLD = 0.15
+export const BROWSER_CTC_IPA_ALIASES: Record<string, readonly string[]> = { "ɰi": ["ɯ", "i"] }
+export const BROWSER_HUBERT_MODEL = "Xenova/hubert-base-ls960"
+export const BROWSER_HUBERT_REVISION = "26a36c4d330d0b28be1d453e3eee92fd8dd10aac"
+export const BROWSER_HUBERT_CHUNK_MS = 15_000
+export const BROWSER_HUBERT_CHUNK_GAP_MS = 1_000
+export const BROWSER_HUBERT_PADDING_MS = 250
+export const BROWSER_HUBERT_EMBEDDING_DIMENSIONS = 768
+export const BROWSER_HUBERT_CLUSTER_COUNT = 64
+export const BROWSER_HUBERT_CLUSTER_PASSES = 3
+export const BROWSER_ACOUSTIC_UNIT_CENTROIDS_FILENAME = "acoustic-units.json"
 export const BROWSER_MODEL_CACHE_ROOT = "models/_transformers-cache"
 export const BROWSER_MODEL_CACHE_INDEX = `${BROWSER_MODEL_CACHE_ROOT}/index.json`
 export const BROWSER_ASR_SAMPLE_RATE = 16_000
@@ -17,10 +59,15 @@ export const BROWSER_ANALYSIS_JOB_PREFIX = "madnolia.browser.analysisJob."
 export const BROWSER_ANALYSIS_JOB_INDEX = "jobs/analysis-index.json"
 export const BROWSER_VIDEO_INDEX = "media/index.json"
 export const BROWSER_ANALYSIS_STORAGE_DIRECTORY = "analyses"
+export const BROWSER_ANALYSIS_REPROCESS_JOURNAL = "transactions/reprocess-journal.json"
+export const BROWSER_ANALYSIS_REPROCESS_STAGE_DIRECTORY = "transactions/reprocess-staging"
+export const BROWSER_ANALYSIS_ACTIVE_LEASE_KEY = "madnolia.browser.analysis.active-lease"
+export const BROWSER_ANALYSIS_ACTIVE_LEASE_TTL_MS = 15_000
+export const BROWSER_ANALYSIS_ACTIVE_LEASE_RENEW_MS = 4_000
 export const BROWSER_MEDIA_STORAGE_DIRECTORY = "media"
 export const BROWSER_JOB_STORAGE_DIRECTORY = "jobs"
 export const BROWSER_ANALYSIS_PAUSE_STAGE = "Paused at a chunk boundary"
-export const BROWSER_ANALYSIS_INTERRUPTED_STAGE = "Interrupted when the page closed"
+export const BROWSER_ANALYSIS_INTERRUPTED_STAGE = "페이지가 닫혀 작업이 중단됨"
 export const BROWSER_ANALYSIS_VAD_FRAME_MS = 20
 export const BROWSER_ANALYSIS_VAD_MIN_RMS = 0.008
 export const BROWSER_ANALYSIS_VAD_MIN_SPEECH_MS = 100
@@ -28,6 +75,13 @@ export const BROWSER_ANALYSIS_VAD_PADDING_MS = 80
 export const BROWSER_ANALYSIS_SENTENCE_GAP_MS = 900
 export const BROWSER_ANALYSIS_JOB_PROGRESS_WRITE_INTERVAL_MS = 250
 export const BROWSER_ANALYSIS_PHONE_MIN_DURATION_MS = 1
+export const BROWSER_PHONE_ACOUSTIC_CONTEXT_MS = 40
+export const BROWSER_PHONE_ACOUSTIC_MIN_F0_HZ = 60
+export const BROWSER_PHONE_ACOUSTIC_MAX_F0_HZ = 500
+export const BROWSER_PHONE_ACOUSTIC_MIN_VOICED_PROBABILITY = 0.3
+export const BROWSER_PHONE_ACOUSTIC_MIN_ENERGY = 1e-6
+export const BROWSER_PHONE_ACOUSTIC_AMPLITUDE_FLOOR = 1e-8
+export const BROWSER_PHONE_ACOUSTIC_VOICED_CATEGORIES = ["vowel", "nasal", "tap", "lateral"] as const
 export const BROWSER_ANALYSIS_MODEL_DEVICE_LABELS = {
   webgpu: "WebGPU",
   wasm: "WebAssembly CPU",

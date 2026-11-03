@@ -59,6 +59,16 @@ export function GlobalTaskProvider({ children }: PropsWithChildren) {
 
   const isTaskActive = useCallback(() => taskRef.current !== null, [])
 
+  useEffect(() => {
+    if (!task) return
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ""
+    }
+    window.addEventListener("beforeunload", warnBeforeUnload)
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload)
+  }, [Boolean(task)])
+
   const updateRecoveredTask = useCallback((id: string, patch: Partial<GlobalTaskInput>) => {
     if (taskRef.current?.id !== id) return
     const next = { ...taskRef.current, ...patch, id }

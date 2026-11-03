@@ -1,13 +1,16 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
-import { fetchAnalyses, renameAnalysis } from "../api/analysis"
+import { fetchAnalyses, fetchAnalysisReprocessJob, renameAnalysis, startAnalysisReprocess, stopAnalysisReprocess } from "../api/analysis"
 import { createProject, fetchCollages } from "../api/projects"
 import { ANALYSIS_NICKNAME_MAX_LENGTH } from "../constants"
 import type { AnalysisSummary, CompositionProject, ListLoadState, ProjectsPageProps } from "../types"
 import { useGlobalTask } from "../globalTask"
+import { analysisReprocessModelSelections, getModelFolderHandle, getModelReadiness, prepareModel } from "../browser/modelStorage"
+import type { BrowserModelSelection } from "../types/browserModelStorage"
+import type { AnalysisPrecision } from "../types"
 
 export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProjectCreated }: ProjectsPageProps) {
-  const { beginTask, finishTask, isTaskActive } = useGlobalTask()
+  const { beginTask, updateTask, finishTask, isTaskActive } = useGlobalTask()
   const [analyses, setAnalyses] = useState<AnalysisSummary[]>([])
   const [collages, setCollages] = useState<CompositionProject[]>([])
   const [analysisListState, setAnalysisListState] = useState<ListLoadState>("loading")
@@ -22,6 +25,13 @@ export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProject
   const [draftNickname, setDraftNickname] = useState("")
   const [createdProjectId, setCreatedProjectId] = useState("")
   const [creationRecoveryPending, setCreationRecoveryPending] = useState(false)
+  const [reprocessAnalysisId, setReprocessAnalysisId] = useState("")
+  const [reprocessPrecision, setReprocessPrecision] = useState<AnalysisPrecision>("baseline")
+  const [reprocessDevice, setReprocessDevice] = useState<"webgpu" | "wasm">("wasm")
+  const [reprocessHubert, setReprocessHubert] = useState(false)
+  const [reprocessMessage, setReprocessMessage] = useState("")
+  const [modelReady, setModelReady] = useState<Record<string, string>>({})
+  const reprocessJobId = useRef("")
 
   const loadAnalyses = async () => {
     setAnalysisListState("loading")
@@ -51,6 +61,70 @@ export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProject
     void loadAnalyses()
     void loadCollages()
   }, [])
+
+  useEffect(() => {
+    let active = true
+    setModelReady({})
+    const folder = getModelFolderHandle()
+    if (folder) void Promise.all(reprocessSelections().map(async (selection) => [selection.kind, (await getModelReadiness(selection, folder)).ready ? "준비됨" : "미준비"] as const))
+      .then((entries) => { if (active) setModelReady(Object.fromEntries(entries)) })
+    return () => { active = false }
+  }, [reprocessPrecision, reprocessDevice, reprocessHubert])
+
+  const reprocessSelections = (): BrowserModelSelection[] => analysisReprocessModelSelections(reprocessPrecision, reprocessDevice, reprocessHubert)
+
+  const prepareReprocessModels = async () => {
+    if (isTaskActive()) return
+    const folder = getModelFolderHandle()
+    if (!folder) { setReprocessMessage("모델 폴더를 연결하세요."); return }
+    const controller = new AbortController()
+    const selections = reprocessSelections()
+    const taskId = beginTask({ label: "재처리 모델 준비", stage: "준비 중", percent: 0, cancel: () => controller.abort(), cancelLabel: "모델 준비 취소" })
+    if (!taskId) return
+    setReprocessMessage("")
+    try {
+      for (const [index, selection] of selections.entries()) {
+        await prepareModel(selection, controller.signal, (progress) => {
+          const fraction = progress.expected_bytes ? progress.received_bytes / progress.expected_bytes : 0
+          updateTask(taskId, { stage: `${selection.kind === "ctc" ? "CTC" : "HuBERT"} · ${progress.current_file}`, percent: Math.round((index + fraction) * 100 / selections.length) })
+        }, folder)
+        if (controller.signal.aborted) throw new DOMException("모델 준비가 취소되었습니다.", "AbortError")
+      }
+      setModelReady(Object.fromEntries(await Promise.all(selections.map(async (selection) => [selection.kind, (await getModelReadiness(selection, folder)).ready ? "준비됨" : "미준비"] as const))))
+      updateTask(taskId, { stage: "선택 모델 준비 완료", percent: 100 })
+    } catch (error) {
+      if (!(error instanceof Error && error.name === "AbortError")) setReprocessMessage(error instanceof Error ? error.message : String(error))
+    } finally { finishTask(taskId) }
+  }
+
+  const reprocessSelected = async () => {
+    if (!reprocessAnalysisId || isTaskActive()) return
+    const taskId = beginTask({ label: "기존 분석 재처리", stage: "작업 시작", percent: 0, cancel: async () => {
+      if (reprocessJobId.current) await stopAnalysisReprocess(reprocessJobId.current)
+    }, cancelLabel: "재처리 취소" })
+    if (!taskId) return
+    setReprocessMessage("")
+    reprocessJobId.current = ""
+    try {
+      const job = await startAnalysisReprocess({ analysis_id: reprocessAnalysisId, precision: reprocessPrecision, device: reprocessDevice, acoustic_units: reprocessHubert })
+      reprocessJobId.current = job.job_id
+      let current = job
+      while (current.status === "running") {
+        updateTask(taskId, { stage: current.stage, percent: current.percent })
+        await new Promise((resolve) => window.setTimeout(resolve, 600))
+        current = await fetchAnalysisReprocessJob(job.job_id)
+      }
+      if (current.status !== "complete") throw new Error(current.error || "재처리에 실패했습니다.")
+      updateTask(taskId, { stage: "저장과 프로젝트 갱신 완료", percent: 100 })
+      await loadAnalyses()
+      setReprocessMessage("재처리가 완료되었습니다. 전사와 단어 시간은 유지했습니다.")
+    } catch (error) {
+      setReprocessMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      reprocessJobId.current = ""
+      finishTask(taskId)
+    }
+  }
 
   const makeProject = async () => {
     if (isTaskActive()) return
@@ -149,10 +223,13 @@ export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProject
                   <button disabled={busy} onClick={() => setEditingId("")}>취소</button>
                 </div>
               ) : (
-                <button disabled={busy} onClick={() => {
-                  setEditingId(analysis.analysis_id)
-                  setDraftNickname(analysis.nickname ?? "")
-                }}>별명 편집</button>
+                <div className="analysis-nickname-edit">
+                  <button disabled={busy || isTaskActive()} onClick={() => {
+                    setEditingId(analysis.analysis_id)
+                    setDraftNickname(analysis.nickname ?? "")
+                  }}>별명 편집</button>
+                  <button disabled={busy || isTaskActive()} onClick={() => { setReprocessAnalysisId(analysis.analysis_id); setReprocessMessage("") }}>재처리 선택</button>
+                </div>
               )}
             </div>
           ))}
@@ -164,6 +241,25 @@ export function ProjectsPage({ projects, onOpenProject, onOpenCollage, onProject
         <button disabled={!selected.length || !name.trim() || busy || creationRecoveryPending} onClick={() => void makeProject()}>
           선택한 분석으로 프로젝트 생성
         </button>
+      </div>
+      <div className="panel workflow-card">
+        <h3>저장된 분석 재처리</h3>
+        <p>전사와 단어 시간은 그대로 두고 발음·CTC 정렬과 음향 특징을 다시 계산합니다.</p>
+        <label htmlFor="reprocess-precision">정밀도</label>
+        <select id="reprocess-precision" value={reprocessPrecision} disabled={isTaskActive()} onChange={(event) => setReprocessPrecision(event.target.value as AnalysisPrecision)}>
+          <option value="baseline">기준 정밀도</option><option value="compact">경량 정밀도</option>
+        </select>
+        <label htmlFor="reprocess-device">장치</label>
+        <select id="reprocess-device" value={reprocessDevice} disabled={isTaskActive()} onChange={(event) => setReprocessDevice(event.target.value as "webgpu" | "wasm")}>
+          <option value="wasm">CPU (WASM)</option><option value="webgpu">GPU (WebGPU)</option>
+        </select>
+        <label><input type="checkbox" checked={reprocessHubert} disabled={isTaskActive()} onChange={(event) => setReprocessHubert(event.target.checked)} /> HuBERT 음향 특징 포함</label>
+        <p>필요 모델: CTC {modelReady.ctc ? `· ${modelReady.ctc}` : "· 준비 여부 확인 전"}{reprocessHubert ? ` / HuBERT ${modelReady.hubert ? `· ${modelReady.hubert}` : "· 준비 여부 확인 전"}` : ""}</p>
+        <div className="project-created-recovery">
+          <button disabled={isTaskActive()} onClick={() => void prepareReprocessModels()}>선택한 CTC/HuBERT 모델 준비</button>
+          <button disabled={!reprocessAnalysisId || isTaskActive()} onClick={() => void reprocessSelected()}>{reprocessAnalysisId ? "선택한 분석 재처리" : "분석 목록에서 재처리를 선택하세요"}</button>
+        </div>
+        {reprocessMessage && <p role="status">{reprocessMessage}</p>}
       </div>
       <div className="panel workflow-card">
         <h3>기존 프로젝트</h3>

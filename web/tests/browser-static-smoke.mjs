@@ -4,7 +4,8 @@ import { once } from "node:events"
 import { createServer } from "node:http"
 import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { extname, join, resolve } from "node:path"
+import { dirname, extname, join, resolve } from "node:path"
+import { BROWSER_EXISTING_WORKSPACE_PICKER_ID, BROWSER_WORKSPACE_PICKER_ID } from "../src/browserConstants.ts"
 
 const dist = resolve("dist")
 await stat(join(dist, "index.html"))
@@ -116,18 +117,29 @@ try {
   const attached = await command("Target.attachToTarget", { targetId: target.targetId, flatten: true })
   const session = attached.sessionId
   await Promise.all(["Page.enable", "Runtime.enable", "Network.enable"].map((method) => command(method, {}, session)))
+  const newWorkspacePickerId = JSON.stringify(BROWSER_WORKSPACE_PICKER_ID)
+  const existingWorkspacePickerId = JSON.stringify(BROWSER_EXISTING_WORKSPACE_PICKER_ID)
   await command("Page.addScriptToEvaluateOnNewDocument", { source: `
     Object.defineProperty(FileSystemDirectoryHandle.prototype, "queryPermission", { value: async () => "granted" });
     Object.defineProperty(FileSystemDirectoryHandle.prototype, "requestPermission", { value: async () => "granted" });
-    Object.defineProperty(window, "showDirectoryPicker", { value: async () => {
+    Object.defineProperty(window, "showDirectoryPicker", { value: async (options) => {
+      if (options?.id === ${existingWorkspacePickerId}) return (await navigator.storage.getDirectory()).getDirectoryHandle("workspace-1", { create: true });
       const storage = await navigator.storage.getDirectory();
       const picks = Number(localStorage.getItem("madnolia-smoke-picks") || "0") + 1;
       localStorage.setItem("madnolia-smoke-picks", String(picks));
+      if (options?.id !== ${newWorkspacePickerId}) throw new Error("Unexpected workspace picker ID: " + options?.id);
       return storage.getDirectoryHandle("workspace-" + picks, { create: true });
     }});
   ` }, session)
   await command("Page.navigate", { url: `http://127.0.0.1:${address.port}/madnolia/` }, session)
-  const evaluate = async (expression) => (await command("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, session)).result.value
+  const evaluate = async (expression) => {
+    const response = await command("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, session)
+    if (response.exceptionDetails) {
+      const exception = response.exceptionDetails.exception?.description ?? response.exceptionDetails.text
+      throw new Error(`Browser evaluation failed for ${expression}: ${exception}`)
+    }
+    return response.result.value
+  }
   const waitFor = async (expression, label) => {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       if (await evaluate(expression)) return
@@ -137,17 +149,47 @@ try {
   }
 
   await waitFor("!!document.querySelector('.browser-workspace-gate')", "workspace chooser")
+  await waitFor("!document.querySelector('.browser-workspace-actions button:last-child').disabled", "enabled new-workspace picker")
   await evaluate("document.querySelector('.browser-workspace-actions button:last-child').click()")
   await waitFor("!!document.querySelector('.app-header')", "application after granting workspace")
   await waitFor("document.body.innerText.includes('workspace-1')", "selected OPFS workspace")
   await waitFor("document.body.innerText.includes('No projects') || document.body.innerText.includes('프로젝트')", "local projects screen")
   assert.equal(await evaluate("location.pathname"), "/madnolia/", "asset base should work under the Pages project path")
 
+  const markerBeforeReuse = await evaluate(`(async () => {
+    const workspace = await (await navigator.storage.getDirectory()).getDirectoryHandle("workspace-1");
+    const marker = await workspace.getFileHandle("madnolia-browser.json");
+    const markerBytes = await (await marker.getFile()).text();
+    for (const [directory, filename, contents] of [["projects", "reuse-sentinel.json", "project sentinel"], ["models", "reuse-sentinel.onnx", "model sentinel"]]) {
+      const folder = await workspace.getDirectoryHandle(directory, { create: true });
+      const file = await folder.getFileHandle(filename, { create: true });
+      const writable = await file.createWritable(); await writable.write(contents); await writable.close();
+    }
+    return markerBytes;
+  })()`)
+
   const firstRequestCount = requests.length
   await command("Page.reload", {}, session)
   await waitFor("!!document.querySelector('.app-header')", "workspace restoration after reload")
   await waitFor("document.body.innerText.includes('workspace-1')", "restored OPFS workspace")
   assert.equal(await evaluate("!!document.querySelector('.browser-workspace-gate')"), false, "reload should restore the granted directory without a new picker")
+  await evaluate(`new Promise((resolve, reject) => { const request = indexedDB.deleteDatabase("madnolia-browser-workspace"); request.onsuccess = resolve; request.onerror = () => reject(request.error); })`)
+  await command("Page.reload", {}, session)
+  await waitFor("!!document.querySelector('.browser-workspace-gate')", "existing workspace chooser")
+  await waitFor("Array.from(document.querySelectorAll('.browser-workspace-actions button')).some(button => button.textContent.includes('기존 작업공간 열기') && !button.disabled)", "enabled existing-workspace picker")
+  await evaluate("Array.from(document.querySelectorAll('.browser-workspace-actions button')).find(button => button.textContent.includes('기존 작업공간 열기')).click()")
+  await waitFor("!!document.querySelector('.app-header')", "reopened existing workspace")
+  const reusedContents = await evaluate(`(async () => {
+    const workspace = await (await navigator.storage.getDirectory()).getDirectoryHandle("workspace-1");
+    const marker = await workspace.getFileHandle("madnolia-browser.json");
+    const markerBytes = await (await marker.getFile()).text();
+    const project = await (await (await workspace.getDirectoryHandle("projects")).getFileHandle("reuse-sentinel.json")).getFile().then(file => file.text());
+    const model = await (await (await workspace.getDirectoryHandle("models")).getFileHandle("reuse-sentinel.onnx")).getFile().then(file => file.text());
+    return { markerBytes, project, model };
+  })()`)
+  assert.equal(reusedContents.markerBytes, markerBeforeReuse, "reopening must preserve exact marker bytes")
+  assert.equal(reusedContents.project, "project sentinel", "reopening must preserve project data")
+  assert.equal(reusedContents.model, "model sentinel", "reopening must preserve model data")
   assert.ok(requests.length >= firstRequestCount)
   assert.deepEqual(responseFailures, [], `Static assets must load successfully: ${responseFailures.join(", ")}`)
   const apiNetworkRequests = requests.filter((url) => url.pathname.startsWith("/api/"))
@@ -161,6 +203,7 @@ try {
   browser.kill()
   if (browser.exitCode === null) await Promise.race([once(browser, "exit"), new Promise((resolveWait) => setTimeout(resolveWait, 5_000))])
   await new Promise((resolveClose) => server.close(resolveClose))
+  assert.equal(dirname(resolve(profile)), resolve(tmpdir()), "browser profile must be directly below the temporary directory before cleanup")
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try { await rm(profile, { recursive: true, force: true }); break }
     catch (error) {

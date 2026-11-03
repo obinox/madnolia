@@ -339,3 +339,4 @@ reports/
 .python311/
 /web/.smoke-edge-profile/
 /web/.smoke-chrome-profile/
+!web/src/browser/phonetics/g2pk/table.csv

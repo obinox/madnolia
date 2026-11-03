@@ -1,4 +1,5 @@
 import type { ReactNode } from "react"
+import type { BrowserAnalysisReprocessResult, BrowserInferenceMetadata } from "./browserAnalysis"
 
 import type {
   AnalysisOverview,
@@ -24,6 +25,9 @@ export interface BrowserAnalysisRecord {
   overview: AnalysisOverview
   phones: PhoneOccurrence[]
   acoustic_features: PhoneAcousticFeatures[]
+  acoustic_units_path?: string | null
+  inference_metadata?: BrowserInferenceMetadata
+  reprocessing_metadata?: BrowserAnalysisReprocessResult["inference"] & { processed_at: string }
   audio_path: string
   media_path: string
 }
@@ -31,6 +35,7 @@ export interface BrowserAnalysisRecord {
 export interface BrowserProjectRecord {
   detail: ProjectDetail
   analysis_ids: string[]
+  legacy_centroids_path?: string | null
 }
 
 export interface BrowserExportArtifact {

@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test --test-isolation=none --test-concurrency=1 tests/*.test.mjs",
+    "test": "node --test --test-isolation=process --test-concurrency=1 tests/*.test.mjs",
+    "build:world": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-world-wasm.ps1",
+    "test:world": "node tests/world-wasm-smoke.mjs",
+    "test:world:reference": "node tests/world-wasm-reference.mjs",
     "build": "tsc --noEmit -p tsconfig.app.json && vite build",
     "preview": "vite preview"
   },
@@ -13,6 +16,7 @@
     "@ffmpeg/core": "^0.12.10",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@huggingface/transformers": "^3.8.1",
+    "onnxruntime-web": "1.22.0-dev.20250409-89f8206ba4",
     "@vitejs/plugin-react": "latest",
     "react": "latest",
     "react-dom": "latest",

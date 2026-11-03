@@ -1,0 +1,34 @@
+{
+  "source": "legacy/python:src/madnolia/acoustic_features.py",
+  "source_commit": "f9ff39cd4d60d3c4dcd2e79c3f1b7bb919a416cd",
+  "sample_rate": 16000,
+  "cases": [
+    {
+      "phone_id": "en.vowel.open",
+      "start_ms": 100,
+      "end_ms": 110,
+      "f0_hz": 200.0,
+      "voiced_probability": 0.9745788295764931,
+      "rms_db": -16.98973716646254,
+      "peak_db": -13.97886995826722
+    },
+    {
+      "phone_id": "en.vowel.open",
+      "start_ms": 500,
+      "end_ms": 510,
+      "f0_hz": null,
+      "voiced_probability": 0.0,
+      "rms_db": -160.0,
+      "peak_db": -160.0
+    },
+    {
+      "phone_id": "en.consonant.fricative",
+      "start_ms": 150,
+      "end_ms": 160,
+      "f0_hz": null,
+      "voiced_probability": 0.0,
+      "rms_db": -16.98973716646254,
+      "peak_db": -13.97886995826722
+    }
+  ]
+}

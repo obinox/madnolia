@@ -14,7 +14,7 @@ The supported application is the static browser app in `web/`. It runs analysis,
 | `web/tests/` | Node tests and the static browser smoke test. |
 | `web/vite.config.ts` | Relative asset base for subpath hosting on GitHub Pages. |
 
-The browser workspace stores `madnolia-browser.json` and uses `analyses/`, `projects/`, `collages/`, `media/`, `models/`, and `jobs/`. Its format is not compatible with the Python application's `data/` layout.
+The browser workspace creates `madnolia-browser.json` on first registration and uses `analyses/`, `projects/`, `collages/`, `media/`, `models/`, and `jobs/`. A compatible marked workspace can be selected again after granting browser permission. Its format is not compatible with the Python application's `data/` layout, which is not imported automatically.
 
 ## Retained Python application
 

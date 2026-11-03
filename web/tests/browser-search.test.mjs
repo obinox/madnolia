@@ -11,7 +11,7 @@ registerHooks({
   },
 })
 
-const { searchBrowserAnalyses } = await import("../src/browser/search.ts")
+const { searchBrowserAnalyses, phoneSimilarity } = await import("../src/browser/search.ts")
 
 function phone(id, phoneId, ipa, start) {
   return {
@@ -50,7 +50,8 @@ function record(phones) {
 test("search returns exact phrase fragments with absolute target indexes and acoustic F0", async () => {
   const source = record([
     phone("l-1", "en.consonant.alveolar.lateral", "l", 0),
-    phone("ow-1", "en.vowel.diphthong", "oʊ", 100),
+    phone("o-1", "en.vowel.o", "o", 100),
+    phone("u-1", "en.vowel.u", "ʊ", 200),
   ])
   const result = await searchBrowserAnalyses({
     text: "hello world",
@@ -59,9 +60,9 @@ test("search returns exact phrase fragments with absolute target indexes and aco
     include_approximate: false,
     max_candidates_per_start: 20,
   }, [source])
-  const fragment = result.candidates.find((item) => item.match_status === "EXACT" && item.target_start_index === 2 && item.target_end_index === 4)
+  const fragment = result.candidates.find((item) => item.match_status === "EXACT" && item.target_start_index === 2 && item.target_end_index === 5)
   assert.ok(fragment, "the L OW target fragment should be available for sentence assembly")
-  assert.deepEqual(fragment.occurrence_ids, ["l-1", "ow-1"])
+  assert.deepEqual(fragment.occurrence_ids, ["l-1", "o-1", "u-1"])
   assert.equal(fragment.alignments[0].source_f0_hz, 180)
   assert.equal(fragment.alignments[0].voiced_probability, 0.9)
   assert.equal(result.target_phones[2].exact_available, true)
@@ -78,4 +79,12 @@ test("an already-aborted search rejects with AbortError", async () => {
     include_exact: true,
     include_approximate: true,
   }, [record([phone("hh-1", "en.consonant.glottal.fricative", "h", 0)])], undefined, controller.signal), { name: "AbortError" })
+})
+
+test("search phone similarities match pinned Japanese and Korean override and fallback pairs symmetrically", () => {
+  assert.equal(phoneSimilarity("ja.vowel.u", "ko.vowel.eu"), 0.97)
+  assert.equal(phoneSimilarity("ko.vowel.eu", "ja.vowel.u"), 0.97)
+  assert.equal(phoneSimilarity("ja.consonant.geminate", "ko.consonant.velar.plosive.fortis"), 0.64)
+  assert.equal(phoneSimilarity("ko.consonant.velar.plosive.fortis", "ja.consonant.geminate"), 0.64)
+  assert.equal(phoneSimilarity("ja.consonant.geminate", "ko.consonant.velar.plosive.lenis"), 0.35)
 })

@@ -1,0 +1,53 @@
+{
+  "source": "5528ab02b63338ce59bf049f7596d5e50657b53b src/madnolia/transcription.py and src/madnolia/constants.py",
+  "context": {
+    "words": ["w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10", "w11", "w12", "w13", "w14", "w15", "w16", "w17", "w18", "w19", "w20", "w21", "w22", "w23", "w24", "w25", "w26"],
+    "at_gap_ms": 10000,
+    "beyond_gap_ms": 10001,
+    "expected_at_gap": "w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15 w16 w17 w18 w19 w20 w21 w22 w23 w24 w25 w26",
+    "expected_beyond_gap": ""
+  },
+  "tokens": [
+    { "duration_seconds": 3.25, "expected": 32 },
+    { "duration_seconds": 3.45, "expected": 34 },
+    { "duration_seconds": 40, "expected": 300 },
+    { "duration_seconds": 0, "expected": 32 }
+  ],
+  "repetition": [
+    { "texts": ["A", "A", "A", "A", "A", "A", "a", "a"], "expected": true },
+    { "texts": ["same", "same", "same", "same", "same", "same", "other"], "expected": false },
+    { "texts": ["same", "same", "same", "same", "same", "same", "other", "other"], "expected": true },
+    { "texts": [" ", "same", "same", "same", "same", "same", "same", "other", "other"], "expected": true }
+  ],
+  "merge": {
+    "window": { "start_ms": 0, "end_ms": 1000, "keep_start_ms": 100, "keep_end_ms": 900 },
+    "speech_regions": [
+      { "type": "speech", "start_ms": 100, "end_ms": 201 },
+      { "type": "non_speech", "start_ms": 201, "end_ms": 300 },
+      { "type": "speech", "start_ms": 300, "end_ms": 400 }
+    ],
+    "words": [
+      { "text": "keep-low", "start_ms": 90, "end_ms": 110 },
+      { "text": "keep-floor-midpoint", "start_ms": 99, "end_ms": 102 },
+      { "text": "reject-keep-high", "start_ms": 890, "end_ms": 910 },
+      { "text": "reject-speech-high", "start_ms": 191, "end_ms": 211 },
+      { "text": "keep-speech-low", "start_ms": 140, "end_ms": 160 },
+      { "text": "reject-nonspeech", "start_ms": 220, "end_ms": 280 },
+      { "text": "reject-zero", "start_ms": 350, "end_ms": 350 },
+      { "text": "reject-reversed", "start_ms": 350, "end_ms": 340 },
+      { "text": "reject-nan", "start_ms": "NaN", "end_ms": 360 },
+      { "text": "reject-infinity", "start_ms": 360, "end_ms": "Infinity" }
+    ],
+    "expected": [
+      { "text": "keep-low", "start_ms": 90, "end_ms": 110, "confidence": null },
+      { "text": "keep-floor-midpoint", "start_ms": 99, "end_ms": 102, "confidence": null },
+      { "text": "keep-speech-low", "start_ms": 140, "end_ms": 160, "confidence": null }
+    ]
+  },
+  "end_clip": {
+    "window": { "start_ms": 500, "end_ms": 1000, "keep_start_ms": 500, "keep_end_ms": 1000 },
+    "speech_regions": [{ "type": "speech", "start_ms": 500, "end_ms": 1000 }],
+    "words": [{ "text": "clip", "start_ms": 450, "end_ms": 700 }],
+    "expected": [{ "text": "clip", "start_ms": 950, "end_ms": 1000, "confidence": null }]
+  }
+}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 
-import { controlAnalysisJob, fetchAnalysisHardware, fetchAnalysisJob, fetchVideos, startAnalysis, uploadVideo } from "../api/analysis"
+import { controlAnalysisJob, fetchAnalysisHardware, fetchAnalysisJob, fetchVideos, retryAnalysisJob, startAnalysis, uploadVideo } from "../api/analysis"
 import {
   VIDEO_UPLOAD_ACCEPT,
   ANALYSIS_MODEL_DOWNLOAD_STAGE,
@@ -13,6 +13,7 @@ import {
   DEFAULT_ANALYSIS_ACOUSTIC_UNITS,
 } from "../constants"
 import { BROWSER_ASR_DEFAULT_MODEL, BROWSER_ASR_MODELS } from "../browserAnalysisConstants"
+import { analysisModelSelections, getModelFolderHandle, getModelReadiness, prepareModel } from "../browser/modelStorage"
 import type { AnalysisAction, AnalysisJob, AnalysisPageProps, AnalysisSettings, DetectedAnalysisHardware, GlobalTaskAction } from "../types"
 import { useGlobalTask } from "../globalTask"
 
@@ -29,7 +30,7 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
   const [filename, setFilename] = useState("")
   const [settings, setSettings] = useState<AnalysisSettings>({
     filename: "", nickname: "", model_name: BROWSER_ASR_DEFAULT_MODEL, backend: "transformers-js",
-    device: "wasm", alignment_mode: "estimated",
+    device: "wasm", alignment_mode: "ctc", precision: "baseline",
     candidate_models: [], acoustic_units: DEFAULT_ANALYSIS_ACOUSTIC_UNITS,
   })
   const [jobId, setJobId] = useState(() => {
@@ -37,6 +38,7 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
   })
   const jobIdRef = useRef(jobId)
   const [job, setJob] = useState<AnalysisJob | null>(null)
+  const [pollGeneration, setPollGeneration] = useState(0)
   const [displayPercent, setDisplayPercent] = useState(0)
   const displayedPercentRef = useRef(0)
   const [message, setMessage] = useState("")
@@ -48,9 +50,11 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
   const [hardware, setHardware] = useState<DetectedAnalysisHardware | null>(null)
   const deviceChangedRef = useRef(false)
   const modelOptions = BROWSER_ASR_MODELS
+  const selectedModel = modelOptions.find((model) => model.id === settings.model_name)
   const clearStoredJob = () => { try { window.localStorage.removeItem(ANALYSIS_JOB_STORAGE_KEY) } catch { } }
 
   const ensureAnalysisTask = (label: string, stage: string, percent: number | null = null) => {
+    if (jobRef.current && !["running", "pausing", "paused", "stopping"].includes(jobRef.current.status)) return null
     if (taskIdRef.current) return taskIdRef.current
     const id = beginTask({ label, stage, percent, cancel: cancelAnalysis, cancelLabel: "분석 중단" })
     taskIdRef.current = id
@@ -101,14 +105,19 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
     if (!jobId) return
     let active = true
     let pending = false
+    let settled = false
     const poll = async () => {
-      if (pending) return
+      if (pending || settled) return
       pending = true
       try {
         const current = await fetchAnalysisJob(jobId)
         if (!active) return
         setJob(current)
         jobRef.current = current
+        if (current.settings) {
+          setSettings(current.settings)
+          setFilename(current.settings.filename)
+        }
         if (["running", "pausing", "paused", "stopping"].includes(current.status)) {
           const id = ensureAnalysisTask(
             current.download_model && current.stage === ANALYSIS_MODEL_DOWNLOAD_STAGE ? `모델 준비: ${current.download_model}` : `분석: ${current.filename}`,
@@ -125,9 +134,7 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
           })
           return
         }
-        clearStoredJob()
-        jobIdRef.current = ""
-        setJobId("")
+        settled = true
         const finishedTaskId = taskIdRef.current
         if (actionTaskIdRef.current === finishedTaskId) {
           actionGenerationRef.current += 1
@@ -143,6 +150,7 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
       } catch (error) {
         if (!active) return
         if (error instanceof Error && error.name === "AnalysisJobNotFoundError") {
+          settled = true
           clearStoredJob()
           jobIdRef.current = ""
           setJobId("")
@@ -170,7 +178,7 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
     void poll()
     const timer = window.setInterval(() => void poll(), ANALYSIS_PROGRESS_POLL_MS)
     return () => { active = false; window.clearInterval(timer) }
-  }, [jobId])
+  }, [jobId, pollGeneration])
 
   useEffect(() => {
     if (!job) return
@@ -201,6 +209,13 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
 
   const analyze = async () => {
     if (isTaskActive()) return
+    const selections = analysisModelSelections(settings)
+    const readiness = await Promise.all(selections.map((selection) => getModelReadiness(selection)))
+    const unavailable = readiness.findIndex((status) => !status.ready)
+    if (unavailable >= 0) {
+      setMessage(`선택한 모델이 준비되지 않았습니다. ${readiness[unavailable].message} 아래의 '선택 모델 일괄 준비'를 실행한 뒤 분석을 시작하세요.`)
+      return
+    }
     const taskId = ensureAnalysisTask(`분석: ${filename}`, "분석 요청 중", null)
     if (!taskId) return
     const busyOwner = ++actionGenerationRef.current
@@ -237,6 +252,33 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
         setBusy(false)
       }
     }
+  }
+
+  const prepareSelectedModels = async () => {
+    if (isTaskActive() || !getModelFolderHandle()) {
+      setMessage("상단의 로컬 모델 메뉴에서 모델 폴더를 연결하세요.")
+      return
+    }
+    const selections = analysisModelSelections(settings)
+    const controller = new AbortController()
+    const taskId = beginTask({ label: "선택 모델 일괄 준비", stage: "모델 준비 시작", percent: 0, cancel: () => controller.abort(), cancelLabel: "모델 준비 취소" })
+    if (!taskId) return
+    setMessage("")
+    try {
+      const folder = getModelFolderHandle()
+      if (!folder) throw new Error("모델 폴더 연결이 끊어졌습니다. 다시 연결하세요.")
+      for (const [index, selection] of selections.entries()) {
+        await prepareModel(selection, controller.signal, (progress) => {
+          const fraction = progress.expected_bytes ? progress.received_bytes / progress.expected_bytes : 0
+          updateTask(taskId, { label: "선택 모델 일괄 준비", stage: `${selection.model_id}: ${progress.current_file}`, percent: Math.min(99, ((index + fraction) / selections.length) * 100) })
+        }, folder)
+        if (controller.signal.aborted) throw new DOMException("모델 준비가 취소되었습니다.", "AbortError")
+        updateTask(taskId, { stage: `모델 ${index + 1}/${selections.length} 준비 완료`, percent: ((index + 1) / selections.length) * 100 })
+      }
+      updateTask(taskId, { stage: "선택한 모델을 모두 준비했습니다.", percent: 100 })
+    } catch (error) {
+      if (!(error instanceof Error && error.name === "AbortError")) setMessage(error instanceof Error ? error.message : String(error))
+    } finally { finishTask(taskId) }
   }
 
   const cancelAnalysis = async () => {
@@ -281,6 +323,43 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
         if (jobRef.current) updateTask(taskId, { actions: modalActions(jobRef.current) })
       }
     }
+  }
+
+  const resumeSavedJob = async () => {
+    const currentJob = jobRef.current
+    if (!currentJob || !jobIdRef.current || isTaskActive() || !["failed", "stopped"].includes(currentJob.status)) return
+    const taskId = beginTask({ label: `저장 분석 재개: ${currentJob.filename}`, stage: "저장 작업공간과 모델 확인 중", percent: null, cancel: cancelAnalysis, cancelLabel: "분석 중단" })
+    if (!taskId) return
+    taskIdRef.current = taskId
+    setBusy(true)
+    setMessage("")
+    try {
+      const resumed = await retryAnalysisJob(currentJob.job_id)
+      if (taskIdRef.current !== taskId || jobIdRef.current !== currentJob.job_id) return
+      jobRef.current = resumed
+      setJob(resumed)
+      setPollGeneration((generation) => generation + 1)
+      updateTask(taskId, { label: `분석: ${resumed.filename}`, stage: resumed.stage, percent: resumed.percent, actions: modalActions(resumed), cancel: cancelAnalysis, cancelLabel: "분석 중단" })
+    } catch (error) {
+      if (taskIdRef.current === taskId) {
+        setMessage(error instanceof Error ? error.message : String(error))
+        finishTask(taskId)
+        setBusy(false)
+        taskIdRef.current = null
+        setPollGeneration((generation) => generation + 1)
+      }
+    } finally {
+      if (taskIdRef.current === taskId) setBusy(false)
+    }
+  }
+
+  const dismissSavedJob = () => {
+    if (jobRef.current && ["running", "pausing", "paused", "stopping"].includes(jobRef.current.status)) return
+    clearStoredJob()
+    jobIdRef.current = ""
+    setJobId("")
+    setJob(null)
+    jobRef.current = null
   }
 
   const importVideo = async (file?: File) => {
@@ -373,8 +452,24 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
             }}>
               <option value="webgpu">WebGPU</option><option value="wasm">WebAssembly CPU</option>
             </select>
+            {selectedModel && <span>선택 정밀도: {selectedModel.artifacts[settings.precision].dtype[settings.device]}</span>}
           </label>
-          <label>음소 시간 (추정)<span>음성 에너지 변화로 추정합니다.</span></label>
+          <label>모델 정밀도
+            <select value={settings.precision} disabled={!!jobId} onChange={(event) => setSettings({
+              ...settings, precision: event.target.value as AnalysisSettings["precision"],
+            })}>
+              <option value="baseline">FP32 기준 정밀도</option><option value="compact">장치별 양자화</option>
+            </select>
+            <span>양자화는 용량과 메모리를 줄이며, 기준 정밀도와의 품질 차이는 기기별로 확인해야 합니다.</span>
+          </label>
+          <label>음소 정렬
+            <select value={settings.alignment_mode} disabled={!!jobId} onChange={(event) => setSettings({
+              ...settings, alignment_mode: event.target.value as AnalysisSettings["alignment_mode"],
+            })}>
+              <option value="ctc">wav2vec2 CTC 강제 정렬</option><option value="estimated">단어 시간 기반 추정</option>
+            </select>
+            {settings.alignment_mode === "ctc" && <span>CTC 정밀도: {settings.precision === "baseline" ? "fp32" : settings.device === "webgpu" ? "fp16" : "q4"}</span>}
+          </label>
           <label>추가 전사 모델
             <select value={settings.candidate_models[0] ?? ""} disabled={!!jobId} onChange={(event) => setSettings({
               ...settings, candidate_models: event.target.value ? [event.target.value] : [],
@@ -388,11 +483,12 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
           <label className="analysis-checkbox">
             <input type="checkbox" checked={settings.acoustic_units} disabled={!!jobId}
               onChange={(event) => setSettings({ ...settings, acoustic_units: event.target.checked })} />
-            음향 단위 분석 (스펙트럼 특징 군집화)
+            HuBERT 음향 단위 분석 (768차원 음성 임베딩 군집화)
           </label>
         </div>
-        {hardware && <p>감지된 실행 장치: {hardware.device === "webgpu" ? "WebGPU" : "WebAssembly CPU"}{hardware.gpu_vendor ? ` · ${hardware.gpu_vendor}` : ""}. 음소 시간은 음성 에너지로 추정하며, 음향 단위는 스펙트럼 특징을 군집화합니다.</p>}
-        <button disabled={!filename || !hardware || !!jobId || busy} onClick={() => void analyze()}>
+        <button disabled={busy || isTaskActive() || !!jobId} onClick={() => void prepareSelectedModels()}>선택 모델 일괄 준비</button>
+        {hardware && <p>감지된 실행 장치: {hardware.device === "webgpu" ? "WebGPU" : "WebAssembly CPU"}{hardware.gpu_vendor ? ` · ${hardware.gpu_vendor}` : ""}. {settings.alignment_mode === "ctc" ? "음소 경계는 wav2vec2 CTC logits로 정렬합니다." : "음소 경계는 단어 구간 안에서 추정합니다."} {settings.acoustic_units ? "음향 단위는 HuBERT 음성 임베딩으로 군집화합니다." : "음향 단위 분석은 꺼져 있습니다."}</p>}
+        <button type="button" data-testid="start-analysis" disabled={!filename || !hardware || !!jobId || busy || isTaskActive()} onClick={() => void analyze()}>
           {jobId ? "분석 진행 중" : "분석 시작"}
         </button>
       </div>
@@ -420,6 +516,7 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
               style={{ width: `${displayPercent}%` }} />
           </div>
           <p>전사 진행률은 처리한 영상 구간을 기준으로 표시합니다. 남은 시간의 비율은 아닙니다.</p>
+          {job.interrupted_stage && ["failed", "stopped"].includes(job.status) && <p data-testid="analysis-resume-progress">Interrupted during {job.interrupted_stage}{job.total_windows ? `; ${job.completed_windows ?? 0}/${job.total_windows} windows completed (${job.reused_windows ?? 0} reused)` : ""}</p>}
           {job.status === "failed" && <p className="error">{job.error}</p>}
           {job.status === "stopped" && <p>분석을 중단했습니다. 미완료 결과는 정리됩니다.</p>}
           {job.status === "pausing" && <p>현재 처리 구간이 끝나면 일시정지합니다.</p>}
@@ -440,6 +537,14 @@ export function AnalysisPage({ onGoToProjects }: AnalysisPageProps) {
           {job.status === "complete" && (
             <button onClick={onGoToProjects}>완료된 분석으로 프로젝트 만들기 →</button>
           )}
+          {["failed", "stopped"].includes(job.status) && (
+            <div className="analysis-controls">
+              <button type="button" data-testid="resume-analysis-job" disabled={busy || isTaskActive() || !job.settings}
+                onClick={() => void resumeSavedJob()}>저장 분석 이어하기</button>
+              <button type="button" data-testid="dismiss-analysis-job" disabled={busy} onClick={dismissSavedJob}>저장 작업 닫기</button>
+            </div>
+          )}
+          {job.status === "complete" && <button type="button" data-testid="dismiss-analysis-job" onClick={dismissSavedJob}>저장 작업 닫기</button>}
         </div>
       )}
       {message && <p className="error" role="alert">{message}</p>}

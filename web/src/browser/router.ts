@@ -204,9 +204,13 @@ async function projectSummary(record: BrowserProjectRecord): Promise<ProjectSumm
 }
 
 async function listProjects(): Promise<ProjectSummary[]> {
+  await (await import("./analysis")).recoverReprocessTransaction()
   const ids = await listWorkspaceDirectories("projects")
-  const records = await Promise.all(ids.map(readProject))
-  return Promise.all(records.map(projectSummary))
+  const summaries = (await Promise.all(ids.map(async (id) => {
+    try { return await projectSummary(await readProject(id)) }
+    catch { return null }
+  }))).filter((summary): summary is ProjectSummary => summary !== null)
+  return summaries
 }
 
 async function createProject(body: BrowserProjectCreateRequest): Promise<BrowserProjectCreateResponse> {
@@ -376,6 +380,7 @@ export async function handleBrowserRequest(path: string, init?: RequestInit): Pr
       const project = await readProject(pathId(parts[2]))
       const record = (await sourceRecords(project)).find((item) => item.source.source_id === pathId(parts[4]))
       if (!record) throw new Error("프로젝트 원본을 찾을 수 없습니다.")
+      if (!record.media_path) throw new Error("Python 분석은 가져왔지만 원본 미디어 파일이 없습니다. 원본 영상 파일을 data/input/videos에 연결한 뒤 다시 가져오세요.")
       const file = await readWorkspaceFile(record.media_path)
       return new Response(file, { headers: { "Content-Type": file.type || "application/octet-stream" } })
     }

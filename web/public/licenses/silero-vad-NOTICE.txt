@@ -1,0 +1,5 @@
+Model: silero_vad_v6.onnx, distributed in faster-whisper 1.2.1.
+Model source: https://github.com/snakers4/silero-vad (Silero VAD v6, MIT; see silero-vad-LICENSE).
+Redistribution source: faster-whisper 1.2.1 bundled model asset (MIT wrapper license is in faster-whisper-LICENSE).
+SHA-256: 4cbf549b8326f60f80f2536d9eefb450a9abe83365a098031c89719f1be17d2
+The inference and speech timestamp behavior follows faster-whisper's bundled faster_whisper/vad.py.

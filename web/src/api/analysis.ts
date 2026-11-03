@@ -7,6 +7,8 @@ import type {
   VideoUploadResult,
   ApiErrorResponse,
   JobIdResponse,
+  BrowserAnalysisReprocessJob,
+  BrowserAnalysisReprocessRequest,
 } from "../types"
 import { request } from "./client"
 import { runtimeFetch } from "./transport"
@@ -46,6 +48,15 @@ export const renameAnalysis = (analysisId: string, nickname: string): Promise<An
 export const startAnalysis = (settings: AnalysisSettings): Promise<JobIdResponse> =>
   request("/api/analyses", undefined, { method: "POST", body: JSON.stringify(settings) })
 
+export const startAnalysisReprocess = (settings: BrowserAnalysisReprocessRequest): Promise<BrowserAnalysisReprocessJob> =>
+  request(`/api/analyses/${encodeURIComponent(settings.analysis_id)}/reprocess`, undefined, { method: "POST", body: JSON.stringify(settings) })
+
+export const fetchAnalysisReprocessJob = (jobId: string): Promise<BrowserAnalysisReprocessJob> =>
+  request(`/api/analysis-reprocess/${encodeURIComponent(jobId)}`)
+
+export const stopAnalysisReprocess = (jobId: string): Promise<BrowserAnalysisReprocessJob> =>
+  request(`/api/analysis-reprocess/${encodeURIComponent(jobId)}/stop`, undefined, { method: "POST" })
+
 export const fetchAnalysisJob = async (jobId: string): Promise<AnalysisJob> => {
   const response = await runtimeFetch(`/api/analysis-jobs/${encodeURIComponent(jobId)}`)
   if (!response.ok) {
@@ -63,3 +74,6 @@ export const fetchAnalysisJob = async (jobId: string): Promise<AnalysisJob> => {
 
 export const controlAnalysisJob = (jobId: string, action: AnalysisAction): Promise<AnalysisJob> =>
   request(`/api/analysis-jobs/${encodeURIComponent(jobId)}/${action}`, undefined, { method: "POST" })
+
+export const retryAnalysisJob = (jobId: string): Promise<AnalysisJob> =>
+  request(`/api/analysis-jobs/${encodeURIComponent(jobId)}/retry`, undefined, { method: "POST" })

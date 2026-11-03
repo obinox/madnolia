@@ -26,12 +26,31 @@ function medianPitch(samples) {
   return pitches[Math.floor(pitches.length / 2)]
 }
 
+function oracleSignal(length = 3200) {
+  return Float32Array.from({ length }, (_, index) =>
+    0.31 * Math.sin(2 * Math.PI * 220 * index / sampleRate)
+      + 0.12 * Math.sin(2 * Math.PI * 440 * index / sampleRate)
+      + 0.04 * Math.sin(2 * Math.PI * 880 * index / sampleRate),
+  )
+}
+
+function assertOracleSamples(actual, indices, expected, tolerance = 2e-5) {
+  for (const [index, value] of indices.map((index, offset) => [index, expected[offset]])) {
+    assert.ok(Math.abs(actual[index] - value) <= tolerance, `sample ${index}: ${actual[index]} != ${value}`)
+  }
+}
+
 test("WSOLA stretches duration while keeping a steady tone near its source pitch", () => {
   const source = tone(220, 500)
   const stretched = stretchAudio(source, Math.round(source.length * 1.35))
   assert.equal(stretched.length, Math.round(source.length * 1.35))
   assert.ok(Math.abs(medianPitch(stretched) - 220) < 4)
   assert.ok(stretched.every(Number.isFinite))
+  const oracle = stretchAudio(oracleSignal(), 4160)
+  assertOracleSamples(oracle, [0, 1, 17, 79, 159, 319, 640, 1024, 1599, 2048, 3000, 4159], [
+    0, 0.06092978, 0.31683412, 0.29902872, 0.33165699, 0.07321158,
+    -0.32617509, 0.26663992, -0.1396791, 0.3418878, 0.32243326, -0.06092978,
+  ])
 })
 
 test("autocorrelation pitch estimation selects the fundamental of a 440 Hz sine", () => {
@@ -43,9 +62,14 @@ test("pitch shifting changes pitch while preserving the requested sample duratio
   const shifted = pitchShift(source, 200, source.length)
   assert.equal(shifted.length, source.length)
   assert.ok(Math.abs(medianPitch(shifted) - 220 * 2 ** (2 / 12)) < 6)
+  const oracle = pitchShift(oracleSignal(), 200)
+  assertOracleSamples(oracle, [0, 1, 17, 79, 159, 319, 640, 1024, 1599, 2048, 3000], [
+    -0.00000001, 0.06809514, 0.30258915, 0.32150003, -0.01311232, -0.27931008,
+    -0.33747777, -0.32765213, -0.21113344, -0.04246097, -0.2121516,
+  ])
 })
 
-test("a pitch curve renders changing pitch without changing duration", async () => {
+test("a varying pitch curve matches the Python curve renderer", async () => {
   const source = tone(220, 650)
   const cents = Float32Array.from({ length: source.length }, (_, index) => index < source.length / 2 ? 0 : 200)
   const rendered = await renderPitchCurve(source, cents)
@@ -54,6 +78,32 @@ test("a pitch curve renders changing pitch without changing duration", async () 
   assert.equal(rendered.length, source.length)
   assert.ok(Math.abs(early - 220) < 8)
   assert.ok(Math.abs(late - 220 * 2 ** (2 / 12)) < 10)
+  const oracleSource = oracleSignal()
+  const oracleCents = Float32Array.from({ length: oracleSource.length }, (_, index) => 200 * index / (oracleSource.length - 1))
+  const oracle = await renderPitchCurve(oracleSource, oracleCents)
+  assertOracleSamples(oracle, [0, 1, 17, 79, 159, 319, 640, 1024, 1599, 2048, 3000], [
+    0, 0.060939, 0.31679049, 0.3016943, 0.32950211, 0.02172935,
+    -0.30964187, 0.15910591, -0.16261464, 0.30473983, 0.18959913,
+  ])
+})
+
+test("formant correction matches the cepstral Python reference", async () => {
+  const source = oracleSignal()
+  const cents = new Float32Array(source.length)
+  const corrected = await renderPitchCurve(source, cents, undefined, 4)
+  assertOracleSamples(corrected, [0, 1, 17, 79, 159, 319, 640, 1024, 1599, 2048, 3000], [
+    0.04916558, 0.17564915, 0.22497162, 0.3570579, 0.20875975, 0.02412573,
+    -0.20436394, 0.35706034, -0.08995823, 0.23963112, 0.27455401,
+  ], 5e-5)
+})
+
+test("pitch estimation includes the final off-grid analysis frame", () => {
+  const samples = tone(440, 60.0625)
+  const frames = estimatePitch(samples, sampleRate)
+  assert.equal(frames.length, 4)
+  assert.equal(frames.at(-1).timeMs, 40.0625)
+  assert.ok(Math.abs(frames.at(-1).hz - 440.006574) < 0.1)
+  assert.ok(Math.abs(frames.at(-1).periodicity - 0.9999) < 0.01)
 })
 
 test("WAV encoding writes mono PCM16 headers and clips non-finite samples safely", async () => {

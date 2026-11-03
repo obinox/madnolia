@@ -1,6 +1,7 @@
 import type { BrowserModelCacheEntry, BrowserModelCacheItem } from "../types/browserAnalysis"
 import { BROWSER_MODEL_CACHE_INDEX, BROWSER_MODEL_CACHE_ROOT } from "../browserAnalysisConstants"
 import { getWorkspaceHandle, listWorkspaceFiles, readWorkspaceJson, removeWorkspaceEntry, writeWorkspaceJson } from "./workspace"
+import { createModelFolderCache } from "./modelStorage"
 
 let cacheIndexQueue: Promise<void> = Promise.resolve()
 
@@ -88,22 +89,29 @@ async function workerRemove(root: FileSystemDirectoryHandle, path: string): Prom
   await directory.removeEntry(parts.at(-1)!)
 }
 
-export function createWorkspaceModelCache(root = getWorkspaceHandle()): Cache {
+export function createWorkspaceModelCache(root = getWorkspaceHandle(), modelFolder?: FileSystemDirectoryHandle | null): Cache {
+  const folderCache = modelFolder ? createModelFolderCache(modelFolder) : null
   return {
     async match(request: RequestInfo | URL): Promise<Response | undefined> {
+      const modelFile = await folderCache?.match(request)
+      if (modelFile) return modelFile
       const url = requestUrl(request)
       const key = await keyFor(url)
       const entry = (await entries(root))[key]
       if (!entry) return undefined
       try {
         const file = await workerRead(root, entry.path)
-        return new Response(file, { headers: { "Content-Type": entry.content_type } })
+        return new Response(file, { headers: { "Content-Type": entry.content_type, "Content-Length": String(file.size) } })
       } catch {
         return undefined
       }
     },
     async put(request: RequestInfo | URL, response: Response): Promise<void> {
       if (!response.ok) return
+      if (folderCache) {
+        await folderCache.put(request, response.clone())
+        return
+      }
       const url = requestUrl(request)
       const key = await keyFor(url)
       const path = `${BROWSER_MODEL_CACHE_ROOT}/${key}.bin`

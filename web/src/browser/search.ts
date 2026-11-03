@@ -24,12 +24,20 @@ import {
   BROWSER_SEARCH_MAX_TARGET_SPAN,
   BROWSER_SEARCH_MIN_SIMILARITY,
   BROWSER_SEARCH_YIELD_INTERVAL,
+  SEARCH_PHONE_FALLBACK_SIMILARITIES,
+  SEARCH_PHONE_SIMILARITY_OVERRIDES,
+  searchPhonePairKey,
 } from "../browserSearchConstants"
 import { listWorkspaceDirectories, readWorkspaceJson } from "./workspace"
 
-function phoneSimilarity(targetId: string, sourceId: string): number {
+export function phoneSimilarity(targetId: string, sourceId: string): number {
   if (targetId === "und.approximate.unknown" || sourceId === "und.approximate.unknown") return 0
   if (targetId === sourceId) return 1
+  const key = searchPhonePairKey(targetId, sourceId)
+  const override = SEARCH_PHONE_SIMILARITY_OVERRIDES[key]
+  if (override !== undefined) return override
+  const fallback = SEARCH_PHONE_FALLBACK_SIMILARITIES[key]
+  if (fallback !== undefined) return fallback
   const target = targetId.split(".")
   const source = sourceId.split(".")
   if (target.length < 3 || source.length < 3) return 0
@@ -203,6 +211,7 @@ function rankAnchors(target: QueryPhone, phones: PhoneOccurrence[]): number[] {
 function sortCandidates(left: UnitCandidate, right: UnitCandidate): number {
   return left.target_start_index - right.target_start_index
     || (left.match_status === "EXACT" ? 0 : 1) - (right.match_status === "EXACT" ? 0 : 1)
+    || Number(left.fallback) - Number(right.fallback)
     || right.target_end_index - left.target_end_index
     || right.score - left.score
     || left.source_start_ms - right.source_start_ms
@@ -234,7 +243,7 @@ export async function searchBrowserAnalyses(
   }
   await checkpoint()
   const { pronounceBrowserText } = await import("./phonetics")
-  const pronunciation = pronounceBrowserText(request.text, request.input_language)
+  const pronunciation = await pronounceBrowserText(request.text, request.input_language)
   if (!pronunciation.length) throw new Error("검색할 발음이 없습니다.")
   const allPhones = included.flatMap((record) => record.phones)
   const exactIds = new Set(allPhones.filter((phone) => phone.phone_id !== "und.approximate.unknown").map((phone) => phone.phone_id))
@@ -347,7 +356,7 @@ export async function searchBrowserAnalyses(
                 record.source.source_id,
                 path,
                 false,
-                path.similarity < BROWSER_SEARCH_APPROXIMATE_MIN_SIMILARITY,
+                path.similarity < BROWSER_SEARCH_APPROXIMATE_MIN_SIMILARITY || path.alignments.some((item) => item.target_phone_id !== null && item.source_phone_id !== null && SEARCH_PHONE_FALLBACK_SIMILARITIES[searchPhonePairKey(item.target_phone_id, item.source_phone_id)] !== undefined),
               )
               const key = candidate.candidate_id
               const previous = ranked.get(key)

@@ -21,6 +21,7 @@ import type {
   BrowserProgressCallback,
   BrowserRenderRegion,
   BrowserRenderUnit,
+  BrowserWorldSourceContext,
 } from "../types/browserAudio"
 import {
   BROWSER_AUDIO_MAX_DURATION_MS,
@@ -36,10 +37,14 @@ import {
   BROWSER_AUDIO_SAMPLE_RATE,
   BROWSER_AUDIO_WAV_BITS,
   BROWSER_FFMPEG_EXEC_TIMEOUT_MS,
+  BROWSER_WORLD_CONTEXT_MS,
+  BROWSER_WORLD_FRAME_PERIOD_MS,
 } from "../browserAudioConstants"
 import { readWorkspaceFile, readWorkspaceJson } from "./workspace"
 import { cleanupFfmpegFiles, withBrowserFfmpeg } from "./ffmpeg"
 import { encodeWav, estimatePitch, renderPitchCurve, resampleLinear, stretchAudio } from "./audioDsp"
+import { analyzeWorldF0, renderWorldMappedTimeline } from "./worldPitch"
+import { buildWorldVibratoCents, canCopyRegionAudio, copyRegionAudio, overlayWorldSlices } from "./regionWorldMerge"
 
 const checkAbort = (signal?: AbortSignal): void => {
   if (signal?.aborted) throw new DOMException("Operation cancelled", "AbortError")
@@ -274,6 +279,12 @@ const sourceSlice = (audio: BrowserAudioData, startMs: number, endMs: number): F
   return audio.samples.slice(start, end)
 }
 
+const worldSourceContext = (audio: BrowserAudioData, startMs: number, endMs: number): BrowserWorldSourceContext => {
+  const contextStartMs = Math.max(0, startMs - BROWSER_WORLD_CONTEXT_MS)
+  const contextEndMs = Math.min(audio.samples.length * 1000 / audio.sampleRate, endMs + BROWSER_WORLD_CONTEXT_MS)
+  return { samples: sourceSlice(audio, contextStartMs, contextEndMs), contextStartMs }
+}
+
 const applyVolumeEnvelope = (samples: Float32Array, points: TimelineSegment["volume_envelope"]): void => {
   if (!points?.length) return
   for (let index = 0; index < samples.length; index += 1) {
@@ -307,49 +318,92 @@ const segmentOutput = async (
   const ownerUnits = new Map<string, PhoneUnit>()
   for (const item of allSegments) for (const unit of item.phone_units) ownerUnits.set(`${item.segment_id}:${unit.phone_unit_id}`, unit)
   if (regions.length) {
-    for (const { region, startMs, endMs } of regions) {
-      checkAbort(signal)
-      const start = Math.max(0, Math.round(startMs * audio.sampleRate / 1000))
-      const end = Math.min(output.length, Math.round(endMs * audio.sampleRate / 1000))
-      if (end <= start) continue
-      let clip = stretchAudio(sourceSlice(audio, region.source_start_ms, region.source_end_ms), end - start)
-      const regionF0 = estimatePitch(sourceSlice(audio, region.source_start_ms, region.source_end_ms), audio.sampleRate)
-        .filter((frame) => frame.hz !== null)
-      const sourceMidi = region.source_f0_hz && region.source_f0_hz > 0
-        ? hzToMidi(region.source_f0_hz)
-        : regionF0.length ? hzToMidi(regionF0.map((frame) => frame.hz as number).sort((a, b) => a - b)[Math.floor(regionF0.length / 2)]) : null
-      const cents = new Float32Array(clip.length)
-      const unitsHere = units.filter(({ unit }) => unit.source_start_ms !== null && unit.source_end_ms !== null && unit.source_start_ms < region.source_end_ms && unit.source_end_ms > region.source_start_ms)
-      for (let index = 0; index < clip.length; index += 1) {
-        const localMs = index * 1000 / audio.sampleRate
-        const sourceMs = region.source_start_ms + localMs * (region.source_end_ms - region.source_start_ms) / Math.max(1, endMs - startMs)
-        let amount = region.relative_pitch_cents
-        if (composition.segments.length && segment.pitch_envelope?.length) {
-          const p = (startMs + localMs) / Math.max(1, output.length * 1000 / audio.sampleRate)
-          amount += interpolateCents(segment.pitch_envelope, p)
-        }
-        if (region.pitch_points?.length && sourceMidi !== null) {
-          const target = interpPoints((sourceMs - region.source_start_ms) / Math.max(1, region.source_end_ms - region.source_start_ms), region.pitch_points)
-          amount += (target - sourceMidi) * 100
-        }
-        for (const { unit } of unitsHere) {
-          if (sourceMs < (unit.source_start_ms ?? -1) || sourceMs > (unit.source_end_ms ?? -1)) continue
-          const owner = unit.pitch_owner_ref ? ownerUnits.get(`${unit.pitch_owner_ref.segment_id}:${unit.pitch_owner_ref.phone_unit_id}`) : undefined
-          const curve = unitCurve(unit, owner, segment, unit.source_f0_hz ? hzToMidi(unit.source_f0_hz) : sourceMidi)
-          if (curve) {
-            const midi = interpPoints((sourceMs - curve.startMs) / Math.max(1, curve.endMs - curve.startMs), curve.points)
-            if (sourceMidi !== null) amount = (midi - sourceMidi) * 100 + region.relative_pitch_cents
-          } else if (unit.vibrato_depth_cents > 0 && unit.vibrato_rate_hz > 0) {
-            const unitStartOutput = mappedOutputMs(regions, unit.source_start_ms ?? sourceMs) ?? 0
-            const elapsed = startMs + localMs - unitStartOutput - unit.vibrato_start_ms
+    const regionPitchRegions = regions.filter(({ region }) => region.pitch_points?.length)
+    const activeNotes = (composition.pitch_notes ?? []).filter((note) => note.start_ms < segment.timeline_end_ms && note.end_ms > segment.timeline_start_ms)
+    const unchanged = canCopyRegionAudio(regions, segment, composition.pitch_notes ?? [])
+    if (unchanged) {
+      copyRegionAudio(output, audio.samples, audio.sampleRate, regions)
+    } else {
+      const unitPitch = units.map(({ unit }) => {
+        if (unit.source_start_ms === null || unit.source_end_ms === null) return { unit, sourceStart: 0, sourceEnd: 0, sourceMidi: null, curve: null }
+        const source = sourceSlice(audio, unit.source_start_ms, unit.source_end_ms)
+        const voiced = estimatePitch(source, audio.sampleRate).filter((frame) => frame.hz !== null).map((frame) => frame.hz as number).sort((left, right) => left - right)
+        const sourceMidi = voiced.length ? hzToMidi(voiced[Math.floor(voiced.length / 2)]) : unit.source_f0_hz ? hzToMidi(unit.source_f0_hz) : null
+        const owner = unit.pitch_owner_ref ? ownerUnits.get(`${unit.pitch_owner_ref.segment_id}:${unit.pitch_owner_ref.phone_unit_id}`) : undefined
+        return { unit, sourceStart: unit.source_start_ms, sourceEnd: unit.source_end_ms, sourceMidi, curve: unitCurve(unit, owner, segment, sourceMidi) }
+      })
+      const hasPhoneCurve = units.some(({ unit }) => unit.pitch_points?.length || unit.pitch_owner_ref)
+      for (const { region, startMs, endMs } of regions) {
+        const start = Math.max(0, Math.round(startMs * audio.sampleRate / 1000))
+        const end = Math.min(output.length, Math.round(endMs * audio.sampleRate / 1000))
+        if (end <= start) continue
+        const clip = stretchAudio(sourceSlice(audio, region.source_start_ms, region.source_end_ms), end - start)
+        const cents = new Float32Array(clip.length)
+        for (let index = 0; index < clip.length; index += 1) {
+          const position = index / Math.max(1, clip.length)
+          const outputMs = startMs + position * (endMs - startMs)
+          const sourceMs = region.source_start_ms + position * (region.source_end_ms - region.source_start_ms)
+          let amount = region.relative_pitch_cents
+          if (segment.pitch_envelope?.length) amount += interpolateCents(segment.pitch_envelope, outputMs / Math.max(1, output.length * 1000 / audio.sampleRate))
+          for (const pitch of unitPitch) {
+            const { unit, sourceStart, sourceEnd, sourceMidi, curve } = pitch
+            if (sourceMs < sourceStart || sourceMs >= sourceEnd || sourceMidi === null) continue
+            let targetMidi = curve ? interpPoints((sourceMs - curve.startMs) / Math.max(1, curve.endMs - curve.startMs), curve.points) : sourceMidi
+            if (!hasPhoneCurve && unit.target_pitch_midi !== null && unit.target_pitch_strength_percent > 0) targetMidi = sourceMidi + (unit.target_pitch_midi - sourceMidi) * unit.target_pitch_strength_percent / 100
+            amount += (targetMidi - sourceMidi) * 100
+          }
+          for (const { unit } of units) {
+            if (unit.source_start_ms === null || unit.source_end_ms === null || sourceMs < unit.source_start_ms || sourceMs >= unit.source_end_ms || unit.vibrato_depth_cents <= 0 || unit.vibrato_rate_hz <= 0) continue
+            const unitOutput = mappedOutputMs(regions, unit.source_start_ms) ?? 0
+            const elapsed = outputMs - unitOutput - unit.vibrato_start_ms
             if (elapsed >= 0) amount += unit.vibrato_depth_cents * Math.sin(2 * Math.PI * unit.vibrato_rate_hz * elapsed / 1000)
           }
-          amount += unit.formant_shift_semitones * 0
+          cents[index] = amount
         }
+        output.set(await renderPitchCurve(clip, cents, signal), start)
+      }
+      if (!regionPitchRegions.length && !activeNotes.length) return output
+      checkAbort(signal)
+      const sourceStart = Math.min(...regions.map(({ region }) => region.source_start_ms))
+      const sourceEnd = Math.max(...regions.map(({ region }) => region.source_end_ms))
+      const worldInput = worldSourceContext(audio, sourceStart, sourceEnd)
+      const cents = new Float64Array(output.length + 1)
+      const regionPitchMidi = new Float64Array(output.length + 1)
+      const sourceTimes = new Float64Array(output.length + 1)
+      for (let index = 0; index <= output.length; index += 1) {
+        const outputMs = index * 1000 / audio.sampleRate
+        const bound = regions.find(({ startMs, endMs }) => outputMs < endMs || endMs === outputMs && endMs === output.length * 1000 / audio.sampleRate)
+        if (!bound) continue
+        const { region, startMs, endMs } = bound
+        const position = Math.max(0, Math.min(1, (outputMs - startMs) / Math.max(1, endMs - startMs)))
+        const sourceMs = region.source_start_ms + position * (region.source_end_ms - region.source_start_ms)
+        sourceTimes[index] = sourceMs
+        let amount = region.relative_pitch_cents
+        if (segment.pitch_envelope?.length) amount += interpolateCents(segment.pitch_envelope, outputMs / Math.max(1, output.length * 1000 / audio.sampleRate))
+        if (region.pitch_points?.length) regionPitchMidi[index] = interpPoints(position, region.pitch_points)
         cents[index] = amount
       }
-      clip = await renderPitchCurve(clip, cents, signal, unitsHere.reduce((value, item) => value + item.unit.formant_shift_semitones, 0) / Math.max(1, unitsHere.length))
-      output.set(clip.slice(0, end - start), start)
+      const vibratoCents = buildWorldVibratoCents(regions, units, sourceTimes)
+      for (let index = 0; index < cents.length; index += 1) cents[index] += vibratoCents[index]
+      if (regionPitchRegions.length) {
+        const regionClip = await renderWorldMappedTimeline(worldInput.samples, cents, sourceTimes, sourceStart, sourceEnd, worldInput.contextStartMs, output.length, signal, regionPitchMidi)
+        const ranges = regionPitchRegions.map(({ startMs, endMs }) => [Math.max(0, Math.round(startMs * audio.sampleRate / 1000)), Math.min(output.length, Math.round(endMs * audio.sampleRate / 1000))] as [number, number])
+        overlayWorldSlices(output, regionClip, ranges)
+      }
+      if (activeNotes.length) {
+        const noteCents = new Float64Array(cents)
+        const notePitchMidi = new Float64Array(regionPitchMidi)
+        for (let index = 0; index <= output.length; index += 1) {
+          const timelineMs = segment.timeline_start_ms + index * 1000 / audio.sampleRate
+          const note = activeNotes.find((item) => timelineMs >= item.start_ms && timelineMs < item.end_ms)
+          if (!note) continue
+          notePitchMidi[index] = interpPoints((timelineMs - note.start_ms) / Math.max(1, note.end_ms - note.start_ms), note.pitch_points)
+          noteCents[index] = 0
+        }
+        const noteClip = await renderWorldMappedTimeline(worldInput.samples, noteCents, sourceTimes, sourceStart, sourceEnd, worldInput.contextStartMs, output.length, signal, notePitchMidi)
+        const ranges = activeNotes.map((note) => [Math.max(0, Math.round((note.start_ms - segment.timeline_start_ms) * audio.sampleRate / 1000)), Math.min(output.length, Math.round((note.end_ms - segment.timeline_start_ms) * audio.sampleRate / 1000))] as [number, number])
+        overlayWorldSlices(output, noteClip, ranges)
+      }
     }
   } else if (units.length) {
     for (const [unitIndex, { unit, startMs, endMs }] of units.entries()) {
@@ -421,7 +475,7 @@ const segmentOutput = async (
       output.set(await renderPitchCurve(output, cents, signal))
     }
   }
-  const activeNotes = (composition.pitch_notes ?? []).filter((note) => note.start_ms < segment.timeline_end_ms && note.end_ms > segment.timeline_start_ms)
+  const activeNotes = regions.length ? [] : (composition.pitch_notes ?? []).filter((note) => note.start_ms < segment.timeline_end_ms && note.end_ms > segment.timeline_start_ms)
   for (const note of activeNotes) {
     const start = Math.max(0, Math.round((note.start_ms - segment.timeline_start_ms) * audio.sampleRate / 1000))
     const end = Math.min(output.length, Math.round((note.end_ms - segment.timeline_start_ms) * audio.sampleRate / 1000))
@@ -568,7 +622,7 @@ export async function analyzeBrowserPitch(
       const frames = estimatePitch(samples, source.audio.sampleRate)
       const original = frames.map((frame) => ({ position: Math.min(1, (offset + frame.timeMs * region.output_duration_ms / Math.max(1, region.source_end_ms - region.source_start_ms)) / Math.max(1, segment.timeline_end_ms - segment.timeline_start_ms)), hz: frame.hz }))
       const corrected = frames.map((frame, frameIndex) => {
-        if (!frame.hz) return { position: original[frames.indexOf(frame)]?.position ?? 0, hz: null }
+        if (!frame.hz) return { position: original[frameIndex]?.position ?? 0, hz: null }
         const pos = frame.timeMs / Math.max(1, samples.length * 1000 / source.audio.sampleRate)
         const midi = region.pitch_points?.length ? interpPoints(pos, region.pitch_points) : hzToMidi(frame.hz) + region.relative_pitch_cents / 100
         return { position: original[frameIndex]?.position ?? 0, hz: midiToHz(midi) }
@@ -598,18 +652,39 @@ export async function autotuneBrowserComposition(
     const units = segment.phone_units.map((unit) => ({ ...unit, pitch_points: [] as PhonePitchPoint[], pitch_owner_ref: null as PhoneUnit["pitch_owner_ref"] }))
     if (body.strength_percent > 0) {
       if (editRegions.length) {
+        const contextStart = Math.min(...editRegions.map((region) => region.source_start_ms))
+        const contextEnd = Math.max(...editRegions.map((region) => region.source_end_ms))
+        const worldInput = worldSourceContext(source.audio, contextStart, contextEnd)
+        const worldFrames = await analyzeWorldF0(worldInput.samples, worldInput.contextStartMs, signal)
         let outputOffset = 0
+        let previousOutputMs: number | null = null
+        previousCorrection = 0
         for (const entry of editRegions) {
-          const samples = sourceSlice(source.audio, entry.source_start_ms, entry.source_end_ms)
-          const frames = estimatePitch(samples, source.audio.sampleRate).filter((frame) => frame.hz !== null)
+          const frames = worldFrames.filter((frame) => frame.hz !== null && frame.timeMs >= entry.source_start_ms && frame.timeMs < entry.source_end_ms)
           const pitches = frames.map((frame) => hzToMidi(frame.hz as number))
           if (pitches.length) entry.source_f0_hz = midiToHz([...pitches].sort((a, b) => a - b)[Math.floor(pitches.length / 2)])
-          const points = pitchPointsFor(frames, entry.source_end_ms - entry.source_start_ms, body.strength_percent, body.speed_ms, null)
-          if (points.length) entry.pitch_points = points
-          else if (entry.source_f0_hz) entry.pitch_points = [{ position: 0, midi: hzToMidi(entry.source_f0_hz) }, { position: 1, midi: hzToMidi(entry.source_f0_hz) }]
+          const points: PhonePitchPoint[] = []
+          if (entry.source_f0_hz) {
+            for (const frame of frames) {
+              const sourceMidi = hzToMidi(frame.hz as number)
+              const pitchOffset = entry.relative_pitch_cents / 100
+              const correction = (Math.round(sourceMidi + pitchOffset) - pitchOffset - sourceMidi) * body.strength_percent / 100
+              const outputMs = outputOffset + (frame.timeMs - entry.source_start_ms) * entry.output_duration_ms / Math.max(1, entry.source_end_ms - entry.source_start_ms)
+              const elapsedMs = previousOutputMs === null ? BROWSER_WORLD_FRAME_PERIOD_MS : outputMs - previousOutputMs
+              const alpha = body.speed_ms <= 0 ? 1 : 1 - Math.exp(-Math.max(0, elapsedMs) / body.speed_ms)
+              previousCorrection += alpha * (correction - previousCorrection)
+              points.push({ position: Math.max(0, Math.min(1, (frame.timeMs - entry.source_start_ms) / Math.max(1, entry.source_end_ms - entry.source_start_ms))), midi: sourceMidi + previousCorrection })
+              previousOutputMs = outputMs
+            }
+          }
+          if (points.length === 1) entry.pitch_points = [{ position: 0, midi: points[0].midi }, { position: 1, midi: points[0].midi }]
+          else if (points.length > 1) {
+            points[0] = { position: 0, midi: points[0].midi }
+            points[points.length - 1] = { position: 1, midi: points[points.length - 1].midi }
+            entry.pitch_points = points
+          }
           outputOffset += entry.output_duration_ms
         }
-        void outputOffset
       } else {
         for (const [index, unit] of units.entries()) {
           if (unit.source_start_ms === null || unit.source_end_ms === null) continue

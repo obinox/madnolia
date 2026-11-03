@@ -19,6 +19,8 @@ export type {
   BrowserWorkspaceManifest,
   BrowserWorkspaceProps,
 } from "./browser"
+export type { BrowserLegacyImportProgress, BrowserLegacyImportSummary } from "./browserImport"
+export type { BrowserAnalysisReprocessJob, BrowserAnalysisReprocessRequest, BrowserReprocessTransactionJournal, BrowserReprocessedPhones } from "./browserAnalysis"
 
 export type ProfessionalBeatDivision = typeof PROFESSIONAL_BEAT_DIVISIONS[number]
 export type SavedDetailLoadState = "idle" | "loading" | "error"
@@ -42,6 +44,8 @@ export type SelectionKind = "WORD" | "PHONE"
 export type MatchStatus = "EXACT" | "APPROXIMATE" | "MISSING"
 export type CompositionMode = "SIMPLE" | "PROFESSIONAL"
 export type InputLanguage = "AUTO" | "KO" | "EN" | "JA"
+export type AnalysisPrecision = "baseline" | "compact"
+export type BrowserAsrLanguage = "ko" | "en"
 export type CandidateSearchTab = "EXACT" | "APPROXIMATE"
 export type SynthesisWorkspace = "SEARCH" | "ASSEMBLY"
 export type PhoneAlignmentOperation = "MATCH" | "SUBSTITUTE" | "INSERT" | "DELETE"
@@ -135,6 +139,9 @@ export interface TranscriptWord {
 export interface TranscriptCandidate {
   candidate_id: string
   model_name: string
+  model_revision?: string | null
+  model_dtype?: string
+  inference_device?: string
   transcript: string
   language_probability: number | null
   words: TranscriptWord[]
@@ -740,15 +747,31 @@ export interface AnalysisJob {
   error: string | null
   download_model: string | null
   download_percent: number | null
+  settings?: AnalysisSettings
+  record_id?: string
+  media_identity?: BrowserAnalysisMediaIdentity
+  interrupted_stage?: string
+  completed_windows?: number
+  total_windows?: number
+  reused_windows?: number
+}
+
+export interface BrowserAnalysisMediaIdentity {
+  path: string
+  type: string
+  size: number
+  last_modified: number
 }
 
 export interface AnalysisSettings {
   filename: string
   nickname: string
   model_name: string
+  asr_language?: BrowserAsrLanguage
   backend: "transformers-js"
   device: "webgpu" | "wasm"
-  alignment_mode: "estimated"
+  alignment_mode: "estimated" | "ctc"
+  precision: AnalysisPrecision
   candidate_models: string[]
   acoustic_units: boolean
 }

@@ -5,6 +5,8 @@ import {
   BROWSER_WORKSPACE_HANDLE_KEY,
   BROWSER_WORKSPACE_MANIFEST_PATH,
   BROWSER_WORKSPACE_OBJECT_STORE,
+  BROWSER_WORKSPACE_PICKER_ID,
+  BROWSER_EXISTING_WORKSPACE_PICKER_ID,
   BROWSER_WORKSPACE_SCHEMA_VERSION,
 } from "../browserConstants"
 import type { BrowserDirectoryPickerWindow, BrowserPermissionDirectoryHandle, BrowserWorkspaceManifest } from "../types/browser"
@@ -54,7 +56,8 @@ export async function restoreWorkspaceHandle(handle?: BrowserPermissionDirectory
   if (!saved) return null
   const permission = await saved.queryPermission({ mode: "readwrite" })
   if (permission !== "granted") return null
-  await initializeWorkspace(saved)
+  await requireExistingWorkspace(saved)
+  activeWorkspace = saved
   return saved
 }
 
@@ -63,20 +66,22 @@ export async function requestSavedWorkspace(): Promise<BrowserPermissionDirector
   if (!handle) return null
   const permission = await handle.requestPermission({ mode: "readwrite" })
   if (permission !== "granted") throw new Error("폴더 읽기와 저장 권한을 허용해야 작업공간을 사용할 수 있습니다.")
-  await initializeWorkspace(handle)
+  await requireExistingWorkspace(handle)
+  activeWorkspace = handle
   return handle
 }
 
-export async function connectWorkspace(): Promise<BrowserPermissionDirectoryHandle> {
+export async function connectWorkspace(existingOnly = false): Promise<BrowserPermissionDirectoryHandle> {
   const pickerWindow = window as unknown as BrowserDirectoryPickerWindow
   if (typeof pickerWindow.showDirectoryPicker !== "function") {
     throw new Error("로컬 폴더 연결은 HTTPS의 최신 Chrome 또는 Edge에서 사용할 수 있습니다.")
   }
-  const handle = await pickerWindow.showDirectoryPicker({ id: "madnolia-workspace", mode: "readwrite" })
+  const handle = await pickerWindow.showDirectoryPicker({ id: existingOnly ? BROWSER_EXISTING_WORKSPACE_PICKER_ID : BROWSER_WORKSPACE_PICKER_ID, mode: "readwrite" })
   const permission = await handle.requestPermission({ mode: "readwrite" })
   if (permission !== "granted") throw new Error("폴더 읽기와 저장 권한을 허용해야 작업공간을 사용할 수 있습니다.")
-  await initializeWorkspace(handle)
+  await initializeWorkspace(handle, existingOnly)
   await storedHandle("put", handle)
+  activeWorkspace = handle
   return handle
 }
 
@@ -85,37 +90,48 @@ export async function reconnectWorkspace(): Promise<BrowserPermissionDirectoryHa
   if (!handle) return connectWorkspace()
   const permission = await handle.requestPermission({ mode: "readwrite" })
   if (permission !== "granted") throw new Error("폴더 읽기와 저장 권한을 허용해야 작업공간을 사용할 수 있습니다.")
-  await initializeWorkspace(handle)
+  await requireExistingWorkspace(handle)
   activeWorkspace = handle
   return handle
 }
 
-async function initializeWorkspace(handle: BrowserPermissionDirectoryHandle): Promise<void> {
-  const hasManifest = await validateWorkspaceRoot(handle)
+async function initializeWorkspace(handle: BrowserPermissionDirectoryHandle, existingOnly = false): Promise<void> {
+  const hasManifest = await validateWorkspaceRoot(handle, existingOnly)
   if (!hasManifest) {
-  const marker = await handle.getFileHandle(BROWSER_WORKSPACE_MANIFEST_PATH, { create: true })
-  const markerWritable = await marker.createWritable()
-  await markerWritable.write(new Blob([JSON.stringify({
-    application: "madnolia-browser",
-    schema_version: BROWSER_WORKSPACE_SCHEMA_VERSION,
-    created_at: new Date().toISOString(),
-  } satisfies BrowserWorkspaceManifest)], { type: "application/json" }))
-  await markerWritable.close()
+    if (existingOnly) throw new Error("기존 Madnolia 작업공간 표시를 찾을 수 없습니다. 작업공간 폴더를 선택하세요.")
+    const marker = await handle.getFileHandle(BROWSER_WORKSPACE_MANIFEST_PATH, { create: true })
+    const markerWritable = await marker.createWritable()
+    await markerWritable.write(new Blob([JSON.stringify({
+      application: "madnolia-browser",
+      schema_version: BROWSER_WORKSPACE_SCHEMA_VERSION,
+      created_at: new Date().toISOString(),
+    } satisfies BrowserWorkspaceManifest)], { type: "application/json" }))
+    await markerWritable.close()
   }
-  activeWorkspace = handle
 }
 
-async function validateWorkspaceRoot(handle: FileSystemDirectoryHandle): Promise<boolean> {
+async function requireExistingWorkspace(handle: BrowserPermissionDirectoryHandle): Promise<void> {
+  if (!(await validateWorkspaceRoot(handle, true))) {
+    throw new Error("기존 Madnolia 작업공간 표시를 찾을 수 없습니다. 작업공간 폴더를 선택하세요.")
+  }
+}
+
+async function validateWorkspaceRoot(handle: FileSystemDirectoryHandle, existingOnly = false): Promise<boolean> {
   try {
     const marker = await handle.getFileHandle(BROWSER_WORKSPACE_MANIFEST_PATH)
-    const value = JSON.parse(await (await marker.getFile()).text()) as BrowserWorkspaceManifest
-    if (value.application !== "madnolia-browser" || value.schema_version !== BROWSER_WORKSPACE_SCHEMA_VERSION) {
-      throw new Error("선택한 폴더는 다른 Madnolia 작업공간 형식입니다.")
+    const value: unknown = JSON.parse(await (await marker.getFile()).text())
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("작업공간 표시가 올바르지 않습니다. 다른 폴더를 선택하세요.")
+    }
+    const manifest = value as Partial<BrowserWorkspaceManifest>
+    if (manifest.application !== "madnolia-browser" || manifest.schema_version !== BROWSER_WORKSPACE_SCHEMA_VERSION || typeof manifest.created_at !== "string" || !Number.isFinite(Date.parse(manifest.created_at))) {
+      throw new Error("호환되는 Madnolia 작업공간 표시가 아닙니다. 다른 폴더를 선택하세요.")
     }
     return true
   } catch (error) {
     if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error
   }
+  if (existingOnly) return false
   for (const name of BROWSER_WORKSPACE_DIRECTORIES) {
     try {
       const directory = await handle.getDirectoryHandle(name)

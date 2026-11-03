@@ -1,18 +1,12 @@
 import type { BrowserPronunciation, InputLanguage } from "../types"
+import type { BrowserJapaneseG2pRuntime } from "../types/browserPhonetics"
 import {
   BROWSER_UNKNOWN_PHONE_ID,
   BROWSER_UNKNOWN_PHONE_IPA,
-  ENGLISH_LEXICON,
-  ENGLISH_PHONE_IPA,
-  ENGLISH_SINGLE_LETTER_PHONEMES,
   HANGUL_FINAL_COUNT,
   HANGUL_MEDIAL_COUNT,
   HANGUL_SYLLABLE_BASE,
   HANGUL_SYLLABLE_END,
-  JAPANESE_COMMON_KANJI,
-  JAPANESE_KANA_ROMAJI,
-  JAPANESE_ONSET_IPA,
-  JAPANESE_VOWEL_IPA,
   KOREAN_FINAL_IPA,
   KOREAN_FINALS,
   KOREAN_INITIAL_IPA,
@@ -20,11 +14,21 @@ import {
   KOREAN_MEDIAL_IPA,
   KOREAN_MEDIALS,
 } from "../browserAnalysisConstants"
+import {
+  BROWSER_ENGLISH_ARPABET_IPA,
+  BROWSER_JAPANESE_GEMINATE,
+  BROWSER_JAPANESE_LONG_VOWELS,
+  BROWSER_JAPANESE_MORAIC_NASAL,
+  BROWSER_JAPANESE_MORAIC_NASAL_VELAR,
+  BROWSER_JAPANESE_ONSETS,
+  BROWSER_JAPANESE_VOWELS,
+} from "../browserPhoneticsConstants"
 
 function resolveLanguage(text: string, language: InputLanguage): Exclude<InputLanguage, "AUTO"> {
   if (language !== "AUTO") return language
   if (/[\uac00-\ud7a3]/u.test(text)) return "KO"
-  if (/[\u3040-\u30ff\u4e00-\u9fff]/u.test(text)) return "JA"
+  if (/[\u3040-\u30ff]/u.test(text)) return "JA"
+  if (/[\u3400-\u9fff]/u.test(text)) throw new Error("한자만 입력된 문장은 언어 선택에서 일본어를 지정해 주세요.")
   if (/[a-z]/iu.test(text)) return "EN"
   throw new Error("한국어, 영어, 일본어 문장을 입력하거나 언어를 선택해 주세요.")
 }
@@ -44,37 +48,9 @@ function decomposeHangul(character: string): { initial: string; medial: string; 
   }
 }
 
-function codaRepresentative(final: string): string {
-  if (["ㄱ", "ㄲ", "ㄳ", "ㅋ", "ㄺ"].includes(final)) return "ㄱ"
-  if (["ㄴ", "ㄵ", "ㄶ"].includes(final)) return "ㄴ"
-  if (["ㄷ", "ㅅ", "ㅆ", "ㅈ", "ㅊ", "ㅌ", "ㅎ"].includes(final)) return "ㄷ"
-  if (["ㄹ", "ㄼ", "ㄽ", "ㄾ", "ㅀ"].includes(final)) return "ㄹ"
-  if (["ㅁ", "ㄻ"].includes(final)) return "ㅁ"
-  if (["ㅂ", "ㅍ", "ㅄ", "ㄿ"].includes(final)) return "ㅂ"
-  return final
-}
-
 function pronounceKoreanWord(word: string, wordIndex: number): BrowserPronunciation[] {
   const chars = [...word]
   const syllables = chars.map(decomposeHangul)
-  for (let index = 0; index < syllables.length - 1; index += 1) {
-    const current = syllables[index]
-    const next = syllables[index + 1]
-    if (!current || !next) continue
-    if (current.final && next.initial === "ㅇ") {
-      const onset = current.final.length === 2 ? current.final[1] : current.final
-      if (KOREAN_INITIAL_IPA[onset]) {
-        next.initial = onset
-        current.final = current.final.length === 2 ? current.final[0] : ""
-      }
-    }
-    if (current.final && ["ㄴ", "ㅁ"].includes(next.initial)) {
-      const coda = codaRepresentative(current.final)
-      if (coda === "ㄱ") current.final = "ㅇ"
-      else if (coda === "ㄷ") current.final = "ㄴ"
-      else if (coda === "ㅂ") current.final = "ㅁ"
-    }
-  }
   const phones: BrowserPronunciation[] = []
   syllables.forEach((syllable, index) => {
     if (!syllable) return
@@ -96,156 +72,137 @@ function pronounceKoreanWord(word: string, wordIndex: number): BrowserPronunciat
     const vowel = KOREAN_MEDIAL_IPA[syllable.medial]
     if (vowel) phones.push({ grapheme, phone_id: vowel[0], ipa: vowel[1], word_index: wordIndex })
     if (syllable.final) {
-      const final = KOREAN_FINAL_IPA[codaRepresentative(syllable.final)]
+      const final = KOREAN_FINAL_IPA[syllable.final]
       if (final) phones.push({ grapheme, phone_id: final[0], ipa: final[1], word_index: wordIndex })
     }
   })
   return phones
 }
 
-function englishPhonemes(word: string): string[] {
-  const lower = word.toLowerCase().replace(/[^a-z']/gu, "")
-  if (!lower) return []
-  const known = ENGLISH_LEXICON[lower]
-  if (known) return [...known]
-  const units = lower.match(/tch|ch|sh|th|ph|wh|ng|ck|qu|ee|ea|ai|ay|oa|ow|oo|ou|oi|oy|igh|[a-z]/gu) ?? []
-  return units.map((unit, index) => {
-    const next = units[index + 1] ?? ""
-    const previous = units[index - 1] ?? ""
-    if (unit === "tch") return "CH"
-    if (unit === "ch") return "CH"
-    if (unit === "sh") return "SH"
-    if (unit === "th") return lower.startsWith("the") || ["this", "that", "these", "those"].some((item) => lower.startsWith(item)) ? "DH" : "TH"
-    if (unit === "ph") return "F"
-    if (unit === "wh") return "W"
-    if (unit === "ng") return "NG"
-    if (unit === "ck") return "K"
-    if (unit === "qu") return "K"
-    if (["ee", "ea"].includes(unit)) return "IY"
-    if (["ai", "ay"].includes(unit)) return "EY"
-    if (unit === "oa") return "OW"
-    if (unit === "ow") return "AW"
-    if (unit === "oo") return "UW"
-    if (unit === "ou") return "AW"
-    if (["oi", "oy"].includes(unit)) return "OY"
-    if (unit === "igh") return "AY"
-    const isFinalSilentE = unit === "e" && index === units.length - 1 && units.length > 1
-    if (isFinalSilentE) return ""
-    if ("aeiou".includes(unit)) {
-      if (unit === "a") return next === "r" ? "AA" : "AE"
-      if (unit === "e") return "EH"
-      if (unit === "i") return "IH"
-      if (unit === "o") return "AA"
-      return "AH"
+function japaneseRomaji(text: string, converted: Array<{ orig: string; hira: string }>, romanize: (text: string) => string): { romanized: string; graphemes: string[] } {
+  const units: Array<{ mora: string; grapheme: string; original: string; itemIndex: number }> = []
+  for (const [itemIndex, item] of converted.entries()) {
+    let moras: string[] = []
+    for (const character of item.hira) {
+      if (("ぁぃぅぇぉゃゅょゎゕゖー".includes(character)) && moras.length) moras[moras.length - 1] += character
+      else moras.push(character)
     }
-    if (unit === "c") return "K"
-    if (unit === "x") return "K"
-    if (unit === "j") return "JH"
-    if (unit === "y") return index === 0 && next ? "Y" : "IY"
-    if (unit === "w" && previous === "q") return ""
-    if (unit === "w") return "W"
-    return ENGLISH_SINGLE_LETTER_PHONEMES[unit] ?? ""
-  }).filter(Boolean)
-}
-
-function pronounceEnglishWord(word: string, wordIndex: number): BrowserPronunciation[] {
-  const phones: BrowserPronunciation[] = []
-  for (const symbol of englishPhonemes(word)) {
-    for (const [phone_id, ipa] of ENGLISH_PHONE_IPA[symbol] ?? []) {
-      phones.push({ grapheme: word, phone_id, ipa, word_index: wordIndex })
+    for (const mora of moras) units.push({ mora, grapheme: mora, original: item.orig, itemIndex })
+  }
+  const chunks: Array<{ roman: string; grapheme: string }> = []
+  for (let index = 0; index < units.length; index += 1) {
+    const { mora, grapheme, original, itemIndex } = units[index]
+    const previousItem = units[index - 1]?.itemIndex
+    if (previousItem !== undefined && previousItem !== itemIndex) chunks.push({ roman: "-", grapheme: "" })
+    if (mora === "っ") {
+      const following = units[index + 1]?.mora ?? ""
+      const nextRoman = romanize(following)
+      chunks.push({ roman: nextRoman[0] && !"aeiou".includes(nextRoman[0]) ? nextRoman[0] : "", grapheme })
+    } else if (original === "は" || (["こんにちは", "こんばんは", "今日は"].includes(text) && index === units.length - 1)) {
+      chunks.push({ roman: "wa", grapheme })
+    } else if (original === "へ") {
+      chunks.push({ roman: "e", grapheme })
+    } else if (original === "を") {
+      chunks.push({ roman: "o", grapheme })
+    } else {
+      const long = mora.endsWith("ー")
+      const base = long ? mora.slice(0, -1) : mora
+      let romaji = romanize(base).toLowerCase()
+      if (long) romaji += [...romaji].reverse().find((character) => "aeiou".includes(character)) ?? ""
+      chunks.push({ roman: romaji, grapheme })
     }
   }
-  return phones
+  const romanized = chunks.map(({ roman }) => roman).join("")
+  const graphemes = chunks.flatMap(({ roman, grapheme }) => [...roman].map(() => grapheme))
+  return { romanized, graphemes }
 }
 
-function normalizeKana(text: string): string {
-  return [...text].map((character) => {
-    const code = character.codePointAt(0) ?? 0
-    return code >= 0x30a1 && code <= 0x30f6 ? String.fromCodePoint(code - 0x60) : character
-  }).join("")
-}
-
-function expandKnownKanji(text: string): string {
-  return Object.entries(JAPANESE_COMMON_KANJI).sort((left, right) => right[0].length - left[0].length)
-    .reduce((value, [kanji, kana]) => value.replaceAll(kanji, kana), text)
-}
-
-function japaneseRomaji(text: string): Array<{ kana: string; romaji: string }> {
-  const normalized = normalizeKana(expandKnownKanji(text))
-  const chars = [...normalized]
-  const output: Array<{ kana: string; romaji: string }> = []
-  for (let index = 0; index < chars.length; index += 1) {
-    const pair = chars[index] + (chars[index + 1] ?? "")
-    if (JAPANESE_KANA_ROMAJI[pair]) {
-      output.push({ kana: pair, romaji: JAPANESE_KANA_ROMAJI[pair] })
+function pronounceJapaneseWord(word: string, wordIndex: number, kakasi: BrowserJapaneseG2pRuntime): BrowserPronunciation[] {
+  const phones: BrowserPronunciation[] = []
+  const { romanized, graphemes } = japaneseRomaji(word, kakasi.convert(word), kakasi.romanize)
+  let index = 0
+  while (index < romanized.length) {
+    if (/[\s'・-]/u.test(romanized[index])) {
       index += 1
-    } else if (JAPANESE_KANA_ROMAJI[chars[index]]) {
-      output.push({ kana: chars[index], romaji: JAPANESE_KANA_ROMAJI[chars[index]] })
-    } else if (/[\u3400-\u9fff]/u.test(chars[index])) {
-      output.push({ kana: chars[index], romaji: "a" })
-    } else if (chars[index] === "っ") {
-      const next = chars[index + 1] ?? ""
-      const upcoming = JAPANESE_KANA_ROMAJI[next] ?? ""
-      output.push({ kana: chars[index], romaji: upcoming[0] && !"aeiou".includes(upcoming[0]) ? upcoming[0] : "" })
-    } else if (chars[index] === "ー") {
-      const lastVowel = [...(output.at(-1)?.romaji ?? "")].reverse().find((item) => "aeiou".includes(item)) ?? ""
-      output.push({ kana: chars[index], romaji: lastVowel })
-    }
-  }
-  return output
-}
-
-function pronounceJapaneseWord(word: string, wordIndex: number): BrowserPronunciation[] {
-  const phones: BrowserPronunciation[] = []
-  const morae = japaneseRomaji(word)
-  for (let index = 0; index < morae.length; index += 1) {
-    const { kana, romaji } = morae[index]
-    if (/[\u3400-\u9fff]/u.test(kana)) {
-      phones.push({ grapheme: kana, phone_id: BROWSER_UNKNOWN_PHONE_ID, ipa: BROWSER_UNKNOWN_PHONE_IPA, word_index: wordIndex })
       continue
     }
-    if (!romaji) continue
-    if (kana === "ん") {
-      const next = morae.slice(index + 1).map((item) => item.romaji).find(Boolean)?.[0] ?? ""
-      const nasal = "pbm".includes(next) ? ["ja.consonant.bilabial.nasal", "m"] as const
-        : "kg".includes(next) ? ["ja.consonant.velar.nasal", "ŋ"] as const
-          : JAPANESE_ONSET_IPA.n
-      phones.push({ grapheme: kana, phone_id: nasal[0], ipa: nasal[1], word_index: wordIndex })
+    const grapheme = graphemes[index] ?? ""
+    if (grapheme === "ん") {
+      const following = romanized.slice(index + 1).split("").find((character) => !"-' ".includes(character)) ?? ""
+      const nasal = following && "pbm".includes(following) ? ["ja.consonant.bilabial.nasal", "m"] as const
+        : following && "kg".includes(following) ? BROWSER_JAPANESE_MORAIC_NASAL_VELAR
+          : following && "tdnsz".includes(following) ? ["ja.consonant.alveolar.nasal.voiced", "n"] as const
+            : BROWSER_JAPANESE_MORAIC_NASAL
+      phones.push({ grapheme, phone_id: nasal[0], ipa: nasal[1], word_index: wordIndex })
+      index += 1
       continue
     }
-    if (kana === "っ") {
-      const next = morae[index + 1]?.romaji ?? ""
-      const onset = Object.keys(JAPANESE_ONSET_IPA).sort((left, right) => right.length - left.length).find((item) => next.startsWith(item))
-      if (onset) phones.push({ grapheme: kana, phone_id: `ja.consonant.geminate.${onset}`, ipa: onset === "sh" ? "ɕː" : `${JAPANESE_ONSET_IPA[onset][1]}ː`, word_index: wordIndex })
+    if (index + 1 < romanized.length && romanized[index] === romanized[index + 1] && !"aeioun".includes(romanized[index])) {
+      phones.push({ grapheme, phone_id: BROWSER_JAPANESE_GEMINATE[0], ipa: BROWSER_JAPANESE_GEMINATE[1], word_index: wordIndex })
+      index += 1
       continue
     }
-    const onset = Object.keys(JAPANESE_ONSET_IPA).sort((left, right) => right.length - left.length).find((item) => romaji.startsWith(item)) ?? ""
+    const onset = Object.keys(BROWSER_JAPANESE_ONSETS).sort((left, right) => right.length - left.length).find((item) => romanized.startsWith(item, index)) ?? ""
     if (onset) {
-      const [phone_id, ipa] = JAPANESE_ONSET_IPA[onset]
-      phones.push({ grapheme: kana, phone_id, ipa, word_index: wordIndex })
+      const [phone_id, ipa] = BROWSER_JAPANESE_ONSETS[onset]
+      phones.push({ grapheme, phone_id, ipa, word_index: wordIndex })
+      index += onset.length
     }
-    const vowel = [...romaji].reverse().find((character) => "aeiou".includes(character))
-    if (vowel) {
-      const [phone_id, ipa] = JAPANESE_VOWEL_IPA[vowel]
-      phones.push({ grapheme: kana, phone_id, ipa, word_index: wordIndex })
+    if (index < romanized.length && "aeiou".includes(romanized[index])) {
+      const longVowel = BROWSER_JAPANESE_LONG_VOWELS[romanized.slice(index, index + 2)]
+      const vowel = longVowel ?? romanized[index]
+      const [phone_id, baseIpa] = BROWSER_JAPANESE_VOWELS[vowel]
+      const ipa = longVowel ? `${baseIpa}ː` : baseIpa
+      phones.push({ grapheme, phone_id, ipa, word_index: wordIndex })
+      if (longVowel) index += 1
     }
+    if (!onset && /\p{Script=Han}/u.test(grapheme)) {
+      phones.push({ grapheme, phone_id: BROWSER_UNKNOWN_PHONE_ID, ipa: BROWSER_UNKNOWN_PHONE_IPA, word_index: wordIndex })
+    }
+    index += 1
   }
   return phones
 }
 
-export function pronounceBrowserText(text: string, language: InputLanguage): BrowserPronunciation[] {
+export async function pronounceBrowserText(text: string, language: InputLanguage): Promise<BrowserPronunciation[]> {
   const normalized = text.trim().replace(/\s+/gu, " ")
   if (!normalized) throw new Error("검색할 문장이 비어 있습니다.")
   if (!/[\p{L}\p{N}]/u.test(normalized)) throw new Error("검색할 발음이 없습니다.")
   const resolved = resolveLanguage(normalized, language)
-  const words = splitWords(normalized)
-  const phones = words.flatMap((word, wordIndex) => {
-    if (resolved === "KO") return pronounceKoreanWord(word, wordIndex)
-    if (resolved === "EN") return pronounceEnglishWord(word, wordIndex)
-    return pronounceJapaneseWord(word, wordIndex)
-  })
-  if (!phones.length) return words.flatMap((word, word_index) => [...word].map((grapheme) => ({
-    grapheme, phone_id: BROWSER_UNKNOWN_PHONE_ID, ipa: BROWSER_UNKNOWN_PHONE_IPA, word_index,
-  })))
-  return phones
+  if (resolved === "EN") {
+    const tokens = normalized.toLowerCase().match(/[a-z]+(?:'[a-z]+)?/gu) ?? []
+    if (!tokens.length) throw new Error("영어 발음으로 변환할 단어가 없습니다.")
+    const { getEnglishG2p } = await import("./phonetics/englishG2pRuntime")
+    const g2p = await getEnglishG2p()
+    const pronunciations = await Promise.all(tokens.map((word) => g2p.pronunciation(word)))
+    return pronunciations.flatMap((symbols, wordIndex) => {
+      const word = tokens[wordIndex]
+      return symbols.flatMap((symbol) => {
+      const phones = BROWSER_ENGLISH_ARPABET_IPA[symbol.replace(/\d/gu, "")] ?? []
+      return phones.map(([phone_id, ipa]) => ({ grapheme: word, phone_id, ipa, word_index: wordIndex }))
+      })
+    })
+  }
+  if (resolved === "JA") {
+    const { getJapaneseG2p } = await import("./phonetics/japaneseG2pRuntime")
+    const kakasi = await getJapaneseG2p()
+    const phones = splitWords(normalized).flatMap((word, wordIndex) => pronounceJapaneseWord(word, wordIndex, kakasi))
+    if (!phones.length) throw new Error("일본어 발음으로 변환할 수 없습니다.")
+    return phones
+  }
+  const { getKoreanG2p } = await import("./phonetics/koreanG2pRuntime")
+  const pronunciation = await (await getKoreanG2p()).convert(normalized)
+  return splitWords(pronunciation).flatMap((word, wordIndex) => pronounceKoreanWord(word, wordIndex))
+}
+
+export async function pronounceBrowserWords(words: string[], language: InputLanguage): Promise<BrowserPronunciation[]> {
+  const indexedWords = words.map((word, wordIndex) => ({ word: word.trim(), wordIndex })).filter(({ word }) => word.length > 0)
+  if (!indexedWords.length) return []
+  const sentencePhones = await pronounceBrowserText(indexedWords.map(({ word }) => word).join(" "), language)
+  const sentenceWordCount = sentencePhones.reduce((count, phone) => Math.max(count, phone.word_index + 1), 0)
+  if (sentenceWordCount === indexedWords.length) {
+    return sentencePhones.map((phone) => ({ ...phone, word_index: indexedWords[phone.word_index].wordIndex }))
+  }
+  const fallback = await Promise.all(indexedWords.map(({ word }) => pronounceBrowserText(word, language)))
+  return fallback.flatMap((phones, index) => phones.map((phone) => ({ ...phone, word_index: indexedWords[index].wordIndex })))
 }

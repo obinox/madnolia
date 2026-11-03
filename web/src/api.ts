@@ -5,6 +5,7 @@ export {
   fetchAnalysisJob,
   fetchVideos,
   renameAnalysis,
+  retryAnalysisJob,
   startAnalysis,
   uploadVideo,
 } from "./api/analysis"
